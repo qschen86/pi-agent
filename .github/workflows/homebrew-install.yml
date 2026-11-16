@@ -1,0 +1,22 @@
+name: Clean Homebrew installation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out acceptance runner
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          git init --quiet
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Install from public Tap and verify lifecycle
+        run: |
+          set -euo pipefail
+          node scripts/verify-homebrew-install.mjs
