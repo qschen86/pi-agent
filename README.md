@@ -67,7 +67,7 @@ node scripts/build-homebrew-release.mjs \
 
 ## 验收边界
 
-公开仓库已通过独立 GitHub Mac ARM 运行器的真实 Homebrew 安装、Formula 测试、后台服务启动/重启/停止、卸载保留数据标记及重新安装。执行记录见 https://github.com/qschen86/pi-agent/actions/runs/43820423908；真实模型任务、系统注销登录及跨版本升级恢复仍待验收。
+公开仓库已通过独立 GitHub Mac ARM 运行器的真实 Homebrew 安装、Formula 测试、后台服务启动/重启/停止、卸载保留数据标记及重新安装。本机也已完成同一套检查并成功打开默认浏览器。执行记录见 https://github.com/qschen86/pi-agent/actions/runs/43820423908；真实模型任务、系统注销登录及跨版本升级恢复仍待验收。
 
 ## 来源与许可证
 

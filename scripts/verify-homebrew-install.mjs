@@ -5,13 +5,13 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 
-// Real Homebrew acceptance, deliberately refuses a pre-existing installation.
+// Real Homebrew acceptance. Existing software is reused only with explicit resume; existing user instances are always refused.
 const brew = '/opt/homebrew/bin/brew';
 const cli = '/opt/homebrew/bin/pi-agent';
 const formula = 'qschen86/pi-agent/pi-agent';
 const base = join(homedir(), 'Library/Application Support/pi-agent');
-const env = { ...process.env, HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1', HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: '1', HOMEBREW_NO_ANALYTICS: '1' };
-const run = (file, args) => execFileSync(file, args, { env, encoding: 'utf8', timeout: args[0] === 'install' ? 1_200_000 : 300_000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 ** 2 }).trim();
+const env = { ...process.env, HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1', HOMEBREW_NO_AUTOREMOVE: '1', HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: '1', HOMEBREW_NO_ANALYTICS: '1' };
+const run = (file, args) => execFileSync(file, args, { env, encoding: 'utf8', timeout: file === brew ? 1_200_000 : 30_000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 ** 2 }).trim();
 const state = () => JSON.parse(run(cli, ['status', '--json']));
 async function expectState(expected) {
   let last;
@@ -24,11 +24,13 @@ async function expectState(expected) {
 const report = { formula, checks: {}, realModelTask: 'not-tested', cleanOperatingSystem: false };
 try {
   assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64');
-  assert.equal(existsSync(cli), false, 'Refusing to replace an existing pi-agent executable');
+  if (existsSync(cli)) assert.ok(process.argv.includes('--resume-installed'), 'Refusing to replace an existing pi-agent executable without explicit resume');
   assert.equal(existsSync(join(base, 'instance')), false, 'Use a fresh instance for installation acceptance');
   assert.equal(existsSync(join(base, 'service.json')), false, 'Refusing to interfere with another local service');
-  console.log(run(brew, ['tap', 'qschen86/pi-agent']));
-  console.log(run(brew, ['install', formula]));
+  if (!existsSync(cli)) {
+    console.log(run(brew, ['tap', 'qschen86/pi-agent']));
+    console.log(run(brew, ['install', formula]));
+  } else console.log('Resuming acceptance after the completed Homebrew installation');
   report.checks.install = 'passed';
   assert.equal(run(cli, ['--version']), '0.1.0');
   assert.equal(state().state, 'stopped');
