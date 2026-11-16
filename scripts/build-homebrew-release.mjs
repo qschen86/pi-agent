@@ -22,7 +22,7 @@ export function copySources(destination) {
   for (const path of ['LICENSE', 'package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.base.json', 'apps/homebrew', 'apps/web/src', 'apps/web/public', 'packages']) copy(path);
   // Keep workspace manifests so npm ci can reproduce the root lockfile.
   for (const name of readdirSync(join(repo, 'apps'))) if (existsSync(join(repo, 'apps', name, 'package.json'))) copy(`apps/${name}/package.json`);
-  for (const path of ['scripts/build-homebrew-release.mjs', 'scripts/build-homebrew-payload.mjs', 'scripts/check-homebrew-payload.mjs', 'scripts/prepare-homebrew-image-sources.py', 'scripts/runtime-record.mjs', 'scripts/prepare-dependencies.mjs']) copy(path);
+  for (const path of ['scripts/build-homebrew-release.mjs', 'scripts/build-homebrew-payload.mjs', 'scripts/check-homebrew-payload.mjs', 'scripts/prepare-homebrew-image-sources.py', 'scripts/runtime-record.mjs', 'scripts/prepare-dependencies.mjs', 'scripts/deploy-when-idle.mjs', 'scripts/deployment-actions.mjs', 'scripts/deploy-when-idle.d.mts', 'scripts/deployment-actions.d.mts', 'scripts/verify-homebrew-install.mjs']) copy(path);
   cpSync(join(repo, 'apps/homebrew/README.md'), join(destination, 'README.md'));
 }
 export function buildRelease({ payload, imageSources, output, repository }) {
