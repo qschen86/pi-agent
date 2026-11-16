@@ -1,0 +1,44 @@
+name: Homebrew preview build
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Check out public source
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          git init --quiet
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Prepare Node and locked project dependencies
+        run: |
+          set -euo pipefail
+          brew install node@24
+          echo /opt/homebrew/opt/node@24/bin >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
+          node --version
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm install --prefix "$RUNNER_TEMP/pi-input" --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.2.0 npm@11.17.0
+      - name: Test and build candidate
+        run: |
+          set -euo pipefail
+          node --test apps/homebrew/test/*.test.mjs
+          python3 scripts/prepare-homebrew-image-sources.py --output "$RUNNER_TEMP/image-sources"
+          node scripts/build-homebrew-payload.mjs --output dist/payload --pi-source "$RUNNER_TEMP/pi-input/node_modules/@earendil-works/pi-coding-agent" --npm-source "$RUNNER_TEMP/pi-input/node_modules/npm" --image-sources "$RUNNER_TEMP/image-sources"
+          node scripts/check-homebrew-payload.mjs dist/payload
+          node scripts/build-homebrew-release.mjs --payload dist/payload --image-sources "$RUNNER_TEMP/image-sources" --repository "$GITHUB_REPOSITORY" --output dist/release
+          cd dist/release
+          shasum -a 256 -c SHA256SUMS
+      - name: Upload verified assets to draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view v0.1.0 --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release upload v0.1.0 dist/release/* --repo "$GITHUB_REPOSITORY" --clobber
