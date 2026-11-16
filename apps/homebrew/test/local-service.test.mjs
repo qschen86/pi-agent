@@ -26,18 +26,35 @@ test('unauthenticated and cross-origin calls cannot initialize or read private s
   assert.equal((await f.authenticated('/api/local/initialize', input, { origin: 'https://untrusted.example' })).status, 403);
   assert.equal((await f.authenticated('/api/local/status', undefined, { host: 'untrusted.example' })).status, 403);
 });
-test('model proof is required, bound to the tested key and returned model list', async t => {
+test('saving without a usable connection proof re-verifies the submitted key instead of blocking', async t => {
   const f = await fixture(t);
-  assert.equal((await f.authenticated('/api/local/initialize', input)).status, 409);
-  assert.equal((await f.authenticated('/api/local/model-check', { apiKey: input.model.apiKey })).status, 200);
-  assert.equal((await f.authenticated('/api/local/initialize', { ...input, model: { ...input.model, apiKey: 'different-key' } })).status, 409);
-  assert.equal((await f.authenticated('/api/local/initialize', { ...input, model: { ...input.model, id: 'invented-model' } })).status, 409);
-  assert.equal((await f.authenticated('/api/local/initialize', input)).status, 200);
+  // 检查结论只存在内存里（10 分钟、服务重启即失效）：过期后的保存不能再回「请先完成模型连接检查」
+  const response = await f.authenticated('/api/local/initialize', input);
+  assert.equal(response.status, 200);
   const status = await (await f.authenticated('/api/local/status')).json();
   assert.equal(status.acceptance.modelConnection, 'passed');
   assert.equal(status.acceptance.firstTask, 'pending');
   assert.equal(JSON.stringify(status).includes(input.model.apiKey), false);
   assert.equal((await f.authenticated('/api/local/initialize', input)).status, 409);
+});
+test('a fresh connection check is reused instead of asking the vendor twice', async t => {
+  let checks = 0;
+  const f = await fixture(t, { modelCheck: async () => { checks++; return ['synthetic-model']; } });
+  assert.equal((await f.authenticated('/api/local/model-check', { apiKey: input.model.apiKey })).status, 200);
+  assert.equal((await f.authenticated('/api/local/initialize', input)).status, 200);
+  assert.equal(checks, 1, 'a fresh proof must not trigger a second vendor call');
+});
+test('saving refuses a model the vendor did not return, with an actionable message', async t => {
+  const f = await fixture(t);
+  const response = await f.authenticated('/api/local/initialize', { ...input, model: { ...input.model, id: 'invented-model' } });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /支持的模型列表/);
+});
+test('a key rejected by the save-time re-check surfaces the vendor wording', async t => {
+  const f = await fixture(t, { modelCheck: async key => { if (key !== input.model.apiKey) throw Error('模型服务拒绝了此 API Key，请检查账号配置'); return ['synthetic-model']; } });
+  const response = await f.authenticated('/api/local/initialize', { ...input, model: { ...input.model, apiKey: 'revoked-key' } });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /拒绝了此 API Key/);
 });
 test('password login works after initialization without exposing stored credentials', async t => {
   const f = await fixture(t); await f.authenticated('/api/local/model-check', { apiKey: input.model.apiKey }); await f.authenticated('/api/local/initialize', input);

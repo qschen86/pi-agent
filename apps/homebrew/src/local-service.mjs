@@ -27,6 +27,9 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
   };
   const body = async request => { const text = await request.text(); if (Buffer.byteLength(text) > 16_384) throw Error('输入内容过大'); try { return JSON.parse(text); } catch { throw Error('请求格式无效'); } };
   const optionalKind = kind => ['codex', 'claude-code'].includes(kind);
+  // 保存时按需重校验的预算：检查结论只存在内存里，过期或服务重启后需要重新问一次厂商，同一条路不能变成无限次外部请求。
+  let verifications = 0, verificationWindow = Date.now();
+  const verificationAllowed = () => { if (Date.now() - verificationWindow > 15 * 60_000) { verificationWindow = Date.now(); verifications = 0; } return ++verifications <= 10; };
   const inspectNetwork = async kind => {
     if (!optionalKind(kind) || !networkInspector) throw Error('网络检测暂不可用');
     let key = networkKey;
@@ -145,7 +148,14 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
           networkKey = undefined;
           return json({ configured: true });
         }
-        if (!proof || proof.expires < Date.now() || !same(proof.keyHash, hash(String(input.model?.apiKey ?? '').trim())) || !proof.models.includes(input.model?.id)) return json({ error: '请先完成模型连接检查' }, 409);
+        // 检查结论只存在内存里（10 分钟、服务重启即失效），界面却一直显示「连接已通过」，所以保存时不能只认这份影子状态：
+        // 结论过期或缺失就用同一固定厂商端点重新校验提交的 Key，模型必须在厂商返回且本发行版支持的列表内。
+        const key = String(input.model?.apiKey ?? '').trim();
+        if (!proof || proof.expires < Date.now() || !same(proof.keyHash, hash(key))) {
+          if (!verificationAllowed()) return json({ error: '连接检查次数过多，请稍后重试' }, 429);
+          proof = { keyHash: hash(key), models: await modelCheck(key), expires: Date.now() + 10 * 60_000 };
+        }
+        if (!proof.models.includes(input.model?.id)) return json({ error: '所选模型不在当前发行版支持的模型列表内，请重新检查连接后选择模型' }, 409);
         initializeInstallation({ ...input, root, environment: environment() });
         const config = readInstallation(root); config.model = { provider: input.model.provider, id: input.model.id }; config.acceptance.modelConnection = 'passed'; saveConfig(config);
         proof = undefined;
