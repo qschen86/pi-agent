@@ -1,0 +1,52 @@
+{
+  "version": "visual-review@1",
+  "htmlHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "screenshots": [
+    {
+      "slideId": "growth",
+      "hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "contactSheets": [
+    "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  ],
+  "reviewer": {
+    "role": "visualReviewer",
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "configHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "promptVersion": "visual-review-prompt@1"
+  },
+  "reliability": "unverified",
+  "status": "failed",
+  "issues": [
+    {
+      "slideId": "growth",
+      "code": "occlusion",
+      "severity": "major",
+      "elementIds": [
+        "title",
+        "metric"
+      ],
+      "region": {
+        "x": 0.5,
+        "y": 0.3,
+        "w": 0.3,
+        "h": 0.2
+      },
+      "description": "标题压在数字上，数字被遮住一半",
+      "suggestion": "把标题移到数字右侧或拆成两页"
+    }
+  ],
+  "calls": [
+    {
+      "scope": "slides:growth",
+      "roleRunId": "rr_0123456789abcdef",
+      "ok": true,
+      "attempts": 1,
+      "tokens": 1500,
+      "durationMs": 3000
+    }
+  ],
+  "reviewedAt": "2026-09-29T12:00:00Z"
+}

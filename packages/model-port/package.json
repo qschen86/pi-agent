@@ -1,0 +1,18 @@
+{
+  "name": "@pi-agent/model-port",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "description": "角色模型调用端口（v2.0 C4）：按角色配置模型与预算、结构化输出与有限修复、逐次调用审计；首版适配 runPiCompletion",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pi-agent/adapter-pi": "*",
+    "@pi-agent/domain": "*",
+    "ajv": "*",
+    "@pi-agent/schemas": "*"
+  }
+}

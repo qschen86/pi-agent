@@ -1,0 +1,567 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-stage-artifact.schema.json",
+  "title": "project-stage-artifact@1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "project-stage-artifact@1"
+    },
+    "kind": {
+      "enum": [
+        "requirements",
+        "rules",
+        "plan"
+      ]
+    },
+    "jobId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16000
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "projectRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requirementsRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rulesRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coordinatorEpoch": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "projectRevision",
+        "requirementsRevision",
+        "rulesRevision",
+        "planRevision",
+        "coordinatorEpoch"
+      ]
+    },
+    "content": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "version",
+    "kind",
+    "jobId",
+    "input",
+    "content"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "requirements"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "goal": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000
+              },
+              "scope": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "maxItems": 200
+              },
+              "outOfScope": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "maxItems": 200
+              },
+              "constraints": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "maxItems": 200
+              },
+              "assumptions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "maxItems": 200
+              },
+              "openQuestions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16000
+                },
+                "maxItems": 200
+              },
+              "requirements": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 200,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^R[0-9]{1,3}$"
+                    },
+                    "statement": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16000
+                    },
+                    "required": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "statement",
+                    "required"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "goal",
+              "scope",
+              "outOfScope",
+              "constraints",
+              "assumptions",
+              "openQuestions",
+              "requirements"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "rules"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "rules": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 200,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^C[0-9]{1,3}$"
+                    },
+                    "statement": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16000
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "covers": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 200,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^R[0-9]{1,3}$"
+                      }
+                    },
+                    "method": {
+                      "enum": [
+                        "agent",
+                        "human"
+                      ]
+                    },
+                    "evidence": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16000
+                    },
+                    "passCondition": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16000
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "statement",
+                    "required",
+                    "covers",
+                    "method",
+                    "evidence",
+                    "passCondition"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "rules"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "plan"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "type": "object",
+            "required": [
+              "tasks",
+              "rationale"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "rationale": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "taskId",
+                    "title",
+                    "purpose",
+                    "required",
+                    "definitionRef",
+                    "runtimeKind",
+                    "coversCriteria",
+                    "dependsOn",
+                    "outputs",
+                    "acceptance",
+                    "executionMode"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "taskId": {
+                      "type": "string",
+                      "pattern": "^t-[a-z0-9-]{1,40}$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "purpose": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2000
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "definitionRef": {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9-]{1,62}@[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    },
+                    "runtimeKind": {
+                      "enum": [
+                        "codex",
+                        "claude-code",
+                        "pi"
+                      ]
+                    },
+                    "coversCriteria": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^C[0-9]{1,3}$"
+                      },
+                      "maxItems": 20
+                    },
+                    "dependsOn": {
+                      "type": "array",
+                      "maxItems": 10,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "taskId",
+                          "artifact",
+                          "purpose"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "taskId": {
+                            "type": "string",
+                            "pattern": "^t-[a-z0-9-]{1,40}$"
+                          },
+                          "artifact": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "purpose": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        }
+                      }
+                    },
+                    "outputs": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "path",
+                          "mediaType",
+                          "required"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_./-]{0,159}$"
+                          },
+                          "mediaType": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 100
+                          },
+                          "schemaRef": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9-]*@[0-9]+$"
+                          },
+                          "required": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "acceptance": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 12,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500
+                      }
+                    },
+                    "parallelReason": {
+                      "type": "string",
+                      "maxLength": 500
+                    },
+                    "executionMode": {
+                      "enum": [
+                        "runtime-native",
+                        "contract-governed"
+                      ]
+                    },
+                    "linkedSessionId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "effort": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 100
+                    }
+                  }
+                }
+              },
+              "evaluators": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "task",
+                  "project"
+                ],
+                "properties": {
+                  "task": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "definitionRef",
+                      "runtimeKind"
+                    ],
+                    "properties": {
+                      "definitionRef": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "runtimeKind": {
+                        "enum": [
+                          "codex",
+                          "claude-code",
+                          "pi"
+                        ]
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "effort": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  "project": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "definitionRef",
+                      "runtimeKind"
+                    ],
+                    "properties": {
+                      "definitionRef": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "runtimeKind": {
+                        "enum": [
+                          "codex",
+                          "claude-code",
+                          "pi"
+                        ]
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "effort": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              },
+              "repairLineage": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "target",
+                    "predecessors"
+                  ],
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "taskId",
+                        "ruleId"
+                      ],
+                      "properties": {
+                        "taskId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "ruleId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    "predecessors": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "taskId",
+                          "ruleId"
+                        ],
+                        "properties": {
+                          "taskId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "ruleId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/render-manifest.schema.json",
+  "title": "RenderManifest",
+  "description": "render-manifest@1（v2.6）：宿主浏览器渲染与几何检查的结果（@pi-agent/render-check 产出）。截图字节另存，这里只记哈希；HTML 哈希变了，清单与截图一并失效。",
+  "type": "object",
+  "required": ["version", "htmlHash", "renderedAt", "environment", "fonts", "slides", "blockedRequests", "geometry", "options"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "render-manifest@1" },
+    "htmlHash": { "$ref": "#/$defs/hash" },
+    "renderedAt": { "type": "string", "format": "date-time" },
+    "environment": {
+      "type": "object",
+      "required": ["browser", "browserVersion", "playwright", "platform", "viewport", "deviceScaleFactor"],
+      "additionalProperties": false,
+      "properties": {
+        "browser": { "const": "chromium-headless-shell" },
+        "browserVersion": { "type": "string" },
+        "playwright": { "type": "string" },
+        "platform": { "type": "string" },
+        "viewport": { "$ref": "#/$defs/size" },
+        "deviceScaleFactor": { "const": 1 }
+      }
+    },
+    "fonts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["familyName", "isCustomFont", "glyphCount"],
+        "additionalProperties": false,
+        "properties": {
+          "familyName": { "type": "string" },
+          "postScriptName": { "type": "string" },
+          "isCustomFont": { "type": "boolean" },
+          "glyphCount": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slideId", "screenshotHash", "width", "height"],
+        "additionalProperties": false,
+        "properties": {
+          "slideId": { "type": "string" },
+          "screenshotHash": { "$ref": "#/$defs/hash" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        }
+      }
+    },
+    "blockedRequests": { "type": "array", "items": { "type": "string" } },
+    "geometry": {
+      "type": "object",
+      "required": ["status", "issues"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["passed", "failed", "inconclusive", "not_run"] },
+        "reason": { "type": "string" },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["slideId", "code", "measured", "expected"],
+            "additionalProperties": false,
+            "properties": {
+              "slideId": { "type": "string" },
+              "elementId": { "type": "string" },
+              "code": { "enum": ["no-slides", "slide-size", "out-of-canvas", "outside-safe-area", "text-overflow", "font-too-small", "overlap", "hidden-content", "unaddressed-text", "external-request", "script-present", "duplicate-id", "low-contrast"] },
+              "measured": { "type": "string" },
+              "expected": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "required": ["canvas", "safeMarginPx", "minFontPx"],
+      "additionalProperties": false,
+      "properties": {
+        "canvas": { "$ref": "#/$defs/size" },
+        "safeMarginPx": { "type": "number", "minimum": 0 },
+        "minFontPx": { "type": "number", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "size": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": { "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 } }
+    }
+  }
+}

@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/presentation-html-brief.schema.json",
+  "title": "PresentationHtmlBrief",
+  "description": "HTML 演示稿（presentation-html-brief@2）：主题、观众、目的、语言；设计系统（视觉方向、画布、配色与字号、组件、版式密度、动效）；幻灯片与来源；输出设置。任务创建时由填充 Agent 与用户确定 brief、designSystem 与 output；slides 与 sources 在执行方交付后从本轮产物填充。平台据此渲染 HTML。",
+  "type": "object",
+  "required": ["version", "brief", "sources", "designSystem", "slides", "output"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "presentation-html-brief@2" },
+    "brief": {
+      "type": "object",
+      "required": ["topic", "audience", "objective", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "topic": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "language": { "enum": ["zh-CN", "en-US"] }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^S[1-9][0-9]*$" },
+          "label": { "type": "string", "minLength": 1 },
+          "content": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "designSystem": {
+      "type": "object",
+      "required": ["id", "direction", "canvas", "tokens", "components", "composition", "motion"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "direction": {
+          "type": "object",
+          "required": ["concept", "mood", "signatureMotif", "avoid"],
+          "additionalProperties": false,
+          "properties": {
+            "concept": { "type": "string", "description": "贯穿全篇的视觉概念，而非笼统的“高级感”" },
+            "mood": { "type": "string" },
+            "signatureMotif": { "type": "string", "description": "重复出现的识别元素，如页边竖线或章节编号" },
+            "avoid": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "canvas": {
+          "type": "object",
+          "required": ["width", "height", "columns", "safeMarginPx", "gutterPx"],
+          "additionalProperties": false,
+          "properties": {
+            "width": { "const": 1600 },
+            "height": { "const": 900 },
+            "columns": { "const": 12 },
+            "safeMarginPx": { "type": "integer", "minimum": 64, "maximum": 160 },
+            "gutterPx": { "type": "integer", "minimum": 16, "maximum": 48 }
+          }
+        },
+        "tokens": {
+          "type": "object",
+          "required": ["colors", "typography", "spacing"],
+          "additionalProperties": false,
+          "properties": {
+            "colors": {
+              "type": "object",
+              "required": ["background", "surface", "primaryText", "secondaryText", "accent", "border"],
+              "additionalProperties": false,
+              "properties": {
+                "background": { "$ref": "#/$defs/color" },
+                "surface": { "$ref": "#/$defs/color" },
+                "primaryText": { "$ref": "#/$defs/color" },
+                "secondaryText": { "$ref": "#/$defs/color" },
+                "accent": { "$ref": "#/$defs/color" },
+                "border": { "$ref": "#/$defs/color" }
+              }
+            },
+            "typography": {
+              "type": "object",
+              "required": ["fontStack", "displayPx", "titlePx", "bodyPx", "captionPx", "titleWeight"],
+              "additionalProperties": false,
+              "properties": {
+                "fontStack": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[\\p{L}\\p{N} ,.'\"_-]+$" },
+                "displayPx": { "type": "integer", "minimum": 64, "maximum": 120 },
+                "titlePx": { "type": "integer", "minimum": 42, "maximum": 72 },
+                "bodyPx": { "type": "integer", "minimum": 24, "maximum": 38 },
+                "captionPx": { "type": "integer", "minimum": 18, "maximum": 26 },
+                "titleWeight": { "type": "integer", "enum": [500, 600, 700, 800] }
+              }
+            },
+            "spacing": {
+              "type": "object",
+              "required": ["baseUnitPx", "cardRadiusPx"],
+              "additionalProperties": false,
+              "properties": {
+                "baseUnitPx": { "const": 8 },
+                "cardRadiusPx": { "type": "integer", "enum": [0, 8, 16, 24] }
+              }
+            }
+          }
+        },
+        "components": {
+          "type": "object",
+          "required": ["cardStyle", "chartStyle", "iconStyle"],
+          "additionalProperties": false,
+          "properties": {
+            "cardStyle": { "enum": ["flat", "outlined", "soft-fill"] },
+            "chartStyle": { "enum": ["direct-label", "minimal-axis"] },
+            "iconStyle": { "enum": ["none", "line", "solid"] }
+          }
+        },
+        "composition": {
+          "type": "object",
+          "required": ["density", "maxTitleChars", "maxBullets", "maxBulletChars", "maxConsecutiveSameLayout"],
+          "additionalProperties": false,
+          "properties": {
+            "density": { "enum": ["low", "medium"] },
+            "maxTitleChars": { "type": "integer", "minimum": 12, "maximum": 50 },
+            "maxBullets": { "type": "integer", "minimum": 2, "maximum": 6 },
+            "maxBulletChars": { "type": "integer", "minimum": 15, "maximum": 70 },
+            "maxConsecutiveSameLayout": { "type": "integer", "minimum": 1, "maximum": 3 }
+          }
+        },
+        "motion": {
+          "type": "object",
+          "required": ["level", "durationMs"],
+          "additionalProperties": false,
+          "properties": {
+            "level": { "enum": ["none", "subtle"] },
+            "durationMs": { "type": "integer", "minimum": 0, "maximum": 600 }
+          }
+        }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "required": ["id", "role", "purpose", "requiredPoints", "layout", "sourceIds"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "role": { "enum": ["cover", "context", "argument", "data", "comparison", "process", "conclusion"] },
+          "purpose": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" },
+          "requiredPoints": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "layout": { "enum": ["auto", "hero", "split", "cards", "chart", "timeline", "comparison"] },
+          "visual": {
+            "type": "object",
+            "required": ["type", "instruction"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "enum": ["none", "chart", "diagram", "illustration"] },
+              "instruction": { "type": "string" },
+              "chartType": { "enum": ["bar", "line", "donut"] },
+              "unit": { "type": "string" },
+              "dataPoints": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["label", "value"],
+                  "additionalProperties": false,
+                  "properties": { "label": { "type": "string" }, "value": { "type": "number" } }
+                }
+              }
+            }
+          },
+          "sourceIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^S[1-9][0-9]*$" } },
+          "speakerNotes": { "type": "string" }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["fileName", "printable", "showProgress", "showSpeakerNotes"],
+      "additionalProperties": false,
+      "properties": {
+        "fileName": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+\\.html$" },
+        "printable": { "type": "boolean" },
+        "showProgress": { "type": "boolean" },
+        "showSpeakerNotes": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+  }
+}

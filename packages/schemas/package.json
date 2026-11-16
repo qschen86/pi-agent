@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "name": "@pi-agent/schemas",
+  "version": "0.1.0",
+  "description": "JSON Schema 2020-12 定义、Ajv 校验器与 fixtures",
+  "dependencies": {}
+}

@@ -1,0 +1,78 @@
+{
+  "version": "presentation-html-brief@3",
+  "intent": {
+    "topic": {
+      "value": "香港 PayLater 市场格局",
+      "origin": "user_explicit",
+      "quote": "调研分析下香港paylater市场"
+    },
+    "audience": {
+      "value": "投资委员会",
+      "origin": "user_answer",
+      "quote": "给投委会看"
+    },
+    "objective": {
+      "value": "判断是否进入该赛道",
+      "origin": "default_confirmed"
+    },
+    "language": "zh-CN"
+  },
+  "constraints": {
+    "mustInclude": [
+      {
+        "id": "M1",
+        "statement": "主要玩家与市场份额",
+        "origin": "user_explicit",
+        "quote": "主要玩家/规模"
+      }
+    ],
+    "forbidden": [
+      {
+        "id": "F1",
+        "rule": "no-ugly",
+        "statement": "不要描边",
+        "origin": "user_explicit",
+        "quote": "不要描边"
+      },
+      {
+        "id": "F2",
+        "rule": "unsupported",
+        "statement": "加入 3D 旋转动画",
+        "origin": "user_explicit"
+      }
+    ],
+    "pages": {
+      "min": 6,
+      "max": 10,
+      "hard": false,
+      "origin": "default_confirmed"
+    },
+    "emphasis": [
+      {
+        "preference": "numbers-first",
+        "origin": "user_answer",
+        "quote": "数字更突出"
+      }
+    ]
+  },
+  "stylePackRef": "keynote-minimal@1",
+  "visualOverrides": {
+    "accent": "blue",
+    "theme": "alternate"
+  },
+  "designReferences": [
+    {
+      "url": "https://example.com/keynote-style",
+      "title": "发布会式排版",
+      "fetchedAt": "2026-09-29T10:00:00Z",
+      "reason": "大数字与留白的比例参考"
+    }
+  ],
+  "output": {
+    "fileName": "hk-paylater-deck.html",
+    "printable": true
+  },
+  "qualityPolicy": {
+    "autoRevisionRounds": 2
+  }
+}

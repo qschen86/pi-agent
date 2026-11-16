@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-record-v2.schema.json",
+  "title": "ProjectRecord v2",
+  "description": "V3.0 §12 / §15：通用项目记录（由项目事件折叠的投影，可重建）。与 V2.6 的 ProjectRecord version=1（报告 + 一个 PPT 子任务）分开注册，不改变 v1 语义。",
+  "type": "object",
+  "required": ["version", "projectId", "revision", "title", "brief", "state", "planRevision", "coordinator", "tasks", "createdAt", "updatedAt"],
+  "additionalProperties": true,
+  "properties": {
+    "version": { "const": 2 },
+    "projectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,80}$" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "brief": {
+      "type": "object",
+      "required": ["goal", "criteria"],
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "statement", "required", "origin"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^C[0-9]{1,3}$" },
+              "statement": { "type": "string", "minLength": 1 },
+              "required": { "type": "boolean" },
+              "origin": { "enum": ["user", "coordinator", "legacy"] }
+            }
+          }
+        }
+      }
+    },
+    "state": { "enum": ["DRAFT", "ACTIVE", "PAUSED", "REVIEWING", "COMPLETED", "CANCELLING", "CANCELLED", "ARCHIVED"] },
+    "planRevision": { "type": "integer", "minimum": 0 },
+    "coordinator": {
+      "type": "object",
+      "required": ["definitionRef", "epoch", "configRevision"],
+      "properties": {
+        "definitionRef": { "type": "string" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "configRevision": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["taskId", "executionMode", "required"],
+        "properties": {
+          "taskId": { "type": "string", "pattern": "^t-[a-z0-9-]{1,40}$" },
+          "executionMode": { "enum": ["runtime-native", "contract-governed"] },
+          "required": { "type": "boolean" }
+        }
+      }
+    },
+    "legacy": { "type": "object", "required": ["legacyProjectId"], "properties": { "legacyProjectId": { "type": "string" } } },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" }
+  }
+}

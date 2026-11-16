@@ -1,0 +1,20 @@
+{
+  "version": "presentation-html-brief@2",
+  "brief": { "topic": "市场调研简报", "audience": "产品团队", "objective": "呈现调研结论与建议", "language": "zh-CN" },
+  "sources": [{ "id": "S1", "label": "报告", "content": "结论来自已交付的调研报告" }],
+  "designSystem": {
+    "id": "research-brief",
+    "direction": { "concept": "每页一个调研结论", "mood": "清楚、克制", "signatureMotif": "左侧强调色竖线与右上页码", "avoid": ["大段文字"] },
+    "canvas": { "width": 1600, "height": 900, "columns": 12, "safeMarginPx": 96, "gutterPx": 24 },
+    "tokens": {
+      "colors": { "background": "#F7F6F2", "surface": "#FFFFFF", "primaryText": "#1B1B1A", "secondaryText": "#5E5D58", "accent": "#1F4ED8", "border": "#DAD7CE" },
+      "typography": { "fontStack": "PingFang SC, sans-serif", "displayPx": 88, "titlePx": 56, "bodyPx": 28, "captionPx": 20, "titleWeight": 700 },
+      "spacing": { "baseUnitPx": 8, "cardRadiusPx": 16 }
+    },
+    "components": { "cardStyle": "outlined", "chartStyle": "direct-label", "iconStyle": "line" },
+    "composition": { "density": "low", "maxTitleChars": 24, "maxBullets": 4, "maxBulletChars": 36, "maxConsecutiveSameLayout": 2 },
+    "motion": { "level": "subtle", "durationMs": 240 }
+  },
+  "slides": [{ "id": "cover", "role": "cover", "purpose": "市场调研简报", "requiredPoints": [], "layout": "hero", "sourceIds": ["S1"] }],
+  "output": { "fileName": "research-deck.html", "printable": true, "showProgress": true, "showSpeakerNotes": false }
+}

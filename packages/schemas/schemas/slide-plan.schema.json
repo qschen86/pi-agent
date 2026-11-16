@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/slide-plan.schema.json",
+  "title": "SlidePlan",
+  "type": "object",
+  "required": ["id", "intentId", "composition", "hierarchy", "primitives"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "intentId": { "type": "string", "minLength": 1 },
+    "composition": { "type": "string", "minLength": 1 },
+    "hierarchy": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "primitives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["text", "number", "chart", "table", "shape", "image-placeholder", "source", "connector"] },
+          "text": { "type": "string" },
+          "dataRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+          "role": { "type": "string" }
+        }
+      }
+    }
+  }
+}

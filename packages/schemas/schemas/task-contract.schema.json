@@ -1,0 +1,1048 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/task-contract.schema.json",
+  "title": "TaskContract",
+  "description": "AP-SCHEMA-002 §4：单次任务的目标、验收条件与授权。CONFIRMED 后 revision 不可变。",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "apiVersion": {
+      "const": "agent.platform/v1"
+    },
+    "kind": {
+      "const": "TaskContract"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "taskId",
+        "revision",
+        "status"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "DRAFT",
+            "CONFIRMED",
+            "CLOSED"
+          ]
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentRef": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,62}(@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*))?$"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "goal",
+        "acceptanceCriteria",
+        "authorization",
+        "delivery",
+        "verificationPlan"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "acceptanceCriteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "evaluator",
+              "expected"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {}
+            },
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^AC-?[0-9]{1,4}$"
+              },
+              "description": {
+                "type": "string"
+              },
+              "evaluator": {
+                "enum": [
+                  "composite",
+                  "human",
+                  "llm-judge",
+                  "rule",
+                  "semantic",
+                  "test"
+                ]
+              },
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rule": {
+                "$ref": "#/$defs/ruleSpec"
+              },
+              "required": {
+                "type": "boolean",
+                "default": true
+              },
+              "statement": {
+                "type": "string"
+              },
+              "requirementIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^R[0-9]{1,4}$"
+                },
+                "uniqueItems": true,
+                "description": "该条件覆盖的要求（v2.0 S1）；交付底线类条件不挂要求"
+              },
+              "agreementIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^AG[0-9]{1,4}$"
+                }
+              }
+            }
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {}
+            },
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sensitivity": {
+                "enum": [
+                  "public",
+                  "internal",
+                  "secret"
+                ]
+              }
+            }
+          }
+        },
+        "resources": {
+          "description": "v2.4：本次任务确认的资源选择。executionModel 是执行 Agent 本次使用的模型（平台模型目录里的 provider/model 与钉住的推理强度），参与合约摘要、确认与编译；不是需求派生投影。",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "executionModel": {
+              "type": "object",
+              "required": ["ref", "selectedBy"],
+              "additionalProperties": false,
+              "properties": {
+                "ref": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*$" },
+                "thinking": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+                "selectedBy": { "enum": ["default", "user"] }
+              }
+            }
+          }
+        },
+        "authorization": {
+          "type": "object",
+          "required": [
+            "filesystem",
+            "network"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "filesystem": {
+              "type": "object",
+              "required": [
+                "read",
+                "write"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "read": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/posixPath"
+                  }
+                },
+                "write": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/posixPath"
+                  }
+                }
+              }
+            },
+            "network": {
+              "type": "object",
+              "required": [
+                "default"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "default": {
+                  "enum": [
+                    "deny",
+                    "allow"
+                  ]
+                },
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "deny": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "budget": {
+              "$ref": "#/$defs/budget"
+            },
+            "commands": {
+              "type": "object",
+              "description": "受控命令执行：允许的可执行文件基名（argv[0]）。未声明 = 本层不授予任何命令执行（ADR-0802）",
+              "additionalProperties": false,
+              "required": [
+                "allow"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9._-]+$"
+                  }
+                }
+              }
+            },
+            "webResearch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sourceDomains"
+              ],
+              "description": "联网检索的来源范围（v1.8）：允许阅读哪些网页域名。\"*\" 表示开放来源，需显式声明；未声明即不授予。",
+              "properties": {
+                "sourceDomains": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(\\*|([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63})$"
+                  }
+                },
+                "budget": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "perRound",
+                    "total"
+                  ],
+                  "description": "平台核定的联网额度（v2.2）：单轮与任务累计上限；追加整改次数不追加额度",
+                  "properties": {
+                    "perRound": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "searches",
+                        "opens"
+                      ],
+                      "properties": {
+                        "searches": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 64
+                        },
+                        "opens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 64
+                        },
+                        "maxPageChars": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 40000
+                        },
+                        "maxTotalChars": {
+                          "type": "integer",
+                          "minimum": 1000,
+                          "maximum": 400000
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "searches",
+                        "opens"
+                      ],
+                      "properties": {
+                        "searches": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 256
+                        },
+                        "opens": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 256
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "forbidden": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "approvalPoints": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "deadline": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "allowExplicitDegrade": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "required": [
+            "artifacts"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "mediaType"
+                ],
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x-": {}
+                },
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/posixPath"
+                  },
+                  "mediaType": {
+                    "type": "string",
+                    "minLength": 3
+                  },
+                  "role": {
+                    "enum": [
+                      "primary",
+                      "attachment"
+                    ],
+                    "default": "primary"
+                  }
+                }
+              }
+            },
+            "evidenceRequired": {
+              "type": "boolean"
+            },
+            "receiverRole": {
+              "type": "string"
+            }
+          }
+        },
+        "verificationPlan": {
+          "type": "object",
+          "required": [
+            "criteria"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "criteria": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "criterionId",
+                  "evaluatorRef"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "criterionId": {
+                    "type": "string",
+                    "pattern": "^AC-?[0-9]{1,4}$"
+                  },
+                  "evaluatorRef": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "evaluatorVersion": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            },
+            "reviewMode": {
+              "enum": [
+                "AUTO",
+                "REVIEW",
+                "DUAL"
+              ]
+            }
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "description": "用户原始需求（USER_REQUIREMENT），不得与 Agent 推断混存",
+          "items": {
+            "type": "object",
+            "required": [
+              "statement",
+              "source"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "enum": [
+                  "user",
+                  "agent"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^R[0-9]{1,4}$",
+                "description": "要求编号（v2.0 S1）：验收条件经 requirementIds 指向它"
+              },
+              "sourceRefs": {
+                "type": "array",
+                "description": "原文依据（v2.0 S2）：偏移按 UTF-16，平台保证 input.slice(start,end) === quote",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "start",
+                    "end",
+                    "quote"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "start": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "end": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "quote": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "obligation": {
+                "enum": [
+                  "must",
+                  "should",
+                  "optional"
+                ]
+              },
+              "kind": {
+                "enum": [
+                  "content",
+                  "format",
+                  "constraint"
+                ]
+              },
+              "origin": {
+                "enum": [
+                  "user_explicit",
+                  "user_answer",
+                  "context",
+                  "inference",
+                  "suggestion",
+                  "default"
+                ],
+                "description": "要求来源（v2.0 S3）：用户明说、澄清回答、上下文、推断、建议、默认值"
+              },
+              "decision": {
+                "enum": [
+                  "accepted",
+                  "proposed",
+                  "rejected"
+                ],
+                "description": "用户的采纳决定；只有 accepted 能进入必须项"
+              },
+              "rationale": {
+                "type": "string",
+                "description": "推断、建议、默认值的理由"
+              }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "description": "Agent 推断（ASSUMPTION），必须与用户需求分开保存并可追溯",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "statement",
+              "source"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^AS-[0-9]{1,4}$"
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "enum": [
+                  "user",
+                  "agent"
+                ]
+              }
+            }
+          }
+        },
+        "researchBrief": {
+          "type": "object",
+          "description": "调研需求（v2.1，research-brief@1）：调研类合约由它生成要求与验收条件；结构由语义校验按 research-brief schema 检查"
+        },
+        "researchBriefHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "调研需求的规范化哈希（平台计算）；调研报告须引用同一哈希"
+        },
+        "acceptanceAgreements": {
+          "type": "array",
+          "description": "自然语言验收约定（v2.0 S3）：怎样算满足、怎样算不满足、需要什么证据",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "requirementIds",
+              "evaluatorKind",
+              "passGuidance",
+              "failGuidance"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^AG[0-9]{1,4}$"
+              },
+              "requirementIds": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^R[0-9]{1,4}$"
+                }
+              },
+              "evaluatorKind": {
+                "enum": [
+                  "deterministic",
+                  "behavioral",
+                  "semantic",
+                  "human"
+                ]
+              },
+              "target": {
+                "type": "string"
+              },
+              "evidenceNeeded": {
+                "type": "string"
+              },
+              "passGuidance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "failGuidance": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inconclusiveHandling": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "requirement": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "v2.2：本次任务的详细需求（唯一权威版本）。旧字段 requirements/acceptanceAgreements/acceptanceCriteria/delivery/verificationPlan 是由它按钉住的派生器生成的投影",
+          "required": [
+            "schemaRef",
+            "schemaDigest",
+            "payload",
+            "payloadHash",
+            "derivation"
+          ],
+          "properties": {
+            "schemaRef": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*@[0-9]+$"
+            },
+            "schemaDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "payload": {
+              "type": "object",
+              "description": "符合 schemaRef 的需求实例；结构由语义校验按注册的 schema 检查"
+            },
+            "payloadHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "derivation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "projectionHash"
+              ],
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9-]*@[0-9]+$"
+                },
+                "projectionHash": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        },
+        "originalRecord": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "messages",
+            "snapshotHash"
+          ],
+          "description": "v2.2：形成需求所用的原始消息，逐字、按序、不可改写",
+          "properties": {
+            "messages": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "role",
+                  "timestamp",
+                  "text",
+                  "contentHash"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "role": {
+                    "enum": [
+                      "user",
+                      "assistant"
+                    ]
+                  },
+                  "timestamp": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "contentHash": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                }
+              }
+            },
+            "snapshotHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "acceptanceStandards": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "basedOnRequirementHash",
+            "items",
+            "standardsHash"
+          ],
+          "description": "v2.2：基于锁定需求形成、用户确认的验收标准（权威版本）；约定与语义条件由它派生",
+          "properties": {
+            "basedOnRequirementHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "standardsHash": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "confirmationRef": {
+              "type": "string"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "requirementRefs",
+                  "evaluatorKind",
+                  "evidenceNeeded",
+                  "passGuidance",
+                  "failGuidance",
+                  "inconclusiveHandling",
+                  "source"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^AS[0-9]{1,4}$"
+                  },
+                  "requirementRefs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "evaluatorKind": {
+                    "enum": [
+                      "semantic",
+                      "human"
+                    ]
+                  },
+                  "evidenceNeeded": {
+                    "type": "string"
+                  },
+                  "passGuidance": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "failGuidance": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "inconclusiveHandling": {
+                    "enum": [
+                      "human_review"
+                    ]
+                  },
+                  "source": {
+                    "enum": [
+                      "agent",
+                      "baseline"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "reworkPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "humanEscalationAfterFailures"
+          ],
+          "description": "v2.2：连续失败 N 个交付版本后暂停自动整改、问询用户",
+          "properties": {
+            "humanEscalationAfterFailures": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "posixPath": {
+      "type": "string",
+      "pattern": "^/[^\u0000-\u001f]*$",
+      "minLength": 1
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wallTimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ruleSpec": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "artifactContains",
+                  "artifactRegex",
+                  "artifactSection"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "value"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "threshold"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "operator": {},
+              "threshold": {}
+            },
+            "required": [
+              "operator",
+              "threshold"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "artifactContains",
+            "artifactRegex",
+            "testReportPass",
+            "threshold",
+            "workspaceClean",
+            "artifactSection",
+            "artifactWellFormed",
+            "citationsVerified",
+            "humanJudgement",
+            "deliverableSpec",
+            "semanticAgreement",
+            "researchChecks",
+            "presentationChecks",
+            "presentationReview"
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "operator": {
+          "enum": [
+            "gte",
+            "lte",
+            "eq"
+          ]
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "pathPrefix": {
+          "type": "string"
+        },
+        "minChars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "minSources": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "description": "citationsVerified：交付物至少引用几个本会话实际读过的来源（v1.8）"
+        },
+        "spec": {
+          "type": "string",
+          "pattern": "^[a-z]+\\.[a-z]+@[0-9]+$"
+        },
+        "specParams": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "jsonSchema": {
+              "type": "object"
+            },
+            "requiredColumns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "agreementId": {
+          "type": "string",
+          "pattern": "^AG[0-9]{1,4}$"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,194 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "jobId",
+    "projectId",
+    "input",
+    "results",
+    "integration"
+  ],
+  "properties": {
+    "version": {
+      "const": "project-evaluation@1"
+    },
+    "jobId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirementsHash",
+        "rulesHash",
+        "planHash",
+        "candidateHash",
+        "planRevision"
+      ],
+      "properties": {
+        "requirementsHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rulesHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidateHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "feedbackId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ruleId",
+          "result",
+          "detail",
+          "evidence"
+        ],
+        "properties": {
+          "ruleId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "INCONCLUSIVE",
+              "NOT_RUN"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "taskId",
+                "manifestHash",
+                "file",
+                "location",
+                "observation"
+              ],
+              "properties": {
+                "taskId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "manifestHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "location": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "observation": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "detail",
+        "evidence"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "INCONCLUSIVE",
+            "NOT_RUN"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "manifestHash",
+              "file",
+              "location",
+              "observation"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "manifestHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observation": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-evaluation.schema.json",
+  "title": "project-evaluation@1"
+}

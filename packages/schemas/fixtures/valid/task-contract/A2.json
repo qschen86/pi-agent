@@ -1,0 +1,105 @@
+{
+  "apiVersion": "agent.platform/v1",
+  "kind": "TaskContract",
+  "metadata": {
+    "taskId": "task-2026-002",
+    "revision": 1,
+    "status": "CONFIRMED",
+    "createdBy": "owner-1",
+    "agentRef": "research-expert"
+  },
+  "spec": {
+    "goal": "产出带证据的技术调研报告",
+    "acceptanceCriteria": [
+      {
+        "id": "AC-01",
+        "description": "报告包含结论段",
+        "evaluator": "rule",
+        "expected": "contains 结论",
+        "rule": {
+          "kind": "artifactContains",
+          "value": "结论"
+        },
+        "required": true
+      },
+      {
+        "id": "AC-02",
+        "description": "模拟测试通过",
+        "evaluator": "test",
+        "expected": "golden=100%",
+        "rule": {
+          "kind": "testReportPass"
+        },
+        "required": true
+      }
+    ],
+    "inputs": [
+      {
+        "name": "需求文档",
+        "ref": "/workspace/in/brief.md",
+        "sensitivity": "internal"
+      }
+    ],
+    "authorization": {
+      "filesystem": {
+        "read": [
+          "/workspace/in",
+          "/workspace/out"
+        ],
+        "write": [
+          "/workspace/out"
+        ]
+      },
+      "network": {
+        "default": "deny",
+        "allow": []
+      },
+      "tools": {
+        "allow": [
+          "fs.read",
+          "fs.write",
+          "test.run"
+        ]
+      },
+      "budget": {
+        "tokens": 200000,
+        "wallTimeMs": 7200000,
+        "toolCalls": 500
+      }
+    },
+    "constraints": {
+      "forbidden": [
+        "生产写入"
+      ],
+      "allowExplicitDegrade": false
+    },
+    "delivery": {
+      "artifacts": [
+        {
+          "path": "/workspace/out/report.md",
+          "mediaType": "text/markdown",
+          "role": "primary"
+        }
+      ],
+      "evidenceRequired": true,
+      "receiverRole": "Owner"
+    },
+    "verificationPlan": {
+      "criteria": [
+        {
+          "criterionId": "AC-01",
+          "evaluatorRef": "rule.artifactContains",
+          "evaluatorVersion": "1.0.0",
+          "required": true
+        },
+        {
+          "criterionId": "AC-02",
+          "evaluatorRef": "test.report",
+          "evaluatorVersion": "1.0.0",
+          "required": true
+        }
+      ],
+      "reviewMode": "AUTO"
+    }
+  }
+}

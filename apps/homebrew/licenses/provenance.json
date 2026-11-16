@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "file": "Pi-1.2.0-LICENSE",
+      "source": "https://raw.githubusercontent.com/earendil-works/pi/v1.2.0/LICENSE",
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+    },
+    {
+      "file": "http_ece-LICENSE",
+      "source": "https://raw.githubusercontent.com/martinthomson/encrypted-content-encoding/v1.2.0/LICENSE",
+      "sha256": "717363ac0c7f0883042868db171cfed1f4b423119249eac9bce5131291017ea8"
+    },
+    {
+      "file": "standardwebhooks-LICENSE",
+      "source": "https://api.github.com/repos/standard-webhooks/standard-webhooks/git/blobs/55b14b3a3ce649a2f1b05428dcc9c6db95b37c04",
+      "sha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27"
+    },
+    {
+      "file": "proxy-agent-negotiate-LICENSE",
+      "source": "https://github.com/TooTallNate/proxy-agents/blob/main/packages/proxy-agent/LICENSE",
+      "sha256": "8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a"
+    },
+    {
+      "file": "data-uri-to-buffer-LICENSE",
+      "source": "https://github.com/TooTallNate/proxy-agents/blob/main/packages/data-uri-to-buffer/LICENSE",
+      "sha256": "29308c08926e2139ce2c6dc389fc7d6ac801927df4941c19fa92de4a8b18da12"
+    },
+    {
+      "file": "aws-sdk-LICENSE",
+      "source": "https://github.com/aws/aws-sdk-js-v3/blob/main/LICENSE",
+      "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+    },
+    {
+      "file": "lobe-icons-LICENSE",
+      "source": "https://github.com/lobehub/lobe-icons/blob/master/LICENSE",
+      "sha256": "add9d7531d1b21646317a8958e38fc727506fa39d24bdecb44154d943c82753a"
+    },
+    {
+      "file": "sharp-libvips-1.2.4-NOTICES.md",
+      "source": "https://github.com/lovell/sharp-libvips/blob/v1.2.4/THIRD-PARTY-NOTICES.md",
+      "sha256": "3f416978dd2448ddab0d413d333c45fb208acdc066c280b95ebcb2f8b9f34ab9"
+    },
+    {
+      "file": "LGPL-3.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/v3.26.0/text/LGPL-3.0-or-later.txt",
+      "sha256": "996af0513df21f7496288951c41428a03c174e9e4a9d63665c57d670f845ccb1"
+    },
+    {
+      "file": "GPL-3.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/v3.26.0/text/GPL-3.0-or-later.txt",
+      "sha256": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0"
+    },
+    {
+      "file": "MPL-2.0.txt",
+      "source": "https://github.com/spdx/license-list-data/blob/v3.26.0/text/MPL-2.0.txt",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+    }
+  ]
+}

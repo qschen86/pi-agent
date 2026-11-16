@@ -1,0 +1,33 @@
+{
+  "schema": "project-event@2",
+  "eventId": "ev-exampleone",
+  "projectId": "prj-example",
+  "type": "TaskAccepted",
+  "aggregateVersion": 8,
+  "at": "2026-10-02T00:00:00Z",
+  "actor": {
+    "kind": "host"
+  },
+  "payload": {
+    "taskId": "t-report",
+    "acceptance": {
+      "acceptanceId": "acc-example",
+      "taskId": "t-report",
+      "deliveryRevision": 1,
+      "manifestHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "decision": "ACCEPT",
+      "signer": {
+        "role": "harness",
+        "evaluationJobId": "eval-example",
+        "reportHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "reportRef": "/snapshots/evaluation.json",
+        "verificationRecordIds": [
+          "vr-machine",
+          "vr-agent"
+        ],
+        "userId": "forged"
+      },
+      "decidedAt": "2026-10-02T00:00:00Z"
+    }
+  }
+}

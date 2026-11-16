@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "name": "@pi-agent/runtime-contracts",
+  "version": "0.1.0",
+  "description": "运行时共享契约：执行边界守卫、联网检索记录",
+  "dependencies": {}
+}

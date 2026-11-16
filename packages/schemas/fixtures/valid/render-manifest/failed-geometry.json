@@ -1,0 +1,53 @@
+{
+  "version": "render-manifest@1",
+  "htmlHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "renderedAt": "2026-09-29T10:00:00Z",
+  "environment": {
+    "browser": "chromium-headless-shell",
+    "browserVersion": "153.0.8010.12",
+    "playwright": "1.63.0",
+    "platform": "darwin 25.6.0",
+    "viewport": {
+      "width": 1600,
+      "height": 900
+    },
+    "deviceScaleFactor": 1
+  },
+  "fonts": [
+    {
+      "familyName": "PingFang SC",
+      "postScriptName": "PingFangSC-Semibold",
+      "isCustomFont": false,
+      "glyphCount": 120
+    }
+  ],
+  "slides": [
+    {
+      "slideId": "cover",
+      "screenshotHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "width": 1600,
+      "height": 900
+    }
+  ],
+  "blockedRequests": [],
+  "geometry": {
+    "status": "failed",
+    "issues": [
+      {
+        "slideId": "cover",
+        "elementId": "title",
+        "code": "outside-safe-area",
+        "measured": "左 40px",
+        "expected": "四周至少留 80px"
+      }
+    ]
+  },
+  "options": {
+    "canvas": {
+      "width": 1600,
+      "height": 900
+    },
+    "safeMarginPx": 80,
+    "minFontPx": 20
+  }
+}

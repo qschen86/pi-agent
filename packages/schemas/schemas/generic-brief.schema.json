@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/generic-brief.schema.json",
+  "title": "GenericBrief",
+  "description": "v2.2 通用需求规格（generic-brief@1）：承接非调研类任务。每条要求带来源、原文依据、义务、类别与验收说明；补充项的采纳决定由用户作出。合约的要求、约定与验收条件由它按 generic-derive@1 派生。",
+  "type": "object",
+  "required": ["version", "input", "requirements", "decisions"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "generic-brief@1" },
+    "input": { "description": "用户原文（派生交付物与限制时以它为准）", "type": "string", "minLength": 1 },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["statement", "origin", "sourceRefs", "obligation", "kind", "acceptance"],
+        "additionalProperties": false,
+        "properties": {
+          "statement": { "type": "string", "minLength": 1 },
+          "origin": { "description": "v2.5 起可为 user_answer：用户在后续对话里说的，sourceRefs 相对于 answerRef 那一轮的话", "enum": ["user_explicit", "user_answer", "inference", "suggestion", "default"] },
+          "answerRef": { "description": "user_answer 的来源轮次（原始记录里的 <answerRef>.user 消息）", "type": "string" },
+          "quote": { "type": "string" },
+          "sourceRefs": {
+            "type": "array",
+            "items": {
+              "type": "object", "required": ["start", "end", "quote"], "additionalProperties": false,
+              "properties": { "start": { "type": "integer", "minimum": 0 }, "end": { "type": "integer", "minimum": 0 }, "quote": { "type": "string", "minLength": 1 } }
+            }
+          },
+          "obligation": { "enum": ["must", "should", "optional"] },
+          "kind": { "enum": ["content", "format", "constraint"] },
+          "subjective": { "type": "boolean" },
+          "rationale": { "type": "string" },
+          "impact": { "enum": ["low", "material"] },
+          "acceptance": {
+            "type": "object", "required": ["evidenceNeeded", "passGuidance", "failGuidance"], "additionalProperties": false,
+            "properties": { "evidenceNeeded": { "type": "string" }, "passGuidance": { "type": "string", "minLength": 1 }, "failGuidance": { "type": "string", "minLength": 1 } }
+          }
+        }
+      }
+    },
+    "decisions": {
+      "description": "用户对补充项的决定：按要求序号，采纳为必须 / 作为参考 / 不采纳",
+      "type": "object",
+      "patternProperties": { "^[0-9]+$": { "enum": ["accepted", "reference", "rejected"] } },
+      "additionalProperties": false
+    },
+    "webCitations": { "description": "执行方会联网：派生时加上引用核对条件", "type": "boolean" }
+  }
+}

@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/workflow-definition.schema.json",
+  "title": "WorkflowDefinition",
+  "description": "AP-SCHEMA-002 §2：确定性 SOP 工作流的版本与副作用声明。发布后不可变，revision 必须固定。",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "apiVersion": {
+      "const": "agent.platform/v1"
+    },
+    "kind": {
+      "const": "WorkflowDefinition"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "workflowId",
+        "version",
+        "status"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "workflowId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.-]{1,62}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+        },
+        "status": {
+          "enum": [
+            "DRAFT",
+            "PUBLISHED",
+            "RETIRED"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "name",
+        "steps"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requires": {
+          "type": "array",
+          "description": "依赖的其他 workflow 精确 pin，用于循环检测",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9.-]{1,62}@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "type"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {}
+            },
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,62}$"
+              },
+              "type": {
+                "enum": [
+                  "tool",
+                  "approval",
+                  "notify",
+                  "n8n"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sideEffects": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "resource",
+                    "action"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "resource": {
+                      "enum": [
+                        "filesystem",
+                        "network",
+                        "command",
+                        "credential",
+                        "tool",
+                        "budget"
+                      ]
+                    },
+                    "action": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "sideEffectDeclarations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "resource",
+              "action"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "resource": {
+                "enum": [
+                  "filesystem",
+                  "network",
+                  "command",
+                  "credential",
+                  "tool",
+                  "budget"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "n8n": {
+          "type": "object",
+          "description": "n8n 运行时绑定（AP-N8N-006 §2）：精确 pin、IO 契约、幂等、回调与补偿",
+          "additionalProperties": false,
+          "required": [
+            "workflowRef",
+            "revision",
+            "sideEffectClass"
+          ],
+          "properties": {
+            "workflowRef": {
+              "type": "string",
+              "minLength": 1,
+              "description": "n8n 侧 workflow 标识"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "精确 pin 的 n8n revision（ADR-502）"
+            },
+            "inputSchema": {
+              "type": "object",
+              "description": "入参 JSON Schema（边界双向校验）"
+            },
+            "outputSchema": {
+              "type": "object",
+              "description": "产物 JSON Schema（边界双向校验）"
+            },
+            "sideEffectClass": {
+              "enum": [
+                "NONE",
+                "REVERSIBLE",
+                "IRREVERSIBLE"
+              ],
+              "description": "决定审批与重试策略"
+            },
+            "idempotency": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "keyExpression",
+                "ttlMs"
+              ],
+              "properties": {
+                "keyExpression": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ttlMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "retry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxAttempts"
+              ],
+              "properties": {
+                "maxAttempts": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "backoffMs": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "jitterMs": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "callback": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "enum": [
+                    "async",
+                    "sync"
+                  ]
+                },
+                "replayWindowMs": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "evidenceMap": {
+              "type": "object",
+              "description": "节点输出字段 → 证据类型"
+            },
+            "compensationRef": {
+              "type": "string",
+              "minLength": 1,
+              "description": "补偿 workflow 精确 pin"
+            }
+          }
+        }
+      }
+    }
+  }
+}

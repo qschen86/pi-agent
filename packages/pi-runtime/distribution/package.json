@@ -1,0 +1,11 @@
+{
+  "name": "pi-runtime-distribution",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@gotgenes/pi-permission-system": "40.2.2",
+    "@playwright/mcp": "0.0.83",
+    "pi-hermes-memory": "0.9.10"
+  },
+  "type": "module"
+}

@@ -1,0 +1,40 @@
+{
+  "apiVersion": "agent.platform/v1",
+  "kind": "WorkflowDefinition",
+  "metadata": {
+    "workflowId": "omega.flow",
+    "version": "3.2.1",
+    "status": "PUBLISHED",
+    "owner": "owner-1"
+  },
+  "spec": {
+    "name": "报告发布流水线",
+    "requires": [
+      "omega.flow@3.2.1"
+    ],
+    "steps": [
+      {
+        "id": "render",
+        "type": "tool",
+        "ref": "fs.write",
+        "sideEffects": [
+          {
+            "resource": "filesystem",
+            "action": "write"
+          }
+        ]
+      },
+      {
+        "id": "notify",
+        "type": "notify",
+        "ref": "notify.send@1.0.0"
+      }
+    ],
+    "sideEffectDeclarations": [
+      {
+        "resource": "filesystem",
+        "action": "write"
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "name": "@pi-agent/adapter-pi",
+  "version": "0.1.0",
+  "description": "Pi 运行环境、OS 沙箱与执行边界",
+  "dependencies": {
+    "@pi-agent/domain": "*",
+    "@pi-agent/runtime-contracts": "*"
+  }
+}

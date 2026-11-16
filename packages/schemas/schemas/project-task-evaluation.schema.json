@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-task-evaluation.schema.json",
+  "title": "project-task-evaluation@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "projectId",
+    "taskId",
+    "jobId",
+    "input",
+    "overall",
+    "results"
+  ],
+  "properties": {
+    "version": {
+      "const": "project-task-evaluation@1"
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "jobId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirementsRevision",
+        "rulesRevision",
+        "planRevision",
+        "deliveryRevision",
+        "requirementHash",
+        "manifestHash"
+      ],
+      "properties": {
+        "requirementsRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rulesRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requirementHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "feedbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dependenciesHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "baselineRecheckHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "overall": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "INCONCLUSIVE",
+        "NOT_RUN"
+      ]
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "criterionId",
+          "result",
+          "detail",
+          "evidence"
+        ],
+        "properties": {
+          "criterionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "INCONCLUSIVE",
+              "NOT_RUN"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "file",
+                "location",
+                "observation"
+              ],
+              "properties": {
+                "file": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "location": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "observation": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "maxItems": 100
+          }
+        }
+      },
+      "maxItems": 2000
+    },
+    "dependencyChecks": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/dependencyCheck"
+      }
+    }
+  },
+  "$defs": {
+    "dependencyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "deliveryRevision",
+        "manifestHash",
+        "acceptanceId",
+        "result",
+        "detail",
+        "evidence"
+      ],
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "acceptanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_RUN",
+            "INCONCLUSIVE"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "location",
+              "observation",
+              "taskId"
+            ],
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observation": {
+                "type": "string",
+                "minLength": 1
+              },
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "maxItems": 100
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/slide-intent.schema.json",
+  "title": "SlideIntent",
+  "type": "object",
+  "required": ["id", "claimRef", "relationship", "emphasis"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "claimRef": { "type": "string", "minLength": 1 },
+    "relationship": { "type": "string", "minLength": 1 },
+    "emphasis": { "type": "string", "minLength": 1 },
+    "speakerNote": { "type": "string" }
+  }
+}

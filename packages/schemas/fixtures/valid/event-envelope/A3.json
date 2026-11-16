@@ -1,0 +1,26 @@
+{
+  "eventId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+  "eventType": "PolicyDecided",
+  "schemaVersion": 1,
+  "occurredAt": "2026-09-21T08:00:00.000Z",
+  "tenantId": "self",
+  "sessionId": "s-3",
+  "attemptId": "att-1",
+  "aggregateVersion": 5,
+  "actor": {
+    "type": "user",
+    "id": "owner-1"
+  },
+  "correlationId": "corr-1",
+  "causationId": "evt-0",
+  "idempotencyKey": "s-3:confirm:1",
+  "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "payload": {
+    "effect": "ALLOW",
+    "resource": {
+      "type": "filesystem",
+      "path": "/workspace/out/report.md"
+    }
+  },
+  "payloadHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}

@@ -1,0 +1,13 @@
+{
+  "acceptanceId": "acc_cdcdcdcdcdcdcdcd",
+  "sessionId": "s-1",
+  "deliveryRevision": 1,
+  "decision": "SURE_WHATEVER",
+  "findings": [],
+  "signer": {
+    "userId": "owner-1",
+    "role": "Owner"
+  },
+  "decidedAt": "2026-09-21T09:00:00.000Z",
+  "sourcePlanHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

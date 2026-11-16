@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-handoff.schema.json",
+  "title": "project-handoff@1",
+  "description": "V3.0 §7.1：把上游已接受成果交给下游。事实来源是固定的成果快照；摘要只帮助理解，不能替代。",
+  "type": "object",
+  "required": ["version", "handoffId", "projectId", "projectRevision", "planRevision", "upstream", "downstreamTaskId", "purpose", "files", "limitations", "openIssues", "readScope", "createdEvent"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "project-handoff@1" },
+    "handoffId": { "type": "string", "minLength": 3 },
+    "projectId": { "type": "string", "minLength": 3 },
+    "projectRevision": { "type": "integer", "minimum": 0 },
+    "planRevision": { "type": "integer", "minimum": 1 },
+    "upstream": {
+      "type": "object",
+      "required": ["taskId", "executionMode", "deliveryRevision", "acceptanceRef", "manifestHash"],
+      "additionalProperties": false,
+      "properties": {
+        "taskId": { "type": "string" },
+        "executionMode": { "enum": ["runtime-native", "contract-governed"] },
+        "sessionId": { "type": "string" },
+        "deliveryRevision": { "type": "integer", "minimum": 1 },
+        "acceptanceRef": { "type": "string" },
+        "manifestHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "downstreamTaskId": { "type": "string" },
+    "purpose": { "type": "string", "minLength": 1 },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "mediaType", "size"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "mediaType": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "keyFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "file"],
+        "additionalProperties": false,
+        "properties": { "text": { "type": "string" }, "file": { "type": "string" }, "location": { "type": "string" } }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "openIssues": { "type": "array", "items": { "type": "string" } },
+    "readScope": { "type": "array", "items": { "type": "string" } },
+    "createdEvent": { "type": "string" }
+  }
+}

@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/research-brief.schema.json",
+  "title": "ResearchBrief",
+  "description": "v2.1 调研需求（research-brief@1）：调研要回答什么、为什么、从哪些角度看。由合约填充助手与用户多轮填写，随合约确认冻结；不含证据与判断（那些属于 research-report）。",
+  "type": "object",
+  "required": ["version", "context", "objective", "framework", "outputs"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "research-brief@1" },
+    "context": {
+      "description": "决策背景：为什么研究、研究完要做什么",
+      "type": "object",
+      "required": ["decision"],
+      "additionalProperties": false,
+      "properties": {
+        "background": { "$ref": "#/$defs/textNode" },
+        "decision": {
+          "description": "待支持的决策；null 表示了解型调研（不要求建议）",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/textNode" }]
+        },
+        "audience": { "type": "array", "items": { "$ref": "#/$defs/textNode" } },
+        "constraints": { "type": "array", "items": { "$ref": "#/$defs/textNode" } },
+        "successCriteria": {
+          "description": "什么信息足以支持决策（需求表达，不是验收规则）",
+          "type": "array",
+          "items": { "$ref": "#/$defs/textNode" }
+        }
+      }
+    },
+    "objective": {
+      "description": "调研问题：要回答什么、范围在哪",
+      "type": "object",
+      "required": ["question", "subQuestions", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+          "type": "object",
+          "required": ["id", "text"],
+          "unevaluatedProperties": false,
+          "properties": { "id": { "const": "Q0" }, "text": { "type": "string", "minLength": 1 } }
+        },
+        "subQuestions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "text", "priority"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^Q[1-9][0-9]{0,2}$" },
+              "text": { "type": "string", "minLength": 1 },
+              "priority": { "enum": ["must", "should", "optional"] }
+            }
+          }
+        },
+        "scope": {
+          "type": "object",
+          "required": ["market", "geography", "timeRange", "include", "exclude"],
+          "additionalProperties": false,
+          "properties": {
+            "market": {
+              "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+              "type": "object",
+              "required": ["name"],
+              "unevaluatedProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "definitionId": { "$ref": "#/$defs/definitionId" }
+              }
+            },
+            "geography": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/textNode" } },
+            "timeRange": {
+              "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+              "type": "object",
+              "required": ["asOf"],
+              "unevaluatedProperties": false,
+              "properties": {
+                "asOf": { "$ref": "#/$defs/partialDate" },
+                "lookbackFrom": { "$ref": "#/$defs/partialDate" }
+              }
+            },
+            "include": { "type": "array", "items": { "$ref": "#/$defs/scopeItem" } },
+            "exclude": { "type": "array", "items": { "$ref": "#/$defs/scopeItem" } }
+          }
+        }
+      }
+    },
+    "framework": {
+      "description": "分析框架：按什么口径、对象与维度去看",
+      "type": "object",
+      "required": ["definitions", "taxonomy", "entities", "dimensions"],
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "term", "meaning"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/definitionId" },
+              "term": { "type": "string", "minLength": 1 },
+              "meaning": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "taxonomy": {
+          "description": "对象类别（研究谁的分类）",
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "name"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/categoryId" },
+              "name": { "type": "string", "minLength": 1 },
+              "definition": { "type": "string" },
+              "scopeIds": { "description": "对应的纳入范围", "type": "array", "items": { "type": "string", "pattern": "^SI[1-9][0-9]{0,2}$" } }
+            }
+          }
+        },
+        "entities": {
+          "type": "object",
+          "required": ["named", "selection"],
+          "additionalProperties": false,
+          "properties": {
+            "named": {
+              "description": "只放用户点名的对象；模型常识里的公司名不写进需求（避免被当成必须覆盖且未经核实）",
+              "type": "array",
+              "items": {
+                "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+                "type": "object",
+                "required": ["id", "name"],
+                "unevaluatedProperties": false,
+                "properties": {
+                  "id": { "type": "string", "pattern": "^EN[1-9][0-9]{0,2}$" },
+                  "name": { "type": "string", "minLength": 1 },
+                  "categoryId": { "$ref": "#/$defs/categoryId" }
+                }
+              }
+            },
+            "selection": {
+              "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+              "type": "object",
+              "required": ["perCategory", "includeInactive"],
+              "unevaluatedProperties": false,
+              "properties": {
+                "perCategory": { "description": "每类至少几家", "type": "integer", "minimum": 1, "maximum": 20 },
+                "includeInactive": { "description": "已退出/暂停的对象是否纳入（作为历史对象并标明状态）", "type": "boolean" },
+                "rule": { "type": "string" }
+              }
+            }
+          }
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "name", "level", "questionIds"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "$ref": "#/$defs/dimensionId" },
+              "name": { "type": "string", "minLength": 1 },
+              "level": { "enum": ["market", "entity"] },
+              "appliesTo": { "description": "entity 级维度适用的对象类别；缺省为全部纳入类别", "type": "array", "items": { "$ref": "#/$defs/categoryId" } },
+              "questionIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/questionId" } },
+              "facets": {
+                "type": "array",
+                "items": {
+                  "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+                  "type": "object",
+                  "required": ["id", "name"],
+                  "unevaluatedProperties": false,
+                  "properties": {
+                    "id": { "$ref": "#/$defs/facetId" },
+                    "name": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "name", "dimensionId"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^MT[1-9][0-9]{0,2}$" },
+              "name": { "type": "string", "minLength": 1 },
+              "definition": { "type": "string" },
+              "unit": { "type": "string" },
+              "dimensionId": { "$ref": "#/$defs/dimensionId" }
+            }
+          }
+        },
+        "comparisonAxes": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+            "type": "object",
+            "required": ["id", "name"],
+            "unevaluatedProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^AX[1-9][0-9]{0,2}$" },
+              "name": { "type": "string", "minLength": 1 },
+              "dimensionIds": { "type": "array", "items": { "$ref": "#/$defs/dimensionId" } }
+            }
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "required": ["recommendationsRequired"],
+      "additionalProperties": false,
+      "properties": {
+        "recommendationsRequired": { "description": "有待支持的决策时为 true", "type": "boolean" },
+        "language": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "nodeMeta": {
+      "description": "每个节点的来源与状态：用户原话带原文依据；模型补充待用户决定",
+      "type": "object",
+      "required": ["origin", "status"],
+      "properties": {
+        "origin": { "enum": ["user_explicit", "user_answer", "context", "inference", "suggestion", "default"] },
+        "status": { "enum": ["included", "proposed", "removed"] },
+        "impact": { "description": "补充项的影响：material 必须由用户决定", "enum": ["low", "material"] },
+        "rationale": { "type": "string" },
+        "sourceRefs": {
+          "description": "原文依据（UTF-16 偏移）：user_explicit 相对于用户原文（input.slice(start,end) === quote）；v2.5 起 user_answer 相对于 answerRef 那一轮用户的话",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["start", "end", "quote"],
+            "additionalProperties": false,
+            "properties": {
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 0 },
+              "quote": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "answerRef": { "description": "user_answer 的来源：哪一轮哪个问题", "type": "string" }
+      }
+    },
+    "textNode": {
+      "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+      "type": "object",
+      "required": ["text"],
+      "unevaluatedProperties": false,
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "scopeItem": {
+      "allOf": [{ "$ref": "#/$defs/nodeMeta" }],
+      "type": "object",
+      "required": ["id", "item"],
+      "unevaluatedProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^S[IX][1-9][0-9]{0,2}$" },
+        "item": { "type": "string", "minLength": 1 }
+      }
+    },
+    "questionId": { "type": "string", "pattern": "^Q(0|[1-9][0-9]{0,2})$" },
+    "definitionId": { "type": "string", "pattern": "^DF[1-9][0-9]{0,2}$" },
+    "categoryId": { "type": "string", "pattern": "^EC[1-9][0-9]{0,2}$" },
+    "dimensionId": { "type": "string", "pattern": "^DM[1-9][0-9]{0,2}$" },
+    "facetId": { "type": "string", "pattern": "^DM[1-9][0-9]{0,2}\\.[1-9][0-9]{0,2}$" },
+    "partialDate": { "type": "string", "pattern": "^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$" }
+  }
+}

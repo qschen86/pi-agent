@@ -1,0 +1,60 @@
+{
+  "name": "pi-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi-agent 控制台：多运行时对话（Codex / Claude Code / Pi）、群聊、待办与资源",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:changed": "node scripts/run-test-gate.mjs",
+    "test:plan": "node scripts/run-test-gate.mjs --plan",
+    "test:full": "node scripts/run-test-gate.mjs --full",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "fixtures:generate": "tsx scripts/generate-fixtures.ts",
+    "web": "tsx apps/web/src/main.ts",
+    "game": "node apps/pet-math-game/serve.mjs",
+    "game:build": "node apps/pet-math-game/build.mjs",
+    "detective": "node apps/word-detective/serve.mjs",
+    "detective:build": "node apps/word-detective/build.mjs",
+    "test:scripts": "node --test scripts/test/*.test.mjs",
+    "deps:prepare": "node scripts/prepare-dependencies.mjs",
+    "pretypecheck": "node scripts/prepare-dependencies.mjs",
+    "pretest": "node scripts/prepare-dependencies.mjs",
+    "pretest:changed": "node scripts/prepare-dependencies.mjs",
+    "pretest:full": "node scripts/prepare-dependencies.mjs",
+    "pretest:watch": "node scripts/prepare-dependencies.mjs",
+    "pretest:coverage": "node scripts/prepare-dependencies.mjs",
+    "prefixtures:generate": "node scripts/prepare-dependencies.mjs",
+    "preweb": "node scripts/prepare-dependencies.mjs",
+    "test:homebrew": "node --test apps/homebrew/test/*.test.mjs",
+    "build:homebrew": "node scripts/build-homebrew-release.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/web-push": "^3.6.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.1",
+    "fast-check": "^3.22.0",
+    "playwright": "^1.63.0",
+    "yaml": "^2.9.1"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "esbuild@0.21.5": true
+  }
+}

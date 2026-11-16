@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/presentation-ir.schema.json",
+  "title": "PresentationIR",
+  "type": "object",
+  "required": ["version", "audience", "objective", "throughline", "claims"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "information-design@1" },
+    "audience": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
+    "throughline": { "type": "string", "minLength": 1 },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "evidenceRefs", "relationship"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "evidenceRefs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+          "relationship": { "type": "string", "minLength": 1 },
+          "qualifier": { "type": "string" }
+        }
+      }
+    }
+  }
+}

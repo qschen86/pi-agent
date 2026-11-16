@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/slide-evaluation.schema.json",
+  "title": "SlideEvaluation",
+  "type": "object",
+  "required": ["slideId", "verdict", "issues"],
+  "additionalProperties": false,
+  "properties": {
+    "slideId": { "type": "string", "minLength": 1 },
+    "verdict": { "enum": ["pass", "revise"] },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["minor", "major"] },
+          "primitiveIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    }
+  }
+}

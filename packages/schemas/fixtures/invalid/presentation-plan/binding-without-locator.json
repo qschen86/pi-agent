@@ -1,0 +1,324 @@
+{
+  "version": "presentation-plan@1",
+  "stylePackRef": "keynote-minimal@1",
+  "sourceSnapshotHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "narrative": {
+    "throughline": "钱包内置分期推动市场两年翻倍",
+    "audience": "投资委员会"
+  },
+  "slides": [
+    {
+      "id": "cover",
+      "intentId": "i0",
+      "relationship": "title",
+      "layout": {
+        "mode": "recipe",
+        "recipeRef": "keynote-minimal@1/cover",
+        "theme": "dark"
+      },
+      "slots": {
+        "eyebrow": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "HK PAYLATER / 2026"
+            }
+          ]
+        },
+        "title": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "钱包分期，"
+            },
+            {
+              "text": "改写了支付格局。",
+              "accent": true,
+              "break": true
+            }
+          ]
+        },
+        "subtitle": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "市场调研 · 报告快照 2026-09-24"
+            }
+          ]
+        }
+      },
+      "rationale": "封面给出全稿主张"
+    },
+    {
+      "id": "growth",
+      "intentId": "i1",
+      "claimRefs": [
+        "c1"
+      ],
+      "relationship": "single-metric",
+      "emphasis": [
+        "metric"
+      ],
+      "layout": {
+        "mode": "recipe",
+        "recipeRef": "keynote-minimal@1/hero-metric",
+        "variant": "number-left",
+        "theme": "light",
+        "params": {
+          "split": 0.5,
+          "scale": "l"
+        }
+      },
+      "slots": {
+        "eyebrow": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "01 / GROWTH"
+            }
+          ]
+        },
+        "metric": {
+          "kind": "metric",
+          "metric": {
+            "value": "47",
+            "unit": "%",
+            "tone": "positive"
+          }
+        },
+        "title": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "交易额"
+            },
+            {
+              "text": "两年翻倍。",
+              "accent": true,
+              "break": true
+            }
+          ]
+        },
+        "support": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "年复合增长率，2023–2025"
+            }
+          ]
+        },
+        "source": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "来源：S3 行业报告，统计截至 2025-12-31"
+            }
+          ]
+        }
+      },
+      "contentBindings": [
+        {
+          "node": "metric",
+          "snapshotHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "node": "support",
+          "snapshotHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "textRange": {
+            "start": 120,
+            "end": 160
+          }
+        }
+      ],
+      "rationale": "单一增长数字是本页结论",
+      "constraintsApplied": [
+        "F1"
+      ]
+    },
+    {
+      "id": "players",
+      "intentId": "i2",
+      "relationship": "multi-metric",
+      "layout": {
+        "mode": "recipe",
+        "recipeRef": "keynote-minimal@1/metric-row",
+        "theme": "dark"
+      },
+      "slots": {
+        "title": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "三家占据"
+            },
+            {
+              "text": "七成份额。",
+              "accent": true
+            }
+          ]
+        },
+        "points": {
+          "kind": "list",
+          "items": [
+            {
+              "metric": {
+                "value": "38",
+                "unit": "%"
+              },
+              "body": [
+                {
+                  "text": "钱包 A"
+                }
+              ]
+            },
+            {
+              "metric": {
+                "value": "21",
+                "unit": "%"
+              },
+              "body": [
+                {
+                  "text": "银行 B"
+                }
+              ]
+            },
+            {
+              "metric": {
+                "value": "12",
+                "unit": "%"
+              },
+              "body": [
+                {
+                  "text": "平台 C"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "contentBindings": [
+        {
+          "node": "points.0.metric",
+          "snapshotHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "pointer": "/findings/1/metrics/0/value"
+        }
+      ]
+    },
+    {
+      "id": "shift",
+      "intentId": "i3",
+      "relationship": "comparison",
+      "layout": {
+        "mode": "recipe",
+        "recipeRef": "keynote-minimal@1/compare",
+        "variant": "before-after",
+        "theme": "light"
+      },
+      "slots": {
+        "title": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "渠道从独立平台，"
+            },
+            {
+              "text": "转向钱包。",
+              "accent": true,
+              "break": true
+            }
+          ]
+        },
+        "before": {
+          "kind": "list",
+          "items": [
+            {
+              "title": [
+                {
+                  "text": "2023"
+                }
+              ],
+              "body": [
+                {
+                  "text": "独立 BNPL 平台为主"
+                }
+              ]
+            }
+          ]
+        },
+        "after": {
+          "kind": "list",
+          "items": [
+            {
+              "title": [
+                {
+                  "text": "2025"
+                }
+              ],
+              "body": [
+                {
+                  "text": "钱包内置分期为主"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ranking",
+      "intentId": "i4",
+      "relationship": "ranking",
+      "layout": {
+        "mode": "recipe",
+        "recipeRef": "keynote-minimal@1/ranking",
+        "theme": "tint"
+      },
+      "slots": {
+        "title": {
+          "kind": "text",
+          "runs": [
+            {
+              "text": "活跃用户排名"
+            }
+          ]
+        },
+        "chart": {
+          "kind": "chart",
+          "chart": "bar",
+          "unit": "万",
+          "series": [
+            {
+              "label": "钱包 A",
+              "value": 320,
+              "highlight": true
+            },
+            {
+              "label": "银行 B",
+              "value": 180
+            },
+            {
+              "label": "平台 C",
+              "value": 95
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "coverage": [
+    {
+      "mustIncludeId": "M1",
+      "slideIds": [
+        "players",
+        "ranking"
+      ]
+    }
+  ],
+  "omitted": [
+    {
+      "what": "监管条款逐条解读",
+      "reason": "非必含，已在报告附录",
+      "pointer": "/appendix/regulation"
+    }
+  ]
+}

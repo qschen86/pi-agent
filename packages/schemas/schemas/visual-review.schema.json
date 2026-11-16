@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/visual-review.schema.json",
+  "title": "VisualReview",
+  "description": "visual-review@1（v2.6 WP5，V26-F09 视觉审阅层）：绑定一份 HTML 与其逐页截图的审阅结果。问题必须可定位（页 + 元素编号或区域），不给总分。审阅模型未通过可靠性门槛时，「未发现问题」只能记 inconclusive。截图或 HTML 变了，本记录失效。",
+  "type": "object",
+  "required": ["version", "htmlHash", "screenshots", "reviewer", "reliability", "status", "issues", "calls", "reviewedAt"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "visual-review@1" },
+    "htmlHash": { "$ref": "#/$defs/hash" },
+    "screenshots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slideId", "hash"],
+        "additionalProperties": false,
+        "properties": { "slideId": { "type": "string" }, "hash": { "$ref": "#/$defs/hash" } }
+      }
+    },
+    "contactSheets": { "type": "array", "items": { "$ref": "#/$defs/hash" } },
+    "reviewer": {
+      "type": "object",
+      "required": ["role", "provider", "model", "configHash", "promptVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "const": "visualReviewer" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "configHash": { "$ref": "#/$defs/hash" },
+        "promptVersion": { "type": "string" }
+      }
+    },
+    "reliability": { "enum": ["unverified", "qualified"], "description": "审阅模型是否已通过反例集的可靠性门槛" },
+    "status": { "enum": ["passed", "failed", "inconclusive", "not_run"] },
+    "reason": { "type": "string" },
+    "issues": { "type": "array", "items": { "$ref": "#/$defs/issue" } },
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scope", "ok", "attempts", "durationMs"],
+        "additionalProperties": false,
+        "properties": {
+          "scope": { "type": "string", "description": "slides:<页 ID 列表> 或 deck:<总览序号>" },
+          "roleRunId": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "attempts": { "type": "integer", "minimum": 0 },
+          "tokens": { "type": "integer", "minimum": 0 },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "reviewedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "issue": {
+      "type": "object",
+      "required": ["slideId", "code", "severity", "description", "suggestion"],
+      "additionalProperties": false,
+      "properties": {
+        "slideId": { "type": "string", "description": "页 ID；整套层面的问题写 deck" },
+        "code": { "enum": ["hierarchy", "readability", "contrast", "occlusion", "alignment", "whitespace", "rhythm", "consistency", "missing-qualifier", "wrong-image", "forbidden-violation", "other"] },
+        "severity": { "enum": ["major", "minor"] },
+        "elementIds": { "type": "array", "items": { "type": "string" } },
+        "region": {
+          "type": "object",
+          "required": ["x", "y", "w", "h"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number", "minimum": 0, "maximum": 1 },
+            "y": { "type": "number", "minimum": 0, "maximum": 1 },
+            "w": { "type": "number", "minimum": 0, "maximum": 1 },
+            "h": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "suggestion": { "type": "string", "minLength": 1, "maxLength": 400 }
+      }
+    }
+  }
+}

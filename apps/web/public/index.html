@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>pi-agent 控制台</title>
+<meta name="theme-color" content="#f1f1f9">
+<link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1755282a5a46">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=5c4844591736">
+<link rel="manifest" href="/manifest.webmanifest?v=e2ac995f143b" crossorigin="use-credentials">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="pi-agent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="stylesheet" href="/splash.css?v=82e753141399">
+<link rel="stylesheet" href="/communications.css?v=b2bf739dd8ec">
+<link rel="stylesheet" href="/styles.css?v=1339e4f6869a">
+<script src="/theme.js?v=2c3dd72bc944"></script>
+<script src="/splash.js?v=c7b3db1fc4a8"></script>
+<script src="/telemetry.js?v=b8a93a6258eb"></script>
+<script src="/toast.js?v=27cfa0d7454c" defer></script>
+<script src="/pwa.js?v=5c874aad85ad" defer></script>
+<script src="/orientation.js?v=e0c8a3beb3f1" defer></script>
+<script src="/keyboard.js?v=11b9e20ae92a" defer></script>
+<script src="/overlay-history.js?v=3fd3e3dc4714" defer></script>
+<script src="/seg-indicator.js?v=8523640d12f7" defer></script>
+</head>
+<body>
+<dialog id="startup-recovery" hidden aria-labelledby="startup-recovery-title" tabindex="-1">
+  <div>
+    <h1 id="startup-recovery-title">页面未能完整加载</h1>
+    <p>部分页面资源加载失败，请检查网络后重试。</p>
+    <button type="button">刷新重试</button>
+  </div>
+</dialog>
+<header class="topbar">
+  <div id="rt-mobile-header" class="rt-mobile-header"></div>
+  <div class="brand" title="pi-agent 控制台"><span class="brand-mark" aria-hidden="true"><img src="/icons/app-icon.svg?v=b4676a9ca568" alt="" width="36" height="36" decoding="async"></span><span class="brand-full">pi-agent <span class="muted">控制台</span></span></div>
+  <nav id="primary-navigation" class="tabs" aria-label="主导航">
+    <button class="tab" data-view="rt" type="button" title="多运行时会话（Codex / Claude Code / Pi）" aria-label="会话"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tab-icon-fill" d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path class="tab-icon-detail" d="M8.5 10h.01M12 10h.01M15.5 10h.01"/></svg><span class="tab-label">会话</span></button>
+    <button class="tab" data-view="resources" type="button" title="外部资源" aria-label="外部资源"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle class="tab-icon-fill" cx="12" cy="12" r="9"/><path class="tab-icon-detail" d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span class="tab-label">资源</span></button>
+    <button class="tab" data-view="notes" type="button" title="待办记录（大备忘录）" aria-label="待办记录"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect class="tab-icon-fill" x="4" y="3" width="16" height="18" rx="2"/><path class="tab-icon-detail" d="M8 7h8M8 11h8M8 15h5"/></svg><span class="tab-label">待办</span></button>
+    <button class="tab" data-view="artifacts" type="button" title="产物（小游戏等可以直接用的东西）" aria-label="产物"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tab-icon-fill" d="M3 8h18v12H3z"/><path class="tab-icon-fill" stroke="none" d="M5 4h14l2 4H3z"/><path class="tab-icon-detail" d="M3 8l2-4h14l2 4M12 4v16"/></svg><span class="tab-label">产物</span></button>
+    <button class="tab" data-view="ledger" type="button" title="股票账户记账（股东占比与动账）" aria-label="股票账户"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tab-icon-fill" d="M4 20V10M10 20V4M16 20v-7M22 20H2"/><path class="tab-icon-detail" d="M3 20h19"/></svg><span class="tab-label">股票</span></button>
+    <button class="tab" data-view="communications" type="button" title="通讯录与通话、短信统计" aria-label="通讯录"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect class="tab-icon-fill" x="5" y="3" width="15" height="18" rx="2"/><path class="tab-icon-detail" d="M3 7h4M3 12h4M3 17h4M10 16c0-3 6-3 6 0"/><circle class="tab-icon-detail" cx="13" cy="9" r="2"/></svg><span class="tab-label">通讯录</span></button>
+    <button class="tab" data-view="memory" type="button" title="平台记忆（跨 Pi / Codex / Claude 共享的长期规则与知识）" aria-label="平台记忆"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="tab-icon-fill" d="m12 3 9 5-9 5-9-5 9-5Z"/><path class="tab-icon-detail" d="m3 13 9 5 9-5"/><path class="tab-icon-detail" d="m3 17.5 9 5 9-5"/></svg><span class="tab-label">记忆</span></button>
+    <button id="nav-more-btn" class="tab-more" type="button" title="更多" aria-label="更多" aria-expanded="false" aria-controls="nav-more"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle class="tab-icon-fill" cx="5" cy="12" r="1.2"/><circle class="tab-icon-fill" cx="12" cy="12" r="1.2"/><circle class="tab-icon-fill" cx="19" cy="12" r="1.2"/></svg><span class="tab-label">更多</span></button>
+    <div id="nav-more" class="nav-more" hidden>
+      <button class="tab" data-view="web-x" type="button" title="AI浏览器" aria-label="AI浏览器"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path class="tab-icon-fill" d="M5 4h4l10 16h-4L5 4ZM19 4 5 20"/></svg><span class="tab-label">AI浏览器</span></button>
+    </div>
+  </nav>
+  <button id="conn" class="conn connecting" type="button" title="连接中…" aria-label="连接中…，查看连接说明" aria-expanded="false" aria-controls="conn-detail" popovertarget="conn-detail"><span class="conn-text">连接中…</span></button>
+  <div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
+</header>
+<div id="conn-detail" class="conn-detail" popover="auto" role="status" aria-live="polite"><span id="conn-detail-text">连接中…</span><div id="conn-detail-host" class="conn-detail-host" hidden></div><div id="conn-detail-extra" class="conn-detail-extra" hidden></div></div>
+<div class="layout without-sessions">
+  <main id="main" class="main"></main>
+</div>
+<template id="route-modules">
+  <script data-route-module="communications-ai" data-route-kind="shared" src="/communications-ai.js?v=3a15971a46c4"></script>
+  <script data-route-module="communications" data-route-dependencies="communications-ai" src="/communications.js?v=e3fc8168c933"></script>
+  <script data-route-module="rt-list" data-route-dependencies="notes" src="/runtime-directory.js?v=568563d7b5a5"></script>
+  <script data-route-module="rt-transcript" data-route-kind="shared" src="/runtime-transcript.js?v=8570b9b5f515"></script>
+  <script data-route-module="rt-detail" data-route-dependencies="rt-list rt-transcript" src="/runtime-detail.js?v=b66acd1bd7dd"></script>
+  <script data-route-module="rt-compare" data-route-dependencies="rt-list rt-transcript" src="/runtime-compare-page.js?v=782b82efc2b1"></script>
+  <script data-route-dependencies="rt-list" data-route-module="rt-new" src="/runtime-new.js?v=db030dda4214"></script>
+  <script data-route-module="runtimes" src="/runtime-settings.js?v=582c638edf4a"></script>
+  <script data-route-dependencies="rt-list" data-route-module="room" src="/room-page.js?v=68adffee490f"></script>
+  <script data-route-module="note-relation-graph" data-route-kind="shared" src="/note-relation-graph.js?v=b426835a0fc5"></script>
+  <script data-route-module="note-relations" data-route-dependencies="notes note-relation-graph" src="/note-relations.js?v=5da828ed409c"></script>
+  <script data-route-module="notes" src="/notes.js?v=4bef839de215"></script>
+  <script data-route-module="ledger" src="/ledger.js?v=5a75ffaafe4e"></script>
+  <script data-route-module="web-x" src="/web-x.js?v=b7bc08efe4eb"></script>
+  <script data-route-module="memory-architecture" data-route-kind="shared" src="/memory-architecture.js?v=20c72089b045"></script>
+  <script data-route-module="memory" data-route-dependencies="memory-architecture" src="/memory-public.js?v=5358371caee5"></script>
+  <script data-route-module="stats" src="/stats.js?v=e98b53b0c482"></script>
+  <script data-route-module="resources" src="/resources.js?v=c014de3cd0af"></script>
+  <script data-route-module="share-image-renderer" data-route-kind="shared" src="/share-image-renderer.js?v=e630893d0fe0"></script>
+  <script data-route-module="version-share" data-route-kind="shared" src="/version-share.js?v=b6be26ededfb"></script>
+  <script data-route-dependencies="runtimes" data-route-module="settings" src="/settings.js?v=939b587ef653"></script>
+</template>
+<!--
+  页面骨架由 CSS 画出来就能出首帧，脚本只负责接管：全部 defer，避免手机弱网下
+  一次下载近 1 MB 的脚本期间一直停在启动图。theme.js / splash.js 保持同步，
+  首帧前初始化主题、启动诊断与加载失败恢复，不再显示应用内品牌开屏。
+-->
+<script src="/route-loader.js?v=e3175a1faf5e" defer></script>
+<script src="/navigation.js?v=9cb3fa013756" defer></script>
+<script src="/session-persistence.js?v=c6bba0aecc82" defer></script>
+<script src="/local-first.js?v=752a83b5bb7b" defer></script>
+<script src="/session-sync.js?v=54033899846e" defer></script>
+<script src="/app.js?v=c60ad11561da" defer></script>
+<script src="/image-zoom.js?v=b50a3942f707" defer></script>
+<script src="/host-stats.js?v=4172d658cde2" defer></script>
+<script src="/app-swipe.js?v=6bbbcc8e68d6" defer></script>
+<script src="/nav-settings.js?v=8b67e53fa0ef" defer></script>
+
+<script src="/notes-shared.js?v=162fd65067cd" defer></script>
+<script src="/file-chips.js?v=05e36e2648d6" defer></script>
+<script src="/diagram-preview.js?v=5b4c3a93a6a8" defer></script>
+<script src="/logos.js?v=6f93d11a74a7" defer></script>
+<script src="/runtime-chat.js?v=2fe7979a209e" defer></script>
+<script src="/runtime-attachments.js?v=272ba40a4ee5" defer></script>
+<script src="/android-shell.js?v=5bbb0aa5a827" defer></script>
+<script src="/native-update.js?v=29df30505734" defer></script>
+<script src="/notifications.js?v=a8e832ebf52b" defer></script>
+<script src="/runtime.js?v=64bd1364bd32" defer></script>
+<script src="/runtime-compare.js?v=693e626077a7" defer></script>
+<script src="/room.js?v=ac1f5430925a" defer></script>
+<script src="/artifact-collections.js?v=316a111a6f0f" defer></script>
+<script src="/artifacts.js?v=9a69eb64d7c6" defer></script>
+<script src="/artifacts-eval.js?v=4fadb1183219" defer></script>
+<script src="/image-intake-store.js?v=16995480d2f6" defer></script>
+<script src="/clipboard-history.js?v=120ba09ed26a" defer></script>
+<script src="/clipboard-images.js?v=b3bed0d44760" defer></script>
+<script src="/recent-photos.js?v=a29a331aed94" defer></script>
+<script src="/image-intake.js?v=05916eeb25c0" defer></script>
+<script src="/image-intake-bubble.js?v=f446e13d6971" defer></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "apiVersion": "agent.platform/v1",
+  "kind": "WorkflowDefinition",
+  "metadata": {
+    "workflowId": "report.publish",
+    "version": "2.1.0",
+    "status": "PUBLISHED",
+    "owner": "owner-1"
+  },
+  "spec": {
+    "name": "报告发布流水线",
+    "requires": [
+      "notify.send@1.0.0"
+    ],
+    "sideEffectDeclarations": [
+      {
+        "resource": "filesystem",
+        "action": "write"
+      }
+    ]
+  }
+}

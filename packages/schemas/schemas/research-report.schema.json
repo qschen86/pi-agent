@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/research-report.schema.json",
+  "title": "ResearchReport",
+  "description": "v2.1 调研报告（research-report@1）：调研类执行 Agent 的结构化交付物。证据 → 发现 → 洞察 → 结论 → 建议分层保存，每层只引用下一层；人读的 Markdown/HTML 由平台从本文件渲染。证据的网址、时间、内容哈希与摘录核对由平台依来源台账补充，不由执行方填写。",
+  "type": "object",
+  "required": ["version", "briefRef", "asOf", "entities", "evidence", "findings", "conclusions", "gaps"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "research-report@1" },
+    "briefRef": {
+      "type": "object",
+      "required": ["briefHash"],
+      "additionalProperties": false,
+      "properties": {
+        "briefHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "contractRevision": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "asOf": { "description": "报告的截至时间", "$ref": "#/$defs/date" },
+    "title": { "type": "string" },
+    "entities": {
+      "description": "对象登记表：研究了谁、现状如何",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "categoryId", "status", "evidenceIds"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^E[1-9][0-9]{0,2}$" },
+          "name": { "type": "string", "minLength": 1 },
+          "aliases": { "type": "array", "items": { "type": "string" } },
+          "categoryId": { "type": "string", "pattern": "^EC[1-9][0-9]{0,2}$" },
+          "namedId": { "description": "对应需求里用户点名的对象", "type": "string", "pattern": "^EN[1-9][0-9]{0,2}$" },
+          "status": { "enum": ["operating", "exited", "suspended", "unknown"] },
+          "statusAsOf": { "$ref": "#/$defs/date" },
+          "evidenceIds": { "type": "array", "items": { "$ref": "#/$defs/evidenceId" } }
+        }
+      }
+    },
+    "evidence": {
+      "description": "证据：执行方只填引用与摘录；平台据来源台账核对",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sourceId", "quote", "claim", "sourceType"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/evidenceId" },
+          "sourceId": { "description": "平台来源台账编号（本会话实际读过的网页或用户材料）", "type": "string", "pattern": "^S[1-9][0-9]{0,3}$" },
+          "quote": { "description": "原文摘录，须能在读到的正文里逐字找到", "type": "string", "minLength": 1, "maxLength": 600 },
+          "claim": { "description": "这条证据说明的事实", "type": "string", "minLength": 1 },
+          "figure": {
+            "type": "object",
+            "required": ["value", "unit"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "number" },
+              "unit": { "type": "string", "minLength": 1 },
+              "asOf": { "$ref": "#/$defs/date" },
+              "basis": { "description": "口径", "type": "string" }
+            }
+          },
+          "sourceType": { "enum": ["primary", "secondary"] }
+        }
+      }
+    },
+    "findings": {
+      "description": "发现：从证据直接看到的",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement", "dimensionId", "questionIds", "evidenceIds", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^F[1-9][0-9]{0,3}$" },
+          "statement": { "type": "string", "minLength": 1 },
+          "entityIds": { "type": "array", "items": { "$ref": "#/$defs/entityId" } },
+          "dimensionId": { "$ref": "#/$defs/dimensionId" },
+          "facetId": { "type": "string", "pattern": "^DM[1-9][0-9]{0,2}\\.[1-9][0-9]{0,2}$" },
+          "questionIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/questionId" } },
+          "evidenceIds": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidenceId" } },
+          "confidence": { "$ref": "#/$defs/confidence" },
+          "limitations": { "type": "array", "items": { "type": "string" } },
+          "contradictions": { "description": "与之冲突的证据", "type": "array", "items": { "$ref": "#/$defs/evidenceId" } }
+        }
+      }
+    },
+    "estimates": {
+      "description": "推算：方法 + 输入 + 假设，与事实分开",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "quantity", "method", "inputs", "assumptions", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^ES[1-9][0-9]{0,2}$" },
+          "quantity": { "type": "string", "minLength": 1 },
+          "range": {
+            "description": "推算区间；推不出时省略并在 method 中说明",
+            "type": "object",
+            "required": ["low", "high", "unit"],
+            "additionalProperties": false,
+            "properties": { "low": { "type": "number" }, "high": { "type": "number" }, "unit": { "type": "string" }, "asOf": { "$ref": "#/$defs/date" } }
+          },
+          "dimensionId": { "$ref": "#/$defs/dimensionId" },
+          "method": { "type": "string", "minLength": 1 },
+          "inputs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidenceOrFindingId" } },
+          "assumptions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "confidence": { "$ref": "#/$defs/confidence" }
+        }
+      }
+    },
+    "insights": {
+      "description": "洞察：这些发现意味着什么",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "interpretation", "basedOn"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^I[1-9][0-9]{0,2}$" },
+          "interpretation": { "type": "string", "minLength": 1 },
+          "basedOn": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/findingOrEstimateId" } },
+          "cause": { "type": "string" },
+          "implication": { "type": "string" },
+          "pattern": { "type": "string" },
+          "assumptions": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "conclusions": {
+      "description": "结论：对子问题的回答",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "questionId", "answer", "supportingIds", "confidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^C[1-9][0-9]{0,2}$" },
+          "questionId": { "$ref": "#/$defs/questionId" },
+          "answer": { "type": "string", "minLength": 1 },
+          "supportingIds": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^(F[1-9][0-9]{0,3}|I[1-9][0-9]{0,2}|ES[1-9][0-9]{0,2})$" } },
+          "confidence": { "$ref": "#/$defs/confidence" },
+          "boundary": { "description": "结论适用边界", "type": "string" }
+        }
+      }
+    },
+    "recommendations": {
+      "description": "建议：决策型调研才必需",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "action", "basedOn", "priority"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^RC[1-9][0-9]{0,2}$" },
+          "action": { "type": "string", "minLength": 1 },
+          "basedOn": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^C[1-9][0-9]{0,2}$" } },
+          "rationale": { "type": "string" },
+          "priority": { "enum": ["high", "medium", "low"] },
+          "tradeoff": { "type": "string" },
+          "risk": { "type": "string" },
+          "nextStep": { "type": "string" }
+        }
+      }
+    },
+    "gaps": {
+      "description": "证据缺口：查了但没查到，如实登记（不能用「待核实」混过）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^G[1-9][0-9]{0,2}$" },
+          "entityId": { "$ref": "#/$defs/entityId" },
+          "categoryId": { "type": "string", "pattern": "^EC[1-9][0-9]{0,2}$" },
+          "dimensionId": { "$ref": "#/$defs/dimensionId" },
+          "questionId": { "$ref": "#/$defs/questionId" },
+          "reason": { "type": "string", "minLength": 1 },
+          "attempted": { "description": "做过的检索（查询词或来源编号）", "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$" },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "questionId": { "type": "string", "pattern": "^Q(0|[1-9][0-9]{0,2})$" },
+    "dimensionId": { "type": "string", "pattern": "^DM[1-9][0-9]{0,2}$" },
+    "entityId": { "type": "string", "pattern": "^E[1-9][0-9]{0,2}$" },
+    "evidenceId": { "type": "string", "pattern": "^EV[1-9][0-9]{0,3}$" },
+    "evidenceOrFindingId": { "type": "string", "pattern": "^(EV[1-9][0-9]{0,3}|F[1-9][0-9]{0,3})$" },
+    "findingOrEstimateId": { "type": "string", "pattern": "^(F[1-9][0-9]{0,3}|ES[1-9][0-9]{0,2})$" }
+  }
+}

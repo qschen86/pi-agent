@@ -1,0 +1,24 @@
+{
+  "recordId": "vr_efefefefefefefef",
+  "criterionId": "AC-02",
+  "result": "PASS",
+  "evaluator": {
+    "type": "composite",
+    "ref": "composite.and",
+    "version": "1.0.0"
+  },
+  "artifactHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "measurements": {
+    "matchedAt": 42
+  },
+  "evidenceRefs": [
+    "evidence://runs/1/AC-02.json",
+    "evidence://runs/1/AC-02.log"
+  ],
+  "provenance": {
+    "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "executedBy": "verifier@1.0.0",
+    "executedAt": "2026-09-21T08:10:00.000Z",
+    "environment": "local"
+  }
+}

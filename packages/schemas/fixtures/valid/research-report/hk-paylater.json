@@ -1,0 +1,565 @@
+{
+  "version": "research-report@1",
+  "briefRef": {
+    "briefHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "contractRevision": 1
+  },
+  "asOf": "2026-09-26",
+  "title": "香港 PayLater 市场调研",
+  "entities": [
+    {
+      "id": "E1",
+      "name": "Ant Bank PayLater",
+      "categoryId": "EC3",
+      "status": "operating",
+      "statusAsOf": "2026-09",
+      "evidenceIds": [
+        "EV8",
+        "EV9"
+      ]
+    },
+    {
+      "id": "E2",
+      "name": "Mox（Split Purchase）",
+      "categoryId": "EC2",
+      "status": "operating",
+      "statusAsOf": "2026-09",
+      "evidenceIds": [
+        "EV10"
+      ]
+    },
+    {
+      "id": "E3",
+      "name": "汇丰商户免息分期",
+      "categoryId": "EC4",
+      "status": "operating",
+      "statusAsOf": "2026-09",
+      "evidenceIds": [
+        "EV11"
+      ]
+    },
+    {
+      "id": "E4",
+      "name": "X Pay",
+      "categoryId": "EC1",
+      "status": "operating",
+      "statusAsOf": "2024",
+      "evidenceIds": [
+        "EV12"
+      ]
+    },
+    {
+      "id": "E5",
+      "name": "livi PayLater",
+      "categoryId": "EC2",
+      "status": "suspended",
+      "statusAsOf": "2024-09-26",
+      "evidenceIds": [
+        "EV6"
+      ]
+    },
+    {
+      "id": "E6",
+      "name": "Atome",
+      "categoryId": "EC1",
+      "status": "exited",
+      "statusAsOf": "2023",
+      "evidenceIds": [
+        "EV7"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EV1",
+      "sourceId": "S1",
+      "quote": "香港并没有「先买后付」交易总额的官方统计",
+      "claim": "香港没有 BNPL 交易总额的官方统计",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV2",
+      "sourceId": "S1",
+      "quote": "只有 0.3% 受访者曾使用「先买后付」",
+      "claim": "2022 年调查中仅 0.3% 受访者用过 BNPL",
+      "sourceType": "primary",
+      "figure": {
+        "value": 0.3,
+        "unit": "%",
+        "asOf": "2022",
+        "basis": "受访者曾使用比例"
+      }
+    },
+    {
+      "id": "EV3",
+      "sourceId": "S1",
+      "quote": "银行提供的「先买后付」服务属无抵押个人信贷产品",
+      "claim": "银行提供的 BNPL 按无抵押个人信贷受金管局规管",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV4",
+      "sourceId": "S2",
+      "quote": "2022 年香港 BNPL 交易总额为 16.65 亿港元",
+      "claim": "2022 年纯 BNPL GMV 为 HK$16.65 亿（Frost & Sullivan）",
+      "sourceType": "secondary",
+      "figure": {
+        "value": 16.65,
+        "unit": "亿港元",
+        "asOf": "2022",
+        "basis": "纯 BNPL GMV"
+      }
+    },
+    {
+      "id": "EV5",
+      "sourceId": "S2",
+      "quote": "Atome、livi、Pace 市场份额分别为 39.4%、31.3%、14.7%",
+      "claim": "2022 年前三大玩家份额合计约 85%",
+      "sourceType": "secondary",
+      "figure": {
+        "value": 85.4,
+        "unit": "%",
+        "asOf": "2022",
+        "basis": "前三大 GMV 份额合计"
+      }
+    },
+    {
+      "id": "EV6",
+      "sourceId": "S3",
+      "quote": "has suspended our livi PayLater service starting from 26 September 2024",
+      "claim": "livi 自 2024-09-26 起暂停 PayLater，不接受新申请与新交易",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV7",
+      "sourceId": "S4",
+      "quote": "Atome quits Hong Kong",
+      "claim": "Atome 已退出香港市场",
+      "sourceType": "secondary"
+    },
+    {
+      "id": "EV8",
+      "sourceId": "S5",
+      "quote": "Ant Bank PayLater 登陆 AlipayHK",
+      "claim": "Ant Bank PayLater 于 2022-11 在 AlipayHK 内上线，用户在钱包内直接申请使用",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV9",
+      "sourceId": "S6",
+      "quote": "逾 15 万商户",
+      "claim": "AlipayHK 受理商户逾 15 万",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV10",
+      "sourceId": "S7",
+      "quote": "Split your eligible purchases",
+      "claim": "Mox 客户可把合资格卡交易事后拆分为分期，需先持有 Mox 账户",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV11",
+      "sourceId": "S8",
+      "quote": "4,500 多间商户提供免息分期",
+      "claim": "汇丰信用卡在 4,500 多间商户提供免息分期",
+      "sourceType": "primary"
+    },
+    {
+      "id": "EV12",
+      "sourceId": "S9",
+      "quote": "注册会员约 16 万",
+      "claim": "X Pay 注册会员约 16 万、合作商户逾 1,000 家",
+      "sourceType": "primary",
+      "figure": {
+        "value": 16,
+        "unit": "万人",
+        "asOf": "2024",
+        "basis": "注册会员"
+      }
+    },
+    {
+      "id": "EV13",
+      "sourceId": "S10",
+      "quote": "消费满 HK$100 即可分 1、3、6、12 或 24 期",
+      "claim": "Ant Bank PayLater 单笔满 HK$100 可分 1/3/6/12/24 期",
+      "sourceType": "secondary"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "statement": "2022 年前三大玩家合计约 85% 份额，市场高度集中于独立平台与 livi",
+      "dimensionId": "DM1",
+      "questionIds": [
+        "Q1"
+      ],
+      "evidenceIds": [
+        "EV5"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F2",
+      "statement": "2022 年前三大玩家中，Atome 已退出、livi PayLater 已暂停",
+      "entityIds": [
+        "E6",
+        "E5"
+      ],
+      "dimensionId": "DM1",
+      "questionIds": [
+        "Q1",
+        "Q5"
+      ],
+      "evidenceIds": [
+        "EV6",
+        "EV7"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "F3",
+      "statement": "香港缺少 BNPL 总量的官方统计，使用率很低",
+      "dimensionId": "DM2",
+      "questionIds": [
+        "Q2"
+      ],
+      "evidenceIds": [
+        "EV1",
+        "EV2"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "F4",
+      "statement": "有据可查的最近一次纯 BNPL 总量是 2022 年的 HK$16.65 亿",
+      "dimensionId": "DM2",
+      "questionIds": [
+        "Q2"
+      ],
+      "evidenceIds": [
+        "EV4"
+      ],
+      "confidence": "medium",
+      "limitations": [
+        "单一第三方来源",
+        "2022 年后头部玩家退出，数据已过时"
+      ]
+    },
+    {
+      "id": "F5",
+      "statement": "Mox 的首次使用链路比 Ant Bank PayLater 长：前者须先持有 Mox 账户，后者在 AlipayHK 内直接开通",
+      "entityIds": [
+        "E2",
+        "E1"
+      ],
+      "dimensionId": "DM3",
+      "facetId": "DM3.3",
+      "questionIds": [
+        "Q3"
+      ],
+      "evidenceIds": [
+        "EV8",
+        "EV10"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "F6",
+      "statement": "汇丰以存量信用卡客户为对象，在指定商户提供免息分期",
+      "entityIds": [
+        "E3"
+      ],
+      "dimensionId": "DM3",
+      "facetId": "DM3.1",
+      "questionIds": [
+        "Q3"
+      ],
+      "evidenceIds": [
+        "EV11"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F7",
+      "statement": "X Pay 以自建商户网络提供小额分期，规模远小于钱包与银行体系",
+      "entityIds": [
+        "E4"
+      ],
+      "dimensionId": "DM3",
+      "facetId": "DM3.4",
+      "questionIds": [
+        "Q3"
+      ],
+      "evidenceIds": [
+        "EV12",
+        "EV9"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F8",
+      "statement": "Ant Bank PayLater 复用 AlipayHK 的商户受理网络，不逐家签约",
+      "entityIds": [
+        "E1"
+      ],
+      "dimensionId": "DM4",
+      "facetId": "DM4.4",
+      "questionIds": [
+        "Q4"
+      ],
+      "evidenceIds": [
+        "EV8",
+        "EV9"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "F9",
+      "statement": "Mox 与汇丰借卡组织受理网络，在交易发生后再提供分期",
+      "entityIds": [
+        "E2",
+        "E3"
+      ],
+      "dimensionId": "DM4",
+      "facetId": "DM4.4",
+      "questionIds": [
+        "Q4",
+        "Q5"
+      ],
+      "evidenceIds": [
+        "EV10",
+        "EV11"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F10",
+      "statement": "X Pay 依靠逐家签约的自建商户网络获客",
+      "entityIds": [
+        "E4"
+      ],
+      "dimensionId": "DM4",
+      "facetId": "DM4.1",
+      "questionIds": [
+        "Q4"
+      ],
+      "evidenceIds": [
+        "EV12"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F11",
+      "statement": "Ant Bank PayLater 单笔满 HK$100 可分 1–24 期",
+      "entityIds": [
+        "E1"
+      ],
+      "dimensionId": "DM6",
+      "questionIds": [
+        "Q3",
+        "Q4"
+      ],
+      "evidenceIds": [
+        "EV13"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "F12",
+      "statement": "银行提供的 BNPL 受金管局按无抵押个人信贷规管",
+      "dimensionId": "DM7",
+      "questionIds": [
+        "Q6"
+      ],
+      "evidenceIds": [
+        "EV3"
+      ],
+      "confidence": "high"
+    }
+  ],
+  "estimates": [
+    {
+      "id": "ES1",
+      "quantity": "2026 年纯 BNPL GMV",
+      "dimensionId": "DM2",
+      "method": "不外推：2022 年后的预测以当年格局为前提，头部玩家退出后前提失效，给不出可信区间",
+      "inputs": [
+        "EV4",
+        "F2"
+      ],
+      "assumptions": [
+        "2022 年的增长预测依赖 Atome、livi 等头部玩家持续经营"
+      ],
+      "confidence": "low"
+    }
+  ],
+  "insights": [
+    {
+      "id": "I1",
+      "interpretation": "独立 BNPL 的增长曲线被打断，分期需求转移到钱包与银行体系",
+      "basedOn": [
+        "F1",
+        "F2",
+        "F3"
+      ],
+      "implication": "旧的 GMV 与份额数据不能代表现状"
+    },
+    {
+      "id": "I2",
+      "interpretation": "Ant 依赖已有钱包流量，Mox 与汇丰依赖银行账户与卡网络关系，获客模型不同",
+      "basedOn": [
+        "F5",
+        "F8",
+        "F9"
+      ]
+    },
+    {
+      "id": "I3",
+      "interpretation": "分期正在从单独产品变成支付网络里的一项能力",
+      "basedOn": [
+        "F8",
+        "F9",
+        "F12"
+      ],
+      "assumptions": [
+        "卡组织与钱包的受理网络继续扩大"
+      ]
+    }
+  ],
+  "conclusions": [
+    {
+      "id": "C1",
+      "questionId": "Q1",
+      "answer": "主要玩家已从独立平台转为钱包（Ant Bank PayLater）、数字银行（Mox）与发卡行（汇丰）；独立平台仅剩 X Pay 等小体量玩家",
+      "supportingIds": [
+        "I1",
+        "F2",
+        "F7"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "C2",
+      "questionId": "Q2",
+      "answer": "没有可信的当期总量；2022 年纯 BNPL GMV 为 HK$16.65 亿，不能外推为今天的规模",
+      "supportingIds": [
+        "F3",
+        "F4",
+        "ES1"
+      ],
+      "confidence": "medium",
+      "boundary": "只限纯 BNPL 口径，不含卡分期"
+    },
+    {
+      "id": "C3",
+      "questionId": "Q3",
+      "answer": "Ant 是钱包内普适型分期，Mox/汇丰是账户与卡关系上的附加分期，X Pay 是低门槛小额分期",
+      "supportingIds": [
+        "F5",
+        "F6",
+        "F7"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "C4",
+      "questionId": "Q4",
+      "answer": "Ant PayLater 在低门槛转化场景里有结构性优势；银行系靠卡网络覆盖面竞争",
+      "supportingIds": [
+        "I2",
+        "F8",
+        "F9",
+        "F10"
+      ],
+      "confidence": "medium",
+      "boundary": "只适用于小额、线上场景"
+    },
+    {
+      "id": "C5",
+      "questionId": "Q5",
+      "answer": "分期将更多以支付网络能力的形态存在，纯 BNPL 产品空间收窄",
+      "supportingIds": [
+        "I1",
+        "I3"
+      ],
+      "confidence": "low"
+    },
+    {
+      "id": "C6",
+      "questionId": "Q6",
+      "answer": "银行系 BNPL 纳入无抵押信贷监管，非银机构需另持牌照，监管抬高了独立平台的门槛",
+      "supportingIds": [
+        "F12"
+      ],
+      "confidence": "medium"
+    }
+  ],
+  "recommendations": [
+    {
+      "id": "RC1",
+      "action": "从消费支付中的融资选择切入，而不是做一个独立 BNPL 产品",
+      "basedOn": [
+        "C1",
+        "C5"
+      ],
+      "priority": "high",
+      "risk": "依赖合作钱包或卡网络"
+    },
+    {
+      "id": "RC2",
+      "action": "如果目标是快速扩大渗透，优先降低开户与 KYC 前置步骤",
+      "basedOn": [
+        "C4"
+      ],
+      "priority": "high",
+      "nextStep": "量化各玩家首次使用步骤数与转化率"
+    }
+  ],
+  "gaps": [
+    {
+      "id": "G1",
+      "entityId": "E2",
+      "dimensionId": "DM6",
+      "reason": "Mox 分期费率页面未能读取",
+      "attempted": [
+        "Mox Split Purchase 费率"
+      ]
+    },
+    {
+      "id": "G2",
+      "entityId": "E3",
+      "dimensionId": "DM6",
+      "reason": "汇丰商户分期的费率与期数页面未能读取",
+      "attempted": [
+        "汇丰 商户免息分期 期数"
+      ]
+    },
+    {
+      "id": "G3",
+      "entityId": "E4",
+      "dimensionId": "DM6",
+      "reason": "X Pay 当前条款页未读到 2026 年版本",
+      "attempted": [
+        "X Pay 分期 条款"
+      ]
+    },
+    {
+      "id": "G4",
+      "categoryId": "EC3",
+      "reason": "钱包内分期只找到 1 家有可信资料的玩家（要求每类 2 家）",
+      "attempted": [
+        "WeChat Pay HK 分期",
+        "PayMe 分期"
+      ]
+    },
+    {
+      "id": "G5",
+      "categoryId": "EC4",
+      "reason": "发卡行分期只读到汇丰 1 家（要求每类 2 家）",
+      "attempted": [
+        "渣打 分期 商户"
+      ]
+    }
+  ]
+}

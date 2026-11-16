@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/event-envelope.schema.json",
+  "title": "EventEnvelope",
+  "description": "AP-STATE-007 §4：统一事件外壳。版本、因果与幂等字段完整。",
+  "type": "object",
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "tenantId",
+    "sessionId",
+    "aggregateVersion",
+    "actor",
+    "correlationId",
+    "idempotencyKey",
+    "payload",
+    "payloadHash"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventType": {
+      "enum": [
+        "DefinitionPublished",
+        "ContractDrafted",
+        "ContractConfirmed",
+        "ContractRevised",
+        "PlanCompiled",
+        "RuntimeBound",
+        "RuntimeStarted",
+        "Progressed",
+        "Paused",
+        "Resumed",
+        "Cancelled",
+        "ToolRequested",
+        "PolicyDecided",
+        "ToolSucceeded",
+        "ToolFailed",
+        "WorkflowStarted",
+        "WorkflowWaiting",
+        "WorkflowSucceeded",
+        "WorkflowFailed",
+        "ArtifactCreated",
+        "VerificationRecorded",
+        "ReturnToRun",
+        "RetryScheduled",
+        "DeliveryProposed",
+        "Delivered",
+        "Accepted",
+        "PartiallyAccepted",
+        "ReworkRequested",
+        "Rejected",
+        "CompletedDerived",
+        "Archived"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "tenantId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attemptId": {
+      "type": "string"
+    },
+    "aggregateVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "actor": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "user",
+            "system",
+            "runtime",
+            "adapter"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "causationId": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "planHash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "policyDecisionId": {
+      "type": "string",
+      "description": "S-02：任何副作用事件必须引用 policy_decision_id"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "payloadHash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "commandFingerprint": {
+      "type": "string",
+      "description": "引发该事件的命令指纹：恢复时据此重建幂等台账（W5/G7）"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+/* Independent of the application's styles/helpers: usable after core script failure. */
+#startup-recovery[hidden] { display: none; }
+#startup-recovery {
+  position: fixed; inset: 0; z-index: 2147483001; box-sizing: border-box;
+  width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; border: 0;
+  display: grid; place-items: center; overflow: auto;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  background: Canvas; color: CanvasText; font: 16px/1.6 system-ui, sans-serif;
+}
+#startup-recovery > div { max-width: 30em; min-width: 0; }
+#startup-recovery h1 { font-size: 22px; margin: 0 0 12px; }
+#startup-recovery p { margin: 0 0 24px; }
+#startup-recovery button { min-height: 44px; padding: 8px 20px; font: inherit; cursor: pointer; }
+
+/* Uninitialized navigation can be wider than a phone after app.js fails. */
+html.startup-failed, html.startup-failed body { overflow: hidden; }
+html.startup-failed body > :not(#startup-recovery) { display: none !important; }

@@ -1,0 +1,5348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-event-v2.schema.json",
+  "title": "project-event@2",
+  "description": "V3.1 事件：Agent 验收带绑定来源，中间接受由宿主派生，最终接受仍由用户签署。",
+  "type": "object",
+  "required": [
+    "schema",
+    "eventId",
+    "projectId",
+    "type",
+    "aggregateVersion",
+    "at",
+    "actor",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "project-event@2"
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^ev-[A-Za-z0-9_-]{6,80}$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{3,80}$"
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z]{2,60}$"
+    },
+    "aggregateVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "actor": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "user",
+            "coordinator",
+            "host",
+            "consumer",
+            "migration"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "causationId": {
+      "type": "string"
+    },
+    "sourceRef": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 300
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "verification": {
+      "type": "object",
+      "required": [
+        "recordId",
+        "taskId",
+        "criterionId",
+        "deliveryRevision",
+        "artifactHash",
+        "result",
+        "evaluator",
+        "checkerVersion",
+        "detail",
+        "at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "recordId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "criterionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "INCONCLUSIVE",
+            "NOT_RUN"
+          ]
+        },
+        "evaluator": {
+          "enum": [
+            "rule",
+            "human",
+            "agent"
+          ]
+        },
+        "checkerVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evaluation": {
+          "type": "object",
+          "required": [
+            "jobId",
+            "definitionRef",
+            "runtimeKind",
+            "platformSessionId",
+            "reportHash",
+            "snapshotPath",
+            "input"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "definitionRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtimeKind": {
+              "enum": [
+                "codex",
+                "claude-code",
+                "pi"
+              ]
+            },
+            "platformSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "nativeSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reportHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "snapshotPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "input": {
+              "type": "object",
+              "required": [
+                "requirementsRevision",
+                "rulesRevision",
+                "planRevision",
+                "deliveryRevision",
+                "requirementHash",
+                "manifestHash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "requirementsRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "rulesRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "planRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "deliveryRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "requirementHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "manifestHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "feedbackId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dependenciesHash": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "baselineRecheckHash": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              }
+            },
+            "dependencyChecks": {
+              "type": "array",
+              "items": {
+                "$ref": "https://pi-agent.platform/schemas/project-task-evaluation.schema.json#/$defs/dependencyCheck"
+              }
+            },
+            "baselineRecheck": {
+              "$ref": "#/$defs/baselineRecheckAuthorization"
+            }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "file",
+              "location",
+              "observation"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "file": {
+                "type": "string",
+                "minLength": 1
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observation": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "requirementHash": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": [
+              "evaluator"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "evaluator": {
+                "const": "agent"
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "evaluation",
+              "evidence"
+            ],
+            "properties": {
+              "evaluation": {},
+              "evidence": {}
+            }
+          }
+        }
+      ]
+    },
+    "acceptance": {
+      "type": "object",
+      "required": [
+        "acceptanceId",
+        "taskId",
+        "deliveryRevision",
+        "manifestHash",
+        "decision",
+        "signer",
+        "decidedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "acceptanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "enum": [
+            "ACCEPT",
+            "PARTIAL_ACCEPT",
+            "REWORK",
+            "REJECT"
+          ]
+        },
+        "signer": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "role",
+                "userId"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "role": {
+                  "const": "user"
+                },
+                "userId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "role",
+                "evaluationJobId",
+                "reportHash",
+                "reportRef",
+                "verificationRecordIds"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "role": {
+                  "const": "harness"
+                },
+                "evaluationJobId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "reportHash": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "reportRef": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "verificationRecordIds": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "note": {
+          "type": "string"
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "userSigner": {
+      "type": "object",
+      "required": [
+        "role",
+        "userId"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "const": "user"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "hostSigner": {
+      "type": "object",
+      "required": [
+        "role",
+        "evaluationJobId",
+        "reportHash",
+        "reportRef",
+        "verificationRecordIds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "const": "harness"
+        },
+        "evaluationJobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reportHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "reportRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verificationRecordIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "evaluationSource": {
+      "type": "object",
+      "required": [
+        "jobId",
+        "definitionRef",
+        "runtimeKind",
+        "platformSessionId",
+        "reportHash",
+        "snapshotPath",
+        "nativeSessionId"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "definitionRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeKind": {
+          "enum": [
+            "codex",
+            "claude-code",
+            "pi"
+          ]
+        },
+        "platformSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reportHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "snapshotPath": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "taskEvaluationInput": {
+      "type": "object",
+      "required": [
+        "requirementsRevision",
+        "rulesRevision",
+        "planRevision",
+        "deliveryRevision",
+        "requirementHash",
+        "manifestHash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requirementsRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "rulesRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requirementHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "feedbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dependenciesHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "baselineRecheckHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "evaluationQualification": {
+      "type": "object",
+      "required": [
+        "evidenceId",
+        "runtimeKind",
+        "hostId",
+        "profileVersion",
+        "ref",
+        "proof"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "evidenceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeKind": {
+          "enum": [
+            "codex",
+            "claude-code",
+            "pi"
+          ]
+        },
+        "hostId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof": {
+          "type": "object",
+          "required": [
+            "version",
+            "policyHash",
+            "platformSessionId",
+            "nativeSessionId",
+            "turnNo",
+            "channels",
+            "probes",
+            "channelAudit"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "policyHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "platformSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "nativeSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turnNo": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "channels": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "probes": {
+              "type": "array",
+              "minItems": 10,
+              "maxItems": 10,
+              "items": {
+                "type": "object",
+                "required": [
+                  "result",
+                  "ref",
+                  "hash",
+                  "probe"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "result": {
+                    "enum": [
+                      "PASS",
+                      "FAIL",
+                      "INCONCLUSIVE",
+                      "NOT_RUN"
+                    ]
+                  },
+                  "ref": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "hash": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "probe": {
+                    "enum": [
+                      "input-read",
+                      "report-write",
+                      "network-read",
+                      "input-write-restore",
+                      "input-rename",
+                      "input-chmod",
+                      "symlink-escape",
+                      "authority-write",
+                      "child-process-write",
+                      "escalation-denied"
+                    ]
+                  }
+                }
+              }
+            },
+            "channelAudit": {
+              "type": "object",
+              "required": [
+                "result",
+                "ref",
+                "hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL",
+                    "INCONCLUSIVE",
+                    "NOT_RUN"
+                  ]
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "hash": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "evaluationRuntime": {
+      "type": "object",
+      "required": [
+        "definitionRef",
+        "runtimeKind",
+        "workspace",
+        "contextPath",
+        "contextHash",
+        "roleHash",
+        "templateVersion",
+        "profileVersion",
+        "runtimeKey"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "definitionRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeKind": {
+          "enum": [
+            "codex",
+            "claude-code",
+            "pi"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contextPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contextHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "roleHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "templateVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profileVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runtimeKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "taskEvaluationJob": {
+      "type": "object",
+      "required": [
+        "jobId",
+        "kind",
+        "projectId",
+        "taskId",
+        "input",
+        "status",
+        "createdAt",
+        "runtime",
+        "qualification",
+        "turnNo",
+        "pendingKey",
+        "snapshotRoot",
+        "baselineHashes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "task-evaluation"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "$ref": "#/$defs/taskEvaluationInput"
+        },
+        "status": {
+          "enum": [
+            "dispatching",
+            "running",
+            "waiting-input",
+            "unknown",
+            "delivered",
+            "failed",
+            "superseded"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "runtime": {
+          "$ref": "#/$defs/evaluationRuntime"
+        },
+        "qualification": {
+          "$ref": "#/$defs/evaluationQualification"
+        },
+        "turnNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pendingKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platformSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/evaluationSource"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "snapshotRoot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baselineHashes": {
+          "type": "object",
+          "required": [
+            "requirements",
+            "rules",
+            "plan"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "requirements": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rules": {
+              "type": "string",
+              "minLength": 1
+            },
+            "plan": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "artifact",
+              "purpose",
+              "deliveryRevision",
+              "manifestHash",
+              "acceptanceId",
+              "files",
+              "snapshotRoot"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifact": {
+                "type": "string",
+                "minLength": 1
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              },
+              "manifestHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptanceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "snapshotRoot": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deliveryRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "baselineRecheck": {
+          "$ref": "#/$defs/baselineRecheckAuthorization"
+        },
+        "resumedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "jobId",
+            "turnNo",
+            "contextHash"
+          ],
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turnNo": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "contextHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "delivered"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "source",
+              "platformSessionId"
+            ],
+            "properties": {
+              "source": {},
+              "platformSessionId": {}
+            }
+          }
+        }
+      ]
+    },
+    "projectEvaluationJob": {
+      "type": "object",
+      "required": [
+        "jobId",
+        "kind",
+        "projectId",
+        "input",
+        "status",
+        "createdAt",
+        "runtime",
+        "qualification",
+        "turnNo",
+        "pendingKey",
+        "candidate",
+        "snapshotRoots"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "project-evaluation"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requirementsHash",
+            "rulesHash",
+            "planHash",
+            "candidateHash",
+            "planRevision"
+          ],
+          "properties": {
+            "requirementsHash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rulesHash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "planHash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "candidateHash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "planRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "feedbackId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "status": {
+          "enum": [
+            "dispatching",
+            "running",
+            "waiting-input",
+            "unknown",
+            "delivered",
+            "failed",
+            "superseded"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "runtime": {
+          "$ref": "#/$defs/evaluationRuntime"
+        },
+        "qualification": {
+          "$ref": "#/$defs/evaluationQualification"
+        },
+        "turnNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pendingKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platformSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "$ref": "#/$defs/evaluationSource"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "statement": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "covers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "method": {
+                    "enum": [
+                      "agent",
+                      "human"
+                    ]
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "passCondition": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "id",
+                  "statement",
+                  "required",
+                  "covers",
+                  "method",
+                  "evidence",
+                  "passCondition"
+                ]
+              }
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "manifestHash": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "platformSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "nativeSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "acceptanceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "requirementHash": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "deliveryRevision": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "dependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "handoffs": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "dependencyRechecks": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "taskId",
+                        "jobId",
+                        "reportHash",
+                        "dependenciesHash",
+                        "check"
+                      ],
+                      "properties": {
+                        "taskId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "jobId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "reportHash": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "dependenciesHash": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "check": {
+                          "$ref": "https://pi-agent.platform/schemas/project-task-evaluation.schema.json#/$defs/dependencyCheck"
+                        }
+                      }
+                    }
+                  },
+                  "baselineRecheck": {
+                    "$ref": "#/$defs/baselineRecheckAuthorization"
+                  }
+                },
+                "required": [
+                  "taskId",
+                  "manifestHash",
+                  "files"
+                ]
+              }
+            },
+            "machine": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "result": {
+                    "enum": [
+                      "PASS",
+                      "FAIL",
+                      "INCONCLUSIVE",
+                      "NOT_RUN"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "result"
+                ]
+              }
+            }
+          },
+          "required": [
+            "rules",
+            "tasks",
+            "machine"
+          ]
+        },
+        "snapshotRoots": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verdict": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            },
+            "blockers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ruleId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "result": {
+                    "enum": [
+                      "PASS",
+                      "FAIL",
+                      "INCONCLUSIVE",
+                      "NOT_RUN"
+                    ]
+                  }
+                },
+                "required": [
+                  "ruleId",
+                  "result"
+                ]
+              }
+            },
+            "integration": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "result",
+                "detail",
+                "evidence"
+              ],
+              "properties": {
+                "result": {
+                  "enum": [
+                    "PASS",
+                    "FAIL",
+                    "INCONCLUSIVE",
+                    "NOT_RUN"
+                  ]
+                },
+                "detail": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "evidence": {
+                  "type": "array",
+                  "maxItems": 100,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "taskId",
+                      "manifestHash",
+                      "file",
+                      "location",
+                      "observation"
+                    ],
+                    "properties": {
+                      "taskId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "manifestHash": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "file": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "location": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "observation": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "source": {
+              "$ref": "#/$defs/evaluationSource"
+            },
+            "input": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "requirementsHash",
+                "rulesHash",
+                "planHash",
+                "candidateHash",
+                "planRevision"
+              ],
+              "properties": {
+                "requirementsHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rulesHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "planHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "candidateHash": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "planRevision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "feedbackId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "required": [
+            "passed",
+            "blockers",
+            "results",
+            "integration",
+            "source",
+            "input"
+          ]
+        },
+        "resumedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "jobId",
+            "turnNo",
+            "contextHash"
+          ],
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "turnNo": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "contextHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "delivered"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "source",
+              "platformSessionId"
+            ],
+            "properties": {
+              "source": {},
+              "platformSessionId": {}
+            }
+          }
+        }
+      ]
+    },
+    "projectHumanJudgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleId",
+        "candidateHash",
+        "result",
+        "userId"
+      ],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidateHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "projectDelivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deliveryId",
+        "revision",
+        "projectRevision",
+        "planRevision",
+        "tasks",
+        "coverage",
+        "limitations",
+        "proposedAt",
+        "overallEvaluation"
+      ],
+      "properties": {
+        "deliveryId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "projectRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "required",
+              "acceptanceId",
+              "deliveryRevision",
+              "manifestHash"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "acceptanceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deliveryRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "manifestHash": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "criterionId",
+              "required",
+              "taskIds",
+              "machine"
+            ],
+            "properties": {
+              "criterionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "taskIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "machine": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              }
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "proposedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "overallEvaluation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "jobId",
+            "candidateHash",
+            "reportHash"
+          ],
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "candidateHash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reportHash": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "repairBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "bindings",
+        "pools",
+        "operations"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "pools": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "capacity",
+              "used"
+            ],
+            "properties": {
+              "capacity": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "used": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "operations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "targets",
+              "poolIds",
+              "status",
+              "charged"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "repair",
+                  "replan"
+                ]
+              },
+              "targets": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "poolIds": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "status": {
+                "enum": [
+                  "reserved",
+                  "launched",
+                  "unknown",
+                  "not-executed"
+                ]
+              },
+              "charged": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "grants": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/repairGrant"
+          }
+        }
+      }
+    },
+    "repairGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grantId",
+        "preview",
+        "userId",
+        "confirmedAt",
+        "messageId"
+      ],
+      "properties": {
+        "grantId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preview": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "targets",
+            "extraAttempts",
+            "planHash",
+            "pools",
+            "previewHash"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "repair",
+                "replan"
+              ]
+            },
+            "targets": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "ruleId"
+                ],
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "ruleId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "extraAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "planHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "pools": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "poolId",
+                  "capacity",
+                  "used",
+                  "held",
+                  "remaining",
+                  "affectedTargets"
+                ],
+                "properties": {
+                  "poolId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "capacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "used": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "held": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "remaining": {
+                    "type": "integer",
+                    "maximum": 9007199254740991
+                  },
+                  "affectedTargets": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "taskId",
+                        "ruleId"
+                      ],
+                      "properties": {
+                        "taskId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "ruleId": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "previewHash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "confirmedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "projectFeedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feedbackId",
+        "deliveryId",
+        "messageId",
+        "text",
+        "userId",
+        "receivedAt",
+        "cycle",
+        "status",
+        "baselines"
+      ],
+      "properties": {
+        "feedbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receivedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "cycle": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "assessed",
+            "correcting",
+            "resolved"
+          ]
+        },
+        "baselines": {
+          "type": "object"
+        },
+        "assessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "path",
+            "proposalId",
+            "actionId",
+            "assessedAt"
+          ],
+          "properties": {
+            "input": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "feedbackId",
+                "requirementsChanged",
+                "rulesChanged",
+                "uncertain",
+                "rationale",
+                "impacts"
+              ],
+              "properties": {
+                "feedbackId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requirementsChanged": {
+                  "type": "boolean"
+                },
+                "rulesChanged": {
+                  "type": "boolean"
+                },
+                "uncertain": {
+                  "type": "boolean"
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8000
+                },
+                "impacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "taskId",
+                      "snapshotHash",
+                      "disposition",
+                      "reason"
+                    ],
+                    "properties": {
+                      "taskId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "snapshotHash": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "disposition": {
+                        "enum": [
+                          "reuse",
+                          "recheck",
+                          "rework",
+                          "unneeded",
+                          "insufficient"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "path": {
+              "enum": [
+                "requirements",
+                "rules",
+                "execution",
+                "clarify"
+              ]
+            },
+            "proposalId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assessedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "stageRevisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "jobId",
+              "operationKey",
+              "baselineHash",
+              "startedAt"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "requirements",
+                  "rules",
+                  "plan"
+                ]
+              },
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "baselineHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "startedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "taskCorrections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "operationKey",
+              "deliveryRevision",
+              "manifestHash",
+              "snapshotHash",
+              "contextPath",
+              "contextHash",
+              "preparedAt"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deliveryRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "manifestHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "snapshotHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "contextPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contextHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "preparedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "resolution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "jobId",
+            "candidateHash",
+            "reportHash",
+            "resolvedAt"
+          ],
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "candidateHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "reportHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "resolvedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "taskRechecks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "deliveryRevision",
+              "manifestHash",
+              "snapshotHash",
+              "preparedAt"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "deliveryRevision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "manifestHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "snapshotHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "preparedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        "workAssessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input",
+            "proposalId",
+            "actionId",
+            "assessedAt",
+            "planRevision",
+            "baselineHashes"
+          ],
+          "properties": {
+            "input": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "feedbackId",
+                "requirementsChanged",
+                "rulesChanged",
+                "uncertain",
+                "rationale",
+                "impacts"
+              ],
+              "properties": {
+                "feedbackId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "requirementsChanged": {
+                  "type": "boolean"
+                },
+                "rulesChanged": {
+                  "type": "boolean"
+                },
+                "uncertain": {
+                  "type": "boolean"
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8000
+                },
+                "impacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "taskId",
+                      "snapshotHash",
+                      "disposition",
+                      "reason"
+                    ],
+                    "properties": {
+                      "taskId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "snapshotHash": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "disposition": {
+                        "enum": [
+                          "reuse",
+                          "recheck",
+                          "rework",
+                          "unneeded",
+                          "insufficient"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "proposalId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "assessedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "planRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "baselineHashes": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "requirements",
+                "rules",
+                "plan"
+              ],
+              "properties": {
+                "requirements": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rules": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "plan": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "corrections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "messageId",
+              "text",
+              "userId",
+              "at",
+              "previousAssessment"
+            ],
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              },
+              "userId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "previousAssessment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "input",
+                  "path",
+                  "proposalId",
+                  "actionId",
+                  "assessedAt"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "feedbackId",
+                      "requirementsChanged",
+                      "rulesChanged",
+                      "uncertain",
+                      "rationale",
+                      "impacts"
+                    ],
+                    "properties": {
+                      "feedbackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "requirementsChanged": {
+                        "type": "boolean"
+                      },
+                      "rulesChanged": {
+                        "type": "boolean"
+                      },
+                      "uncertain": {
+                        "type": "boolean"
+                      },
+                      "rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000
+                      },
+                      "impacts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "taskId",
+                            "snapshotHash",
+                            "disposition",
+                            "reason"
+                          ],
+                          "properties": {
+                            "taskId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "snapshotHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "disposition": {
+                              "enum": [
+                                "reuse",
+                                "recheck",
+                                "rework",
+                                "unneeded",
+                                "insufficient"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "path": {
+                    "enum": [
+                      "requirements",
+                      "rules",
+                      "execution",
+                      "clarify"
+                    ]
+                  },
+                  "proposalId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "assessedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "baselineRecheckAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feedbackId",
+        "taskId",
+        "assessmentHash",
+        "snapshotHash",
+        "manifestHash",
+        "sourceRequirementHash",
+        "requirementHash",
+        "deliveryRevision",
+        "planRevision",
+        "baselineHashes"
+      ],
+      "properties": {
+        "feedbackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assessmentHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "snapshotHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRequirementHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requirementHash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deliveryRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "baselineHashes": {
+          "type": "object",
+          "required": [
+            "requirements",
+            "rules",
+            "plan"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "requirements": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rules": {
+              "type": "string",
+              "minLength": 1
+            },
+            "plan": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "runtimeSwitch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "switchId",
+        "taskId",
+        "planRevision",
+        "planHash",
+        "approvedBy",
+        "preparedAt",
+        "status",
+        "previousExecution",
+        "previousRequirementHash",
+        "previousConfigHash",
+        "target"
+      ],
+      "properties": {
+        "switchId": {
+          "type": "string",
+          "pattern": "^sw-[a-f0-9]{64}$"
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "planRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "planHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "approvedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preparedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "prepared",
+            "dispatching",
+            "unknown",
+            "failed",
+            "bound"
+          ]
+        },
+        "previousExecution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "executionMode",
+            "platformSessionId",
+            "nativeSessionId",
+            "turns"
+          ],
+          "properties": {
+            "executionMode": {
+              "const": "runtime-native"
+            },
+            "platformSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "nativeSessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "workspace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "startedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "turns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "turnNo",
+                  "status",
+                  "observedAt"
+                ],
+                "properties": {
+                  "turnNo": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "status": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "observedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "previousRequirementHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "previousConfigHash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtimeKind",
+            "definitionRef",
+            "requirementHash",
+            "configHash"
+          ],
+          "properties": {
+            "runtimeKind": {
+              "enum": [
+                "codex",
+                "claude-code",
+                "pi"
+              ]
+            },
+            "definitionRef": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "effort": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requirementHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "configHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "claim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "operationId",
+            "operationKey",
+            "contextPath",
+            "contextHash"
+          ],
+          "properties": {
+            "operationId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "operationKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contextPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contextHash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        "platformSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nativeSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stopRequestedAt": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "dispatching",
+                  "unknown",
+                  "failed",
+                  "bound"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "claim"
+            ],
+            "type": "object",
+            "properties": {
+              "claim": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "operationId",
+                  "operationKey",
+                  "contextPath",
+                  "contextHash"
+                ],
+                "properties": {
+                  "operationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "operationKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contextPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contextHash": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "bound"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "platformSessionId",
+              "nativeSessionId"
+            ],
+            "type": "object",
+            "properties": {
+              "platformSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeSessionId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "executionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "maxWallTimeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31536000000
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000000
+        },
+        "maxReportedCostUsd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000000
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "VerificationRecorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "taskId",
+              "records"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "records": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/verification"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "TaskAccepted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "taskId",
+              "acceptance"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptance": {
+                "$ref": "#/$defs/acceptance"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "TaskReworkRequested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "taskId",
+              "acceptance",
+              "failed",
+              "operationKey",
+              "requirementHash",
+              "contextPath",
+              "contextHash"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "acceptance": {
+                "$ref": "#/$defs/acceptance"
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "failed": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "criterionId",
+                    "statement",
+                    "detail"
+                  ],
+                  "properties": {
+                    "criterionId": {
+                      "type": "string"
+                    },
+                    "statement": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "requirementHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contextPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contextHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "ProjectAccepted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type",
+          "payload"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "VerificationRecorded"
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "records"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "records": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "evaluator"
+                  ],
+                  "additionalProperties": true,
+                  "properties": {
+                    "evaluator": {
+                      "const": "agent"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host",
+                  "consumer"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type",
+          "payload"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "const": "VerificationRecorded"
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "records"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "records": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "required": [
+                    "evaluator"
+                  ],
+                  "additionalProperties": true,
+                  "properties": {
+                    "evaluator": {
+                      "const": "human"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type",
+          "payload"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "enum": [
+              "TaskAccepted",
+              "TaskReworkRequested"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "acceptance"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "acceptance": {
+                "type": "object",
+                "required": [
+                  "signer"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "signer": {
+                    "type": "object",
+                    "required": [
+                      "role"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "role": {
+                        "const": "user"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type",
+          "payload"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "type": {
+            "enum": [
+              "TaskAccepted",
+              "TaskReworkRequested"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "acceptance"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "acceptance": {
+                "type": "object",
+                "required": [
+                  "signer"
+                ],
+                "additionalProperties": true,
+                "properties": {
+                  "signer": {
+                    "type": "object",
+                    "required": [
+                      "role"
+                    ],
+                    "additionalProperties": true,
+                    "properties": {
+                      "role": {
+                        "const": "harness"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host",
+                  "consumer"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "EvaluationJobPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "job"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "job": {
+                "$ref": "#/$defs/taskEvaluationJob"
+              }
+            }
+          },
+          "actor": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "EvaluationJobUpdated"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "jobId",
+              "update"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "update": {
+                "type": "object",
+                "required": [],
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "dispatching",
+                      "running",
+                      "waiting-input",
+                      "unknown",
+                      "delivered",
+                      "failed",
+                      "superseded"
+                    ]
+                  },
+                  "turnNo": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "pendingKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "platformSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source": {
+                    "$ref": "#/$defs/evaluationSource"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "minProperties": 1
+              }
+            }
+          },
+          "actor": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host",
+                  "consumer",
+                  "user"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectEvaluationJobPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "job"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "job": {
+                "$ref": "#/$defs/projectEvaluationJob"
+              }
+            }
+          },
+          "actor": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectEvaluationJobUpdated"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "jobId",
+              "update"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "update": {
+                "type": "object",
+                "required": [],
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "dispatching",
+                      "running",
+                      "waiting-input",
+                      "unknown",
+                      "delivered",
+                      "failed",
+                      "superseded"
+                    ]
+                  },
+                  "turnNo": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "pendingKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "platformSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source": {
+                    "$ref": "#/$defs/evaluationSource"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "passed": {
+                        "type": "boolean"
+                      },
+                      "blockers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "results": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "ruleId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "result": {
+                              "enum": [
+                                "PASS",
+                                "FAIL",
+                                "INCONCLUSIVE",
+                                "NOT_RUN"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "ruleId",
+                            "result"
+                          ]
+                        }
+                      },
+                      "integration": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "result",
+                          "detail",
+                          "evidence"
+                        ],
+                        "properties": {
+                          "result": {
+                            "enum": [
+                              "PASS",
+                              "FAIL",
+                              "INCONCLUSIVE",
+                              "NOT_RUN"
+                            ]
+                          },
+                          "detail": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "evidence": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "taskId",
+                                "manifestHash",
+                                "file",
+                                "location",
+                                "observation"
+                              ],
+                              "properties": {
+                                "taskId": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "manifestHash": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "file": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "location": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "observation": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "source": {
+                        "$ref": "#/$defs/evaluationSource"
+                      },
+                      "input": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "requirementsHash",
+                          "rulesHash",
+                          "planHash",
+                          "candidateHash",
+                          "planRevision"
+                        ],
+                        "properties": {
+                          "requirementsHash": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "rulesHash": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "planHash": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "candidateHash": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "planRevision": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "feedbackId": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "passed",
+                      "blockers",
+                      "results",
+                      "integration",
+                      "source",
+                      "input"
+                    ]
+                  }
+                },
+                "minProperties": 1
+              }
+            }
+          },
+          "actor": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "host",
+                  "consumer",
+                  "user"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectCriterionJudged"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "jobId",
+              "ruleId",
+              "candidateHash",
+              "result"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ruleId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidateHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "result": {
+                "enum": [
+                  "PASS",
+                  "FAIL"
+                ]
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectDeliveryProposed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "delivery"
+            ],
+            "properties": {
+              "delivery": {
+                "$ref": "#/$defs/projectDelivery"
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "user",
+                  "host"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "RepairBudgetInitialized"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "planHash",
+              "limits"
+            ],
+            "properties": {
+              "planHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "repair",
+                  "replan"
+                ],
+                "properties": {
+                  "repair": {
+                    "const": 2
+                  },
+                  "replan": {
+                    "const": 2
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "RepairBudgetReserved"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operationKey",
+              "kind",
+              "targets"
+            ],
+            "properties": {
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "repair",
+                  "replan"
+                ]
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "taskId",
+                    "ruleId"
+                  ],
+                  "properties": {
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "ruleId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "RepairBudgetOutcomeObserved"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operationKey",
+              "outcome",
+              "observation"
+            ],
+            "properties": {
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "enum": [
+                  "launched",
+                  "unknown",
+                  "not-executed"
+                ]
+              },
+              "observation": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "runtimeKey",
+                  "state",
+                  "steps"
+                ],
+                "properties": {
+                  "runtimeKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "operationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "platformSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "state": {
+                    "enum": [
+                      "prepared",
+                      "queued",
+                      "dispatching",
+                      "confirmed",
+                      "failed",
+                      "unknown",
+                      "missing"
+                    ]
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "RepairLineageConfirmed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "planHash",
+              "target",
+              "predecessors"
+            ],
+            "properties": {
+              "planHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "target": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "ruleId"
+                ],
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "ruleId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "predecessors": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "taskId",
+                    "ruleId"
+                  ],
+                  "properties": {
+                    "taskId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "ruleId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectReplanStarted"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "jobId",
+              "plannerJobId",
+              "operationKey",
+              "planHash",
+              "reportHash"
+            ],
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "plannerJobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "reportHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            }
+          },
+          "actor": {
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            },
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "RepairAllowanceGranted"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "grant"
+            ],
+            "properties": {
+              "grant": {
+                "$ref": "#/$defs/repairGrant"
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectFeedbackReceived"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedback"
+            ],
+            "properties": {
+              "feedback": {
+                "$ref": "#/$defs/projectFeedback"
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectFeedbackAssessed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "assessment"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assessment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "input",
+                  "path",
+                  "proposalId",
+                  "actionId",
+                  "assessedAt"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "feedbackId",
+                      "requirementsChanged",
+                      "rulesChanged",
+                      "uncertain",
+                      "rationale",
+                      "impacts"
+                    ],
+                    "properties": {
+                      "feedbackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "requirementsChanged": {
+                        "type": "boolean"
+                      },
+                      "rulesChanged": {
+                        "type": "boolean"
+                      },
+                      "uncertain": {
+                        "type": "boolean"
+                      },
+                      "rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000
+                      },
+                      "impacts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "taskId",
+                            "snapshotHash",
+                            "disposition",
+                            "reason"
+                          ],
+                          "properties": {
+                            "taskId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "snapshotHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "disposition": {
+                              "enum": [
+                                "reuse",
+                                "recheck",
+                                "rework",
+                                "unneeded",
+                                "insufficient"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "path": {
+                    "enum": [
+                      "requirements",
+                      "rules",
+                      "execution",
+                      "clarify"
+                    ]
+                  },
+                  "proposalId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "assessedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "FeedbackStageRevisionPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "revision"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revision": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "jobId",
+                  "operationKey",
+                  "baselineHash",
+                  "startedAt"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "requirements",
+                      "rules",
+                      "plan"
+                    ]
+                  },
+                  "jobId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "operationKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "baselineHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "startedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "FeedbackTaskCorrectionPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "correction"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "correction": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "operationKey",
+                  "deliveryRevision",
+                  "manifestHash",
+                  "snapshotHash",
+                  "contextPath",
+                  "contextHash",
+                  "preparedAt"
+                ],
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "operationKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deliveryRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "manifestHash": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "snapshotHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "contextPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contextHash": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "preparedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectFeedbackResolved"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            },
+            "type": "object"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "jobId",
+              "candidateHash",
+              "reportHash"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "candidateHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "reportHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "FeedbackTaskRecheckPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "recheck"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "recheck": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "taskId",
+                  "deliveryRevision",
+                  "manifestHash",
+                  "snapshotHash",
+                  "preparedAt"
+                ],
+                "properties": {
+                  "taskId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "deliveryRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "manifestHash": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  },
+                  "snapshotHash": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "preparedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectFeedbackWorkAssessed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "assessment"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "assessment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "input",
+                  "proposalId",
+                  "actionId",
+                  "assessedAt",
+                  "planRevision",
+                  "baselineHashes"
+                ],
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "feedbackId",
+                      "requirementsChanged",
+                      "rulesChanged",
+                      "uncertain",
+                      "rationale",
+                      "impacts"
+                    ],
+                    "properties": {
+                      "feedbackId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "requirementsChanged": {
+                        "type": "boolean"
+                      },
+                      "rulesChanged": {
+                        "type": "boolean"
+                      },
+                      "uncertain": {
+                        "type": "boolean"
+                      },
+                      "rationale": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8000
+                      },
+                      "impacts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "taskId",
+                            "snapshotHash",
+                            "disposition",
+                            "reason"
+                          ],
+                          "properties": {
+                            "taskId": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "snapshotHash": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$"
+                            },
+                            "disposition": {
+                              "enum": [
+                                "reuse",
+                                "recheck",
+                                "rework",
+                                "unneeded",
+                                "insufficient"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 8000
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "proposalId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "assessedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "planRevision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "baselineHashes": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "requirements",
+                      "rules",
+                      "plan"
+                    ],
+                    "properties": {
+                      "requirements": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "rules": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "plan": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRetryRequested"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "operationKey",
+              "platformSessionId",
+              "nativeSessionId",
+              "requirementHash",
+              "configHash",
+              "contextPath",
+              "turnNo",
+              "status",
+              "note",
+              "contextHash"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "platformSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "requirementHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "configHash": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contextPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "turnNo": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "enum": [
+                  "failed",
+                  "interrupted",
+                  "cancelled"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 1000
+              },
+              "contextHash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRuntimeSwitchPrepared"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            },
+            "type": "object"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "switch"
+            ],
+            "properties": {
+              "switch": {
+                "$ref": "#/$defs/runtimeSwitch"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRuntimeSwitchClaimed"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "switchId",
+              "claim"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "switchId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "claim": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "operationId",
+                  "operationKey",
+                  "contextPath",
+                  "contextHash"
+                ],
+                "properties": {
+                  "operationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "operationKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contextPath": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "contextHash": {
+                    "type": "string",
+                    "pattern": "^sha256:[a-f0-9]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRuntimeSwitchStatus"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "switchId",
+              "status"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "switchId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "enum": [
+                  "unknown",
+                  "failed"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRuntimeSwitchBound"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "switchId",
+              "platformSessionId",
+              "nativeSessionId",
+              "workspace"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "switchId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "platformSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "workspace": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "TaskRuntimeSwitchStopRequested"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "host"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "taskId",
+              "switchId"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "switchId": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "required": [
+          "type",
+          "payload"
+        ],
+        "properties": {
+          "type": {
+            "const": "SettingsChanged"
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "settings"
+            ],
+            "properties": {
+              "settings": {
+                "type": "object",
+                "required": [
+                  "budget"
+                ],
+                "properties": {
+                  "budget": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "user"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "settings",
+              "previousBudget",
+              "confirmedIncrease"
+            ],
+            "properties": {
+              "settings": {
+                "type": "object",
+                "properties": {
+                  "budget": {
+                    "$ref": "#/$defs/executionBudget"
+                  }
+                }
+              },
+              "previousBudget": {
+                "$ref": "#/$defs/executionBudget"
+              },
+              "confirmedIncrease": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "PlanRevisionRequested"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requestId",
+              "messageId",
+              "text",
+              "plannerJobId",
+              "planHash",
+              "operationKey"
+            ],
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "messageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              },
+              "plannerJobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planHash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "operationKey": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ProjectFeedbackCorrected"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "feedbackId",
+              "messageId",
+              "text"
+            ],
+            "properties": {
+              "feedbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "messageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

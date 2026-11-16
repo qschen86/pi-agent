@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/project-event.schema.json",
+  "title": "project-event@1",
+  "description": "V3.0 §10.1：项目事件（只追加）。主 Agent 输出只是提议；只有校验通过的宿主命令或带源引用的消费结果才形成事件。",
+  "type": "object",
+  "required": ["schema", "eventId", "projectId", "type", "aggregateVersion", "at", "actor", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "project-event@1" },
+    "eventId": { "type": "string", "pattern": "^ev-[A-Za-z0-9_-]{6,80}$" },
+    "projectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{3,80}$" },
+    "type": { "type": "string", "pattern": "^[A-Z][A-Za-z]{2,60}$" },
+    "aggregateVersion": { "type": "integer", "minimum": 1 },
+    "at": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["user", "coordinator", "host", "consumer", "migration"] },
+        "id": { "type": "string" },
+        "epoch": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "causationId": { "type": "string" },
+    "sourceRef": { "type": "string", "minLength": 3, "maxLength": 300 },
+    "payload": { "type": "object" }
+  }
+}

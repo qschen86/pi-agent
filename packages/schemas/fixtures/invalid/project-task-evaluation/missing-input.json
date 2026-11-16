@@ -1,0 +1,21 @@
+{
+  "version": "project-task-evaluation@1",
+  "projectId": "prj-example",
+  "taskId": "t-report",
+  "jobId": "eval-example",
+  "overall": "PASS",
+  "results": [
+    {
+      "criterionId": "A1",
+      "result": "PASS",
+      "detail": "结论由报告中引用支持",
+      "evidence": [
+        {
+          "file": "report.md",
+          "location": "第1段",
+          "observation": "引用明确支持结论"
+        }
+      ]
+    }
+  ]
+}

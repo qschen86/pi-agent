@@ -1,0 +1,30 @@
+[
+  {
+    "name": "spdx-exceptions",
+    "version": "2.5.0",
+    "url": "https://creativecommons.org/licenses/by/3.0/legalcode.txt",
+    "file": "spdx-exceptions-LICENSE",
+    "sha256": "4a614039cd65016e824a1f4e1b007741c9910d537c3d0c9d48dadcda4b58096f"
+  },
+  {
+    "name": "spdx-license-ids",
+    "version": "3.0.23",
+    "url": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt",
+    "file": "spdx-license-ids-LICENSE",
+    "sha256": "5ade7490915002d2537ca1a032b4a61c3288646aa5a87ad41770275a151afaac"
+  },
+  {
+    "name": "@npmcli/agent",
+    "version": "4.0.2",
+    "url": "https://raw.githubusercontent.com/spdx/license-list-data/main/text/ISC.txt",
+    "file": "npmcli-agent-LICENSE",
+    "sha256": "5e4404701e94c59ea41d9c5e47930b81af87a37c80545ee4bd23b3f1eb2dc50d"
+  },
+  {
+    "name": "@sigstore/verify",
+    "version": "3.1.1",
+    "url": "https://raw.githubusercontent.com/sigstore/sigstore-js/main/LICENSE",
+    "file": "sigstore-verify-LICENSE",
+    "sha256": "16363085adac3ff7b915886d95009f52bb5ee4d31f058de62763fc6babc8de60"
+  }
+]

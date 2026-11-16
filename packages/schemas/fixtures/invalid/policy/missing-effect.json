@@ -1,0 +1,54 @@
+{
+  "policyVersion": 1,
+  "sourcePlanHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rules": [
+    {
+      "ruleId": "fs-read-allow",
+      "resource": {
+        "type": "filesystem"
+      },
+      "action": "read",
+      "conditions": {
+        "pathWithin": [
+          "/workspace/in",
+          "/workspace/out"
+        ]
+      },
+      "approval": "none",
+      "obligations": [
+        "emitAuditEvent"
+      ]
+    },
+    {
+      "ruleId": "fs-write-allow",
+      "resource": {
+        "type": "filesystem"
+      },
+      "action": "write",
+      "effect": "allow",
+      "conditions": {
+        "pathWithin": [
+          "/workspace/out"
+        ],
+        "maxBytes": 10485760,
+        "allowedExtensions": [
+          ".md",
+          ".txt"
+        ]
+      },
+      "approval": "none",
+      "obligations": [
+        "hashArtifact",
+        "emitAuditEvent"
+      ]
+    },
+    {
+      "ruleId": "deny-all-else",
+      "resource": {
+        "type": "credential"
+      },
+      "action": "export",
+      "effect": "deny"
+    }
+  ]
+}

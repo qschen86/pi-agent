@@ -1,0 +1,43 @@
+{
+  "apiVersion": "agent.platform/v0",
+  "kind": "AgentDefinition",
+  "metadata": {
+    "id": "legacy-agent",
+    "version": "0.9.0",
+    "owner": "owner-1",
+    "status": "PUBLISHED"
+  },
+  "data": {
+    "identity": {
+      "role": "研究专家",
+      "mission": "历史版本",
+      "nonGoals": [
+        "不升级字段语义"
+      ]
+    },
+    "principles": [
+      {
+        "priority": 1,
+        "statement": "兼容优先"
+      }
+    ],
+    "capabilities": {
+      "tools": []
+    },
+    "limits": {
+      "network": {
+        "default": "deny",
+        "allow": []
+      }
+    },
+    "brain": {
+      "modelFamily": "glm"
+    },
+    "delivery": {
+      "evidenceRequired": true,
+      "formats": [
+        "md"
+      ]
+    }
+  }
+}

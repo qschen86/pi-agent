@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/agent-definition-v2.schema.json",
+  "title": "AgentDefinition v2",
+  "description": "V3.0 §6.4：agent.platform/v2。在 v1 的身份、原则、能力、约束、交付之上声明运行时绑定（允许的 runtime 与执行模式、角色模板及版本、所需运行能力）。PUBLISHED 后不可变；v1 定义不回写本结构，也不推断原生资格。",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "patternProperties": { "^x-": {} },
+  "properties": {
+    "apiVersion": { "const": "agent.platform/v2" },
+    "kind": { "const": "AgentDefinition" },
+    "metadata": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/metadata" },
+    "spec": {
+      "type": "object",
+      "required": ["identity", "principles", "capabilities", "constraints", "delivery", "runtimeBinding"],
+      "additionalProperties": false,
+      "patternProperties": { "^x-": {} },
+      "properties": {
+        "identity": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/identity" },
+        "principles": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/principles" },
+        "knowledge": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/knowledge" },
+        "capabilities": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/capabilities" },
+        "constraints": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/constraints" },
+        "brain": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/brain" },
+        "delivery": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/delivery" },
+        "taskInterfaces": { "$ref": "https://pi-agent.platform/schemas/agent-definition.schema.json#/properties/spec/properties/taskInterfaces" },
+        "runtimeBinding": {
+          "type": "object",
+          "required": ["allowedRuntimes", "roleTemplate", "requiredCapabilities"],
+          "additionalProperties": false,
+          "properties": {
+            "allowedRuntimes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["runtimeKind", "executionMode"],
+                "additionalProperties": false,
+                "properties": {
+                  "runtimeKind": { "enum": ["codex", "claude-code", "pi", "platform-model"] },
+                  "executionMode": { "enum": ["runtime-native", "platform-model"] },
+                  "defaultModel": { "type": "string", "minLength": 1 },
+                  "candidateModels": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                }
+              }
+            },
+            "stageKinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["requirements", "rules", "plan", "evaluation", "coordinator"] } },
+            "roleTemplate": {
+              "type": "object",
+              "required": ["version", "text"],
+              "additionalProperties": false,
+              "properties": {
+                "version": { "type": "string", "pattern": "^[0-9A-Za-z.-]{1,32}$" },
+                "text": { "type": "string", "minLength": 20, "maxLength": 20000 }
+              }
+            },
+            "requiredCapabilities": {
+              "type": "array",
+              "items": { "enum": ["roleInstructions", "create", "resume", "interrupt", "approval", "stream", "structuredOutput"] }
+            },
+            "deliverables": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["mediaType"],
+                "additionalProperties": false,
+                "properties": {
+                  "mediaType": { "type": "string", "minLength": 3 },
+                  "schemaRef": { "type": "string", "pattern": "^[a-z][a-z0-9-]*@[0-9]+$" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

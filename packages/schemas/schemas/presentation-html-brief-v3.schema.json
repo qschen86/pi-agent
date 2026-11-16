@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/presentation-html-brief-v3.schema.json",
+  "title": "PresentationHtmlBriefV3",
+  "description": "presentation-html-brief@3（v2.6）：PPT 子任务冻结的设计要求。第二步设计对话按本 schema 收集约束（REQUIREMENTS 13.7）；逐页计划与成品是运行产物，不回写本对象。每项约束标明来源。",
+  "type": "object",
+  "required": ["version", "intent", "constraints", "stylePackRef", "output", "qualityPolicy"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": "presentation-html-brief@3" },
+    "intent": {
+      "type": "object",
+      "required": ["topic", "audience", "objective", "language"],
+      "additionalProperties": false,
+      "properties": {
+        "topic": { "$ref": "#/$defs/sourced" },
+        "audience": { "$ref": "#/$defs/sourced" },
+        "objective": { "$ref": "#/$defs/sourced" },
+        "language": { "enum": ["zh-CN", "en-US"] },
+        "scope": { "$ref": "#/$defs/sourced" }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "required": ["mustInclude", "forbidden", "pages"],
+      "additionalProperties": false,
+      "properties": {
+        "mustInclude": {
+          "description": "必须出现的内容：正式稿按覆盖映射逐项核对",
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "object",
+            "required": ["id", "statement", "origin"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^M[0-9]{1,3}$" },
+              "statement": { "type": "string", "minLength": 1, "maxLength": 300 },
+              "origin": { "$ref": "#/$defs/origin" },
+              "quote": { "type": "string", "maxLength": 300 }
+            }
+          }
+        },
+        "forbidden": {
+          "description": "禁用的表现方式：已知规则映射到渲染与检查；unsupported 为确认前已告知无法支持的说法",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["id", "rule", "statement", "origin"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^F[0-9]{1,3}$" },
+              "rule": { "enum": ["no-borders", "no-vertical-bars", "no-animation", "no-cards", "no-gradients", "no-dark-slides", "no-light-slides", "unsupported"] },
+              "statement": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "origin": { "$ref": "#/$defs/origin" },
+              "quote": { "type": "string", "maxLength": 300 }
+            }
+          }
+        },
+        "pages": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min": { "type": "integer", "minimum": 1, "maximum": 40 },
+            "max": { "type": "integer", "minimum": 1, "maximum": 40 },
+            "hard": { "type": "boolean", "description": "true：硬限制；false：软偏好" },
+            "origin": { "$ref": "#/$defs/origin" }
+          }
+        },
+        "emphasis": {
+          "description": "表达偏好，如「数字优先」：影响构图选择与重点分配",
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["preference", "origin"],
+            "additionalProperties": false,
+            "properties": {
+              "preference": { "enum": ["numbers-first", "fewer-words", "more-evidence", "comparison-first"] },
+              "origin": { "$ref": "#/$defs/origin" },
+              "quote": { "type": "string", "maxLength": 300 }
+            }
+          }
+        }
+      }
+    },
+    "stylePackRef": { "type": "string", "pattern": "^[a-z0-9-]+@[0-9]+$" },
+    "visualOverrides": {
+      "description": "风格包允许的覆盖项（首期只有这几项；不能直接调配色与字号）",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accent": { "enum": ["blue", "green", "purple", "orange"] },
+        "theme": { "enum": ["alternate", "dark", "light"] },
+        "density": { "enum": ["airy", "standard"] }
+      }
+    },
+    "designReferences": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["url", "title", "fetchedAt", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string", "pattern": "^https://" },
+          "title": { "type": "string", "maxLength": 300 },
+          "fetchedAt": { "type": "string", "format": "date-time" },
+          "reason": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "previewPlanRef": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "output": {
+      "type": "object",
+      "required": ["fileName"],
+      "additionalProperties": false,
+      "properties": {
+        "fileName": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+\\.html$" },
+        "printable": { "type": "boolean" }
+      }
+    },
+    "qualityPolicy": {
+      "type": "object",
+      "required": ["autoRevisionRounds"],
+      "additionalProperties": false,
+      "properties": {
+        "autoRevisionRounds": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "requireReferences": { "type": "boolean", "description": "用户要求「必须参考检索结果」：未满足时保持未决" }
+      }
+    }
+  },
+  "$defs": {
+    "origin": { "enum": ["user_explicit", "user_answer", "default_confirmed", "inference"] },
+    "sourced": {
+      "type": "object",
+      "required": ["value", "origin"],
+      "additionalProperties": false,
+      "properties": {
+        "value": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "origin": { "$ref": "#/$defs/origin" },
+        "quote": { "type": "string", "maxLength": 300 }
+      }
+    }
+  }
+}

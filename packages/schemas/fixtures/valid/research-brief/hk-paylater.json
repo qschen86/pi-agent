@@ -1,0 +1,583 @@
+{
+  "version": "research-brief@1",
+  "context": {
+    "decision": {
+      "text": "是否以及如何在香港做 PayLater 产品",
+      "origin": "user_answer",
+      "status": "included",
+      "answerRef": "turn1.q1"
+    },
+    "audience": [
+      {
+        "text": "产品负责人",
+        "origin": "user_answer",
+        "status": "included",
+        "answerRef": "turn1.q1"
+      }
+    ],
+    "successCriteria": [
+      {
+        "text": "看清各类模式在入口、资金、风控上的优劣",
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "有待支持的产品决策，需要能比较各模式的结构性优劣"
+      },
+      {
+        "text": "能据此判断切入机会",
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决策是是否及如何切入"
+      }
+    ]
+  },
+  "objective": {
+    "question": {
+      "id": "Q0",
+      "text": "香港 PayLater 市场格局如何，机会在哪里",
+      "origin": "inference",
+      "status": "included",
+      "impact": "low",
+      "rationale": "由原文五个维度与用户的决策归纳"
+    },
+    "subQuestions": [
+      {
+        "id": "Q1",
+        "text": "主要玩家有哪些",
+        "priority": "must",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 18,
+            "end": 22,
+            "quote": "主要玩家"
+          }
+        ]
+      },
+      {
+        "id": "Q2",
+        "text": "市场规模多大",
+        "priority": "must",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 23,
+            "end": 25,
+            "quote": "规模"
+          }
+        ]
+      },
+      {
+        "id": "Q3",
+        "text": "各玩家如何定位",
+        "priority": "must",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 26,
+            "end": 28,
+            "quote": "定位"
+          }
+        ]
+      },
+      {
+        "id": "Q4",
+        "text": "各玩家的竞争策略是什么",
+        "priority": "must",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 29,
+            "end": 33,
+            "quote": "竞争策略"
+          }
+        ]
+      },
+      {
+        "id": "Q5",
+        "text": "未来方向如何",
+        "priority": "must",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 34,
+            "end": 38,
+            "quote": "未来方向"
+          }
+        ]
+      },
+      {
+        "id": "Q6",
+        "text": "监管如何影响格局",
+        "priority": "should",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "消费信贷类市场受监管牌照与利率上限约束，直接影响玩家形态"
+      }
+    ],
+    "scope": {
+      "market": {
+        "name": "香港 PayLater（先买后付）",
+        "definitionId": "DF1",
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 5,
+            "end": 17,
+            "quote": "香港paylater市场"
+          }
+        ]
+      },
+      "geography": [
+        {
+          "text": "香港",
+          "origin": "user_explicit",
+          "status": "included",
+          "sourceRefs": [
+            {
+              "start": 5,
+              "end": 7,
+              "quote": "香港"
+            }
+          ]
+        }
+      ],
+      "timeRange": {
+        "asOf": "2026-09",
+        "lookbackFrom": "2017",
+        "origin": "default",
+        "status": "included",
+        "impact": "low",
+        "rationale": "截至当前；回溯到有历史统计的年份，以便看清格局变化"
+      },
+      "include": [
+        {
+          "id": "SI1",
+          "item": "独立 BNPL 平台",
+          "origin": "user_answer",
+          "status": "included",
+          "answerRef": "turn1.q2"
+        },
+        {
+          "id": "SI2",
+          "item": "银行 / 数字银行的先买后付与交易分期",
+          "origin": "user_answer",
+          "status": "included",
+          "answerRef": "turn1.q2"
+        },
+        {
+          "id": "SI3",
+          "item": "电子钱包内嵌的分期",
+          "origin": "user_answer",
+          "status": "included",
+          "answerRef": "turn1.q2"
+        },
+        {
+          "id": "SI4",
+          "item": "信用卡交易分期与商户免息分期",
+          "origin": "user_answer",
+          "status": "included",
+          "answerRef": "turn1.q2"
+        }
+      ],
+      "exclude": [
+        {
+          "id": "SX1",
+          "item": "私人贷款、现金贷",
+          "origin": "inference",
+          "status": "included",
+          "impact": "material",
+          "rationale": "与消费时点无关的信贷不属于 PayLater"
+        },
+        {
+          "id": "SX2",
+          "item": "只服务海外消费者的跨境 BNPL",
+          "origin": "inference",
+          "status": "included",
+          "impact": "material",
+          "rationale": "对象不是香港消费者"
+        }
+      ]
+    }
+  },
+  "framework": {
+    "definitions": [
+      {
+        "id": "DF1",
+        "term": "PayLater",
+        "meaning": "在消费时或消费后，把单笔消费拆成分期或延后付款的融资选择（含 SI1–SI4）",
+        "origin": "user_answer",
+        "status": "included",
+        "answerRef": "turn1.q2"
+      },
+      {
+        "id": "DF2",
+        "term": "规模口径",
+        "meaning": "GMV、活跃用户、商户数、卡消费额是不同口径，不能混用或相互冒充",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "香港缺少统一口径的官方统计，不区分口径会把代理指标当成市场规模"
+      }
+    ],
+    "taxonomy": [
+      {
+        "id": "EC1",
+        "name": "独立 BNPL 平台",
+        "scopeIds": [
+          "SI1"
+        ],
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "按纳入范围 SI1 建类"
+      },
+      {
+        "id": "EC2",
+        "name": "银行 / 数字银行 BNPL 与交易分期",
+        "scopeIds": [
+          "SI2"
+        ],
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "按纳入范围 SI2 建类"
+      },
+      {
+        "id": "EC3",
+        "name": "钱包内分期",
+        "scopeIds": [
+          "SI3"
+        ],
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "按纳入范围 SI3 建类"
+      },
+      {
+        "id": "EC4",
+        "name": "发卡行分期",
+        "scopeIds": [
+          "SI4"
+        ],
+        "origin": "inference",
+        "status": "included",
+        "impact": "low",
+        "rationale": "按纳入范围 SI4 建类"
+      }
+    ],
+    "entities": {
+      "named": [],
+      "selection": {
+        "perCategory": 2,
+        "includeInactive": true,
+        "rule": "每类按公开可见度取头部 2 家；已退出或暂停的纳入并标明状态",
+        "origin": "default",
+        "status": "included",
+        "impact": "low",
+        "rationale": "原文未指定玩家数量与入选标准"
+      }
+    },
+    "dimensions": [
+      {
+        "id": "DM1",
+        "name": "格局与玩家",
+        "level": "market",
+        "questionIds": [
+          "Q1"
+        ],
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 18,
+            "end": 22,
+            "quote": "主要玩家"
+          }
+        ]
+      },
+      {
+        "id": "DM2",
+        "name": "规模",
+        "level": "market",
+        "questionIds": [
+          "Q2"
+        ],
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 23,
+            "end": 25,
+            "quote": "规模"
+          }
+        ]
+      },
+      {
+        "id": "DM3",
+        "name": "定位",
+        "level": "entity",
+        "questionIds": [
+          "Q3"
+        ],
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 26,
+            "end": 28,
+            "quote": "定位"
+          }
+        ],
+        "facets": [
+          {
+            "id": "DM3.1",
+            "name": "目标客群",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "定位的常见拆法"
+          },
+          {
+            "id": "DM3.2",
+            "name": "场景",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "定位的常见拆法"
+          },
+          {
+            "id": "DM3.3",
+            "name": "产品形态",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "定位的常见拆法"
+          },
+          {
+            "id": "DM3.4",
+            "name": "差异化",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "定位的常见拆法"
+          }
+        ]
+      },
+      {
+        "id": "DM4",
+        "name": "竞争策略",
+        "level": "entity",
+        "questionIds": [
+          "Q4"
+        ],
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 29,
+            "end": 33,
+            "quote": "竞争策略"
+          }
+        ],
+        "facets": [
+          {
+            "id": "DM4.1",
+            "name": "入口与获客",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "消费信贷竞争的关键要素"
+          },
+          {
+            "id": "DM4.2",
+            "name": "定价与免息",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "消费信贷竞争的关键要素"
+          },
+          {
+            "id": "DM4.3",
+            "name": "资金与风控",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "消费信贷竞争的关键要素"
+          },
+          {
+            "id": "DM4.4",
+            "name": "受理网络",
+            "origin": "suggestion",
+            "status": "included",
+            "impact": "low",
+            "rationale": "消费信贷竞争的关键要素"
+          }
+        ]
+      },
+      {
+        "id": "DM5",
+        "name": "未来方向",
+        "level": "market",
+        "questionIds": [
+          "Q5"
+        ],
+        "origin": "user_explicit",
+        "status": "included",
+        "sourceRefs": [
+          {
+            "start": 34,
+            "end": 38,
+            "quote": "未来方向"
+          }
+        ]
+      },
+      {
+        "id": "DM6",
+        "name": "产品条款",
+        "level": "entity",
+        "questionIds": [
+          "Q3",
+          "Q4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "额度、期数、费率是比较定位与策略的硬事实"
+      },
+      {
+        "id": "DM7",
+        "name": "监管",
+        "level": "market",
+        "questionIds": [
+          "Q6"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "对应子问题 Q6"
+      },
+      {
+        "id": "DM8",
+        "name": "商业模式",
+        "level": "entity",
+        "questionIds": [
+          "Q4"
+        ],
+        "origin": "suggestion",
+        "status": "removed",
+        "impact": "low",
+        "rationale": "收入与资金来源决定可持续性"
+      }
+    ],
+    "metrics": [
+      {
+        "id": "MT1",
+        "name": "GMV",
+        "unit": "港元",
+        "dimensionId": "DM2",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "规模的直接口径"
+      },
+      {
+        "id": "MT2",
+        "name": "活跃用户",
+        "dimensionId": "DM2",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "规模的代理口径"
+      },
+      {
+        "id": "MT3",
+        "name": "商户数",
+        "dimensionId": "DM2",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "受理覆盖的代理口径"
+      },
+      {
+        "id": "MT4",
+        "name": "使用率 / 渗透率",
+        "unit": "%",
+        "dimensionId": "DM2",
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "需求侧口径"
+      }
+    ],
+    "comparisonAxes": [
+      {
+        "id": "AX1",
+        "name": "入口 / 分发",
+        "dimensionIds": [
+          "DM4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决定获客成本"
+      },
+      {
+        "id": "AX2",
+        "name": "受理网络",
+        "dimensionIds": [
+          "DM4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决定可用场景"
+      },
+      {
+        "id": "AX3",
+        "name": "资金成本",
+        "dimensionIds": [
+          "DM4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决定定价空间"
+      },
+      {
+        "id": "AX4",
+        "name": "风控数据",
+        "dimensionIds": [
+          "DM4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决定坏账与审批率"
+      },
+      {
+        "id": "AX5",
+        "name": "变现",
+        "dimensionIds": [
+          "DM4"
+        ],
+        "origin": "suggestion",
+        "status": "included",
+        "impact": "low",
+        "rationale": "决定能否持续"
+      }
+    ]
+  },
+  "outputs": {
+    "recommendationsRequired": true,
+    "language": "zh-CN"
+  }
+}

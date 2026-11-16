@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/agent-definition.schema.json",
+  "title": "AgentDefinition",
+  "description": "AP-SCHEMA-002 §3：长期专家身份、能力、约束与交付标准。PUBLISHED 后不可变。",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "apiVersion": {
+      "const": "agent.platform/v1"
+    },
+    "kind": {
+      "const": "AgentDefinition"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "owner",
+        "status"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,62}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "DRAFT",
+            "PUBLISHED",
+            "RETIRED"
+          ]
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "identity",
+        "principles",
+        "capabilities",
+        "constraints",
+        "brain",
+        "delivery"
+      ],
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "identity": {
+          "type": "object",
+          "required": [
+            "role",
+            "mission",
+            "nonGoals"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mission": {
+              "type": "string",
+              "minLength": 1
+            },
+            "nonGoals": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "principles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "priority",
+              "statement"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {}
+            },
+            "properties": {
+              "priority": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "knowledge": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "trust"
+            ],
+            "additionalProperties": false,
+            "patternProperties": {
+              "^x-": {}
+            },
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "freshness": {
+                "type": "string"
+              },
+              "trust": {
+                "enum": [
+                  "primary",
+                  "verified",
+                  "unverified"
+                ]
+              }
+            }
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "tools"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "ref",
+                  "mode"
+                ],
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x-": {}
+                },
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9._-]{1,62}(@((0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)))?$"
+                  },
+                  "mode": {
+                    "enum": [
+                      "read",
+                      "write",
+                      "execute",
+                      "side-effect"
+                    ]
+                  }
+                }
+              }
+            },
+            "workflows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "ref"
+                ],
+                "additionalProperties": false,
+                "patternProperties": {
+                  "^x-": {}
+                },
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9.-]{1,62}@(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "filesystem": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "read": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/posixPath"
+                  }
+                },
+                "write": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/posixPath"
+                  }
+                }
+              }
+            },
+            "network": {
+              "type": "object",
+              "required": [
+                "default"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "default": {
+                  "enum": [
+                    "deny",
+                    "allow"
+                  ]
+                },
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "sideEffects": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "approval": {
+                  "enum": [
+                    "AUTO",
+                    "REVIEW",
+                    "DUAL"
+                  ]
+                }
+              }
+            },
+            "tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "deny": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "budget": {
+              "$ref": "#/$defs/budget"
+            },
+            "forbidden": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "commands": {
+              "type": "object",
+              "description": "受控命令执行：允许的可执行文件基名（argv[0]）。未声明 = 本层不授予任何命令执行（ADR-0802）",
+              "additionalProperties": false,
+              "required": [
+                "allow"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9._-]+$"
+                  }
+                }
+              }
+            },
+            "webResearch": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sourceDomains"
+              ],
+              "description": "联网检索的来源范围（v1.8）：允许阅读哪些网页域名。\"*\" 表示开放来源，需显式声明；未声明即不授予。",
+              "properties": {
+                "sourceDomains": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(\\*|([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,63})$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "brain": {
+          "type": "object",
+          "anyOf": [
+            { "required": ["modelFamily"], "properties": { "modelFamily": true } },
+            { "required": ["selectableModels", "defaultModelRef"], "properties": { "selectableModels": true, "defaultModelRef": true } }
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "modelFamily": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minContextTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "requiredCapabilities": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "fallback": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowEquivalent": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "selectableModels": {
+              "description": "v2.4：该发布版本允许的执行模型（平台模型目录里的 provider/model）与钉住的推理强度",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["ref"],
+                "additionalProperties": false,
+                "properties": {
+                  "ref": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*(/[A-Za-z0-9][A-Za-z0-9._:-]*)*$" },
+                  "thinking": { "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }
+                }
+              }
+            },
+            "defaultModelRef": {
+              "description": "v2.4：新任务默认的执行模型，必须是 selectableModels 之一",
+              "type": "string",
+              "minLength": 3
+            }
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "required": [
+            "evidenceRequired",
+            "formats"
+          ],
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x-": {}
+          },
+          "properties": {
+            "evidenceRequired": {
+              "type": "boolean"
+            },
+            "formats": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "qualityGates": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "taskInterfaces": {
+          "type": "array",
+          "minItems": 1,
+          "description": "v2.2：该 Agent 支持的任务接口——接受哪种需求 schema、交付哪种规格；引用必须是平台已注册的版本",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requirementSchemaRef",
+              "deliverySpecRef"
+            ],
+            "properties": {
+              "requirementSchemaRef": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*@[0-9]+$"
+              },
+              "deliverySpecRef": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*@[0-9]+$"
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 1
+              },
+              "budget": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "perRound",
+                  "total"
+                ],
+                "description": "推荐的联网额度（用户可在表单调整，平台核定后写入合约授权）",
+                "properties": {
+                  "perRound": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "searches",
+                      "opens"
+                    ],
+                    "properties": {
+                      "searches": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 64
+                      },
+                      "opens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 64
+                      },
+                      "maxPageChars": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 40000
+                      },
+                      "maxTotalChars": {
+                        "type": "integer",
+                        "minimum": 1000,
+                        "maximum": 400000
+                      }
+                    }
+                  },
+                  "total": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "searches",
+                      "opens"
+                    ],
+                    "properties": {
+                      "searches": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 256
+                      },
+                      "opens": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 256
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "posixPath": {
+      "type": "string",
+      "pattern": "^/[^\u0000-\u001f]*$",
+      "minLength": 1
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wallTimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+import { expect, it } from 'vitest';
+import { queryBrowserProfiles } from '../src/browser-discovery.js';
+it('does not send an unsupported discovery flag to an older runtime',async()=>{const args:string[][]=[];expect(await queryBrowserProfiles(async a=>{args.push(a);return JSON.stringify({runtime:'pi-runtime'});})).toBeUndefined();expect(args).toEqual([['--describe']]);});
+it('accepts only a bounded metadata-only response',async()=>{const profiles=[{id:'isolated',label:'临时隔离',persistent:false},{id:'work',label:'工作',persistent:true}];expect(await queryBrowserProfiles(async a=>JSON.stringify(a[0]==='--describe'?{browserProfileSelection:1}:{version:1,profiles}))).toEqual(profiles);await expect(queryBrowserProfiles(async a=>JSON.stringify(a[0]==='--describe'?{browserProfileSelection:1}:{version:1,profiles:[{...profiles[1],profile:'/private/path'}]}))).rejects.toThrow();});

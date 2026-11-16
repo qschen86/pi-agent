@@ -1,0 +1,28 @@
+{
+  "version": 3,
+  "projectId": "prj-example",
+  "revision": 2,
+  "title": "报告",
+  "brief": {
+    "goal": "编写报告",
+    "criteria": []
+  },
+  "state": "DRAFT",
+  "planRevision": 0,
+  "coordinator": {
+    "definitionRef": "project-coordinator@1.0.0",
+    "epoch": 1,
+    "configRevision": 1
+  },
+  "tasks": {},
+  "autonomy": {
+    "version": 1,
+    "phase": "requirements",
+    "cycle": 1,
+    "jobs": [],
+    "artifacts": [],
+    "baselines": {}
+  },
+  "createdAt": "2026-10-02T00:00:00Z",
+  "updatedAt": "2026-10-02T00:00:00Z"
+}

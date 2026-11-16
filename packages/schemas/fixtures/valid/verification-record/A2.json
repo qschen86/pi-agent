@@ -1,0 +1,21 @@
+{
+  "recordId": "vr_cdcdcdcdcdcdcdcd",
+  "criterionId": "AC-01",
+  "result": "FAIL",
+  "evaluator": {
+    "type": "rule",
+    "ref": "rule.artifactContains",
+    "version": "1.0.0"
+  },
+  "artifactHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "measurements": {},
+  "evidenceRefs": [
+    "evidence://runs/1/AC-01.json"
+  ],
+  "provenance": {
+    "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "executedBy": "verifier@1.0.0",
+    "executedAt": "2026-09-21T08:10:00.000Z",
+    "environment": "local"
+  }
+}

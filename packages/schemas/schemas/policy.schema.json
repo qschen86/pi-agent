@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/policy.schema.json",
+  "title": "PolicyRule / PolicyDecision",
+  "description": "AP-POLICY-004 §3：策略 IR 与决策协议。未知规则 fail closed（INDETERMINATE 按 DENY 处理）。",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/policyRuleSet" },
+    { "$ref": "#/$defs/policyDecision" }
+  ],
+  "$defs": {
+    "policyRuleSet": {
+      "type": "object",
+      "required": ["policyVersion", "rules"],
+      "additionalProperties": false,
+      "patternProperties": { "^x-": {} },
+      "properties": {
+        "policyVersion": { "type": "integer", "minimum": 1 },
+        "sourcePlanHash": { "$ref": "#/$defs/sha256" },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/policyRule" }
+        }
+      }
+    },
+    "policyRule": {
+      "type": "object",
+      "required": ["ruleId", "resource", "action", "effect"],
+      "additionalProperties": false,
+      "patternProperties": { "^x-": {} },
+      "properties": {
+        "ruleId": { "type": "string", "minLength": 1 },
+        "resource": {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["filesystem", "network", "command", "credential", "tool", "budget"] },
+            "path": { "$ref": "#/$defs/posixPath" },
+            "domain": { "type": "string", "minLength": 1 },
+            "toolId": { "type": "string", "minLength": 1 },
+            "secretRef": { "type": "string", "minLength": 1 }
+          }
+        },
+        "action": { "enum": ["read", "write", "execute", "export", "call"] },
+        "effect": { "enum": ["allow", "deny"] },
+        "conditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pathWithin": { "type": "array", "items": { "$ref": "#/$defs/posixPath" } },
+            "maxBytes": { "type": "integer", "minimum": 1 },
+            "allowedExtensions": { "type": "array", "items": { "type": "string", "pattern": "^\\.[a-zA-Z0-9]{1,10}$" } },
+            "domains": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "noShell": { "type": "boolean" },
+            "argvOnly": { "type": "boolean" }
+          }
+        },
+        "approval": { "enum": ["none", "required"] },
+        "obligations": {
+          "type": "array",
+          "items": { "enum": ["hashArtifact", "emitAuditEvent", "oneTimeToken", "redactSecret"] }
+        }
+      }
+    },
+    "policyDecision": {
+      "type": "object",
+      "required": ["decisionId", "planHash", "subject", "resource", "action", "effect", "policyVersion", "obligations", "reason"],
+      "additionalProperties": false,
+      "patternProperties": { "^x-": {} },
+      "properties": {
+        "decisionId": { "type": "string", "pattern": "^pd_[a-f0-9]{16,64}$" },
+        "planHash": { "$ref": "#/$defs/sha256" },
+        "subject": {
+          "type": "object",
+          "required": ["sessionId"],
+          "additionalProperties": false,
+          "properties": {
+            "sessionId": { "type": "string", "minLength": 1 },
+            "agent": { "type": "string" },
+            "attemptId": { "type": "string" }
+          }
+        },
+        "resource": {
+          "type": "object",
+          "required": ["type"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["filesystem", "network", "command", "credential", "tool", "budget"] },
+            "path": { "type": "string" },
+            "domain": { "type": "string" },
+            "toolId": { "type": "string" },
+            "secretRef": { "type": "string" },
+            "sizeBytes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "action": { "enum": ["read", "write", "execute", "export", "call"] },
+        "effect": { "enum": ["ALLOW", "DENY", "REQUIRE_APPROVAL", "INDETERMINATE"] },
+        "policyVersion": { "type": "integer", "minimum": 1 },
+        "matchedRule": { "type": "string" },
+        "obligations": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string", "minLength": 1 },
+        "inputDigest": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "posixPath": {
+      "type": "string",
+      "pattern": "^/[^\u0000-\u001F]*$",
+      "minLength": 1
+    }
+  }
+}

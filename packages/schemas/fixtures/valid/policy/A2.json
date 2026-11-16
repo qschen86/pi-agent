@@ -1,0 +1,24 @@
+{
+  "policyVersion": 2,
+  "rules": [
+    {
+      "ruleId": "net-allow-egress",
+      "resource": {
+        "type": "network",
+        "domain": "approved.example.com"
+      },
+      "action": "call",
+      "effect": "allow",
+      "conditions": {
+        "domains": [
+          "approved.example.com"
+        ]
+      },
+      "approval": "required",
+      "obligations": [
+        "emitAuditEvent",
+        "oneTimeToken"
+      ]
+    }
+  ]
+}

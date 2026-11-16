@@ -1,0 +1,22 @@
+{
+  "eventId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+  "eventType": "TaskSelfDeclaredCompleted",
+  "schemaVersion": 1,
+  "occurredAt": "2026-09-21T08:00:00.000Z",
+  "tenantId": "self",
+  "sessionId": "s-9",
+  "attemptId": "att-1",
+  "aggregateVersion": 9,
+  "actor": {
+    "type": "user",
+    "id": "owner-1"
+  },
+  "correlationId": "corr-1",
+  "causationId": "evt-0",
+  "idempotencyKey": "s-9:confirm:1",
+  "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "payload": {
+    "note": "sample"
+  },
+  "payloadHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+}

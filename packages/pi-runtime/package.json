@@ -1,0 +1,11 @@
+{
+  "name": "@pi-agent/pi-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "bin": { "pi-runtime": "bin/pi-runtime.mjs" },
+  "dependencies": { "@pi-agent/adapter-pi": "*", "@pi-agent/runtime-contracts": "*", "@pi-agent/web-research": "*", "tsx": "^4.19.0" },
+  "engines": { "node": ">=24" }
+}

@@ -1,0 +1,22 @@
+{
+  "recordId": "vr_a1b2a1b2a1b2a1b2",
+  "criterionId": "AC-01",
+  "result": "PASS",
+  "evaluator": {
+    "type": "rule",
+    "ref": "rule.artifactContains",
+    "version": "1.0.0"
+  },
+  "measurements": {
+    "matchedAt": 42
+  },
+  "evidenceRefs": [
+    "evidence://runs/1/AC-01.json"
+  ],
+  "provenance": {
+    "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "executedBy": "verifier@1.0.0",
+    "executedAt": "2026-09-21T08:10:00.000Z",
+    "environment": "local"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "deliveryId": "dlv_abababababababab",
+  "sessionId": "s-1",
+  "deliveryRevision": 1,
+  "sourcePlanHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "complete": true,
+  "manifest": {
+    "files": [
+      {
+        "path": "/workspace/out/report.md",
+        "mediaType": "text/markdown",
+        "size": 120,
+        "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "role": "artifact"
+      },
+      {
+        "path": "/workspace/out/evidence.json",
+        "mediaType": "application/json",
+        "size": 64,
+        "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "role": "evidence"
+      }
+    ]
+  },
+  "summary": {
+    "goal": "产出调研报告",
+    "completed": "已生成 report.md",
+    "limitations": [
+      "Mock Runtime 模拟执行"
+    ],
+    "knownRisks": []
+  },
+  "evidenceBundle": [
+    {
+      "criterionId": "AC-01",
+      "recordRefs": [
+        "vr_a1b2a1b2a1b2a1b2"
+      ]
+    }
+  ],
+  "reproduction": {
+    "environment": "local node24",
+    "commands": [
+      "npm run demo"
+    ],
+    "replayRefs": [
+      "evidence://runs/1"
+    ]
+  },
+  "securityNote": {
+    "sensitiveContent": "无",
+    "retentionPolicy": "保留 1 年",
+    "unexecutedHighRiskActions": []
+  }
+}

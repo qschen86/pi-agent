@@ -1,0 +1,108 @@
+{
+  "planId": "bp_ffffffffffffffff",
+  "planHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "compilerVersion": "1.0.0",
+  "pins": {
+    "agent": "1.0.0",
+    "contract": 3,
+    "workflow": "2.1.0",
+    "registrySnapshotId": "snap-001",
+    "capabilityCatalogVersion": "cat-001",
+    "orgPolicyVersion": "pol-001"
+  },
+  "effectivePolicy": {
+    "filesystem": {
+      "read": [
+        "/workspace/in",
+        "/workspace/out"
+      ],
+      "write": [
+        "/workspace/out"
+      ],
+      "maxWriteBytes": 10485760
+    },
+    "network": {
+      "default": "deny",
+      "allow": []
+    },
+    "tools": {
+      "allow": [
+        "fs.read",
+        "fs.write"
+      ]
+    },
+    "commands": {
+      "allow": []
+    },
+    "approvals": {
+      "sideEffects": "REVIEW"
+    },
+    "budget": {
+      "tokens": 100000,
+      "wallTimeMs": 3600000,
+      "toolCalls": 200
+    },
+    "deny": [
+      {
+        "resource": "credential",
+        "pattern": "*",
+        "reason": "凭证不可导出"
+      }
+    ],
+    "degradations": [
+      {
+        "reason": "首选模型不可用",
+        "from": "glm-x",
+        "to": "glm-y"
+      }
+    ]
+  },
+  "contextPlan": {
+    "layers": [
+      {
+        "name": "identity",
+        "budgetTokens": 2000
+      },
+      {
+        "name": "task",
+        "budgetTokens": 4000
+      },
+      {
+        "name": "history",
+        "budgetTokens": 4000,
+        "truncate": "tail"
+      }
+    ],
+    "budgetTokens": 10000,
+    "truncation": "tail"
+  },
+  "runtimeBindings": {
+    "cognitive": "mock@1.0.0",
+    "workflow": "mockwf@2.1.0",
+    "tools": {
+      "fs.read": "mock",
+      "fs.write": "mock"
+    }
+  },
+  "verificationGraph": [
+    {
+      "criterionId": "AC-01",
+      "evaluator": "rule.artifactContains",
+      "evaluatorVersion": "1.0.0",
+      "required": true
+    },
+    {
+      "criterionId": "AC-02",
+      "evaluator": "test.report",
+      "evaluatorVersion": "1.0.0",
+      "required": true
+    }
+  ],
+  "signature": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "sourceDigests": {
+    "agent": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contract": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "workflow": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "orgPolicy": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

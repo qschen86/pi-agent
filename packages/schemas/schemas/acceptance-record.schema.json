@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/acceptance-record.schema.json",
+  "title": "AcceptanceRecord",
+  "description": "AP-QA-008 §5：用户验收决定。绑定 delivery revision；只有 ACCEPT 派生 COMPLETED（INV-04）。",
+  "type": "object",
+  "required": ["acceptanceId", "sessionId", "deliveryRevision", "decision", "signer", "decidedAt"],
+  "additionalProperties": false,
+  "patternProperties": { "^x-": {} },
+  "properties": {
+    "acceptanceId": { "type": "string", "pattern": "^acc_[a-f0-9]{16,64}$" },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "deliveryRevision": { "type": "integer", "minimum": 1 },
+    "decision": { "enum": ["ACCEPT", "PARTIAL_ACCEPT", "REWORK", "REJECT", "EXPIRE"] },
+    "acceptedSubset": {
+      "type": "array",
+      "description": "PARTIAL_ACCEPT 时接受的明确子集",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "signer": {
+      "type": "object",
+      "required": ["userId", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "userId": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["Owner", "Reviewer", "AgentAuthor", "Operator"] }
+      }
+    },
+    "decidedAt": { "type": "string", "format": "date-time" },
+    "sourcePlanHash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

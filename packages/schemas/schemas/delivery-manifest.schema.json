@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/delivery-manifest.schema.json",
+  "title": "DeliveryManifest",
+  "description": "AP-QA-008 §4：交付版本与制品清单。所有制品带 hash；验收期间内容不可变，修改即新 revision。",
+  "type": "object",
+  "required": ["deliveryId", "sessionId", "deliveryRevision", "sourcePlanHash", "complete", "manifest", "summary", "evidenceBundle", "reproduction", "securityNote"],
+  "additionalProperties": false,
+  "patternProperties": { "^x-": {} },
+  "properties": {
+    "deliveryId": { "type": "string", "pattern": "^dlv_[a-f0-9]{16,64}$" },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "deliveryRevision": { "type": "integer", "minimum": 1 },
+    "sourcePlanHash": { "$ref": "#/$defs/sha256" },
+    "complete": { "type": "boolean" },
+    "manifest": {
+      "type": "object",
+      "required": ["files"],
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["path", "mediaType", "size", "sha256", "role"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "$ref": "#/$defs/posixPath" },
+              "mediaType": { "type": "string", "minLength": 3 },
+              "size": { "type": "integer", "minimum": 1 },
+              "sha256": { "$ref": "#/$defs/sha256" },
+              "role": { "enum": ["artifact", "evidence", "reproduction"] }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["goal", "completed"],
+      "additionalProperties": false,
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "completed": { "type": "string", "minLength": 1 },
+        "limitations": { "type": "array", "items": { "type": "string" } },
+        "knownRisks": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidenceBundle": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["criterionId", "recordRefs"],
+        "additionalProperties": false,
+        "properties": {
+          "criterionId": { "type": "string", "pattern": "^AC-?[0-9]{1,4}$" },
+          "recordRefs": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^vr_[a-f0-9]{16,64}$" }
+          }
+        }
+      }
+    },
+    "reproduction": {
+      "type": "object",
+      "required": ["environment"],
+      "additionalProperties": false,
+      "properties": {
+        "environment": { "type": "string", "minLength": 1 },
+        "commands": { "type": "array", "items": { "type": "string" } },
+        "replayRefs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "securityNote": {
+      "type": "object",
+      "required": ["sensitiveContent", "retentionPolicy"],
+      "additionalProperties": false,
+      "properties": {
+        "sensitiveContent": { "type": "string" },
+        "retentionPolicy": { "type": "string", "minLength": 1 },
+        "unexecutedHighRiskActions": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "posixPath": {
+      "type": "string",
+      "pattern": "^/[^\u0000-\u001F]*$",
+      "minLength": 1
+    }
+  }
+}

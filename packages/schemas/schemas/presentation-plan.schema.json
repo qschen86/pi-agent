@@ -1,0 +1,682 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pi-agent.platform/schemas/presentation-plan.schema.json",
+  "title": "PresentationPlan",
+  "description": "presentation-plan@1（v2.6）：PPT 子任务的主交付——整套逐页计划（每页为 slide-plan@2，首期只有 recipe 模式）。本 schema 只管结构；各构图需要哪些槽位、容量多大由风格包按代码校验。HTML 与截图由宿主渲染，不在此对象里。",
+  "type": "object",
+  "required": [
+    "version",
+    "stylePackRef",
+    "sourceSnapshotHash",
+    "slides"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "presentation-plan@1"
+    },
+    "stylePackRef": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+@[0-9]+$"
+    },
+    "sourceSnapshotHash": {
+      "$ref": "#/$defs/hash"
+    },
+    "briefHash": {
+      "$ref": "#/$defs/hash"
+    },
+    "narrative": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "throughline": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "audience": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "storyline": {
+          "enum": [
+            "conclusion-first",
+            "situation-complication-resolution",
+            "problem-solution",
+            "options-decision",
+            "opportunity-risk",
+            "chronological"
+          ],
+          "description": "整套的讲法（v2.6 WP11 后补充）：先按材料与目的选讲法，再分章、定每页角色"
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "description": "章节：讲述里的几段，页序里连续出现",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]{1,40}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 24
+              }
+            }
+          }
+        }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 40,
+      "items": {
+        "$ref": "#/$defs/slide"
+      }
+    },
+    "coverage": {
+      "description": "必含内容的覆盖映射：brief 的 mustInclude ID → 承载它的页",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "mustIncludeId",
+          "slideIds"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mustIncludeId": {
+            "type": "string",
+            "pattern": "^M[0-9]{1,3}$"
+          },
+          "slideIds": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "omitted": {
+      "description": "省略的非必含内容摘要（F02）",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "what",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "what": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "pointer": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "accent": {
+          "type": "boolean",
+          "description": "用强调色"
+        },
+        "break": {
+          "type": "boolean",
+          "description": "在这段之前换行（语义换行由计划决定，不靠字号挤）"
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "denominator": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 4
+        },
+        "tone": {
+          "enum": [
+            "positive",
+            "negative",
+            "neutral"
+          ]
+        }
+      }
+    },
+    "slotText": {
+      "type": "object",
+      "required": [
+        "kind",
+        "runs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "runs": {
+          "$ref": "#/$defs/runs"
+        }
+      }
+    },
+    "slotMetric": {
+      "type": "object",
+      "required": [
+        "kind",
+        "metric"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "metric"
+        },
+        "metric": {
+          "$ref": "#/$defs/metric"
+        }
+      }
+    },
+    "slotList": {
+      "type": "object",
+      "required": [
+        "kind",
+        "items"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "list"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "title": {
+                "$ref": "#/$defs/runs"
+              },
+              "body": {
+                "$ref": "#/$defs/runs"
+              },
+              "metric": {
+                "$ref": "#/$defs/metric"
+              }
+            }
+          }
+        }
+      }
+    },
+    "slotChart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "chart",
+        "series"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "chart"
+        },
+        "chart": {
+          "enum": [
+            "bar",
+            "column",
+            "line"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "series": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "value"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "value": {
+                "type": "number"
+              },
+              "display": {
+                "type": "string",
+                "maxLength": 16,
+                "description": "图上直接标注的文字（缺省按 value + unit）"
+              },
+              "highlight": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    "slotImage": {
+      "type": "object",
+      "required": [
+        "kind",
+        "assetRef",
+        "role",
+        "fit",
+        "alt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "image"
+        },
+        "assetRef": {
+          "$ref": "#/$defs/hash"
+        },
+        "role": {
+          "enum": [
+            "evidence",
+            "product",
+            "concept"
+          ]
+        },
+        "fit": {
+          "enum": [
+            "contain",
+            "cover"
+          ]
+        },
+        "alt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    },
+    "slotFlow": {
+      "type": "object",
+      "required": [
+        "kind",
+        "nodes",
+        "edges"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "flow"
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "tier": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": [
+              "from",
+              "to"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "$ref": "#/$defs/id"
+              },
+              "to": {
+                "$ref": "#/$defs/id"
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 30
+              }
+            }
+          }
+        }
+      }
+    },
+    "slot": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/slotText"
+        },
+        {
+          "$ref": "#/$defs/slotMetric"
+        },
+        {
+          "$ref": "#/$defs/slotList"
+        },
+        {
+          "$ref": "#/$defs/slotChart"
+        },
+        {
+          "$ref": "#/$defs/slotImage"
+        },
+        {
+          "$ref": "#/$defs/slotFlow"
+        }
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "node",
+        "snapshotHash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*(\\.[0-9]+)?(\\.[a-z]+)?$",
+          "description": "槽位或槽位内的项，如 metric、points.0、points.0.metric"
+        },
+        "snapshotHash": {
+          "$ref": "#/$defs/hash"
+        },
+        "pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "textRange": {
+          "type": "object",
+          "required": [
+            "start",
+            "end"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "derivation": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "推算结果的输入与方法"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "pointer"
+          ],
+          "properties": {
+            "pointer": true
+          }
+        },
+        {
+          "required": [
+            "textRange"
+          ],
+          "properties": {
+            "textRange": true
+          }
+        }
+      ]
+    },
+    "slide": {
+      "type": "object",
+      "required": [
+        "id",
+        "intentId",
+        "relationship",
+        "layout",
+        "slots"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "intentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "claimRefs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 60
+          }
+        },
+        "relationship": {
+          "enum": [
+            "title",
+            "single-metric",
+            "multi-metric",
+            "comparison",
+            "ranking",
+            "trend",
+            "sequence",
+            "system",
+            "evidence",
+            "summary",
+            "statement"
+          ]
+        },
+        "emphasis": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "string"
+          },
+          "description": "应被优先看到的槽位"
+        },
+        "layout": {
+          "type": "object",
+          "required": [
+            "mode",
+            "recipeRef",
+            "theme"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "recipe"
+            },
+            "recipeRef": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+@[0-9]+/[a-z0-9-]+$"
+            },
+            "variant": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]+$"
+            },
+            "theme": {
+              "enum": [
+                "dark",
+                "light",
+                "tint"
+              ]
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "split": {
+                  "type": "number",
+                  "minimum": 0.3,
+                  "maximum": 0.7,
+                  "description": "左右分栏比例（左栏占比）"
+                },
+                "align": {
+                  "enum": [
+                    "start",
+                    "center"
+                  ]
+                },
+                "scale": {
+                  "enum": [
+                    "s",
+                    "m",
+                    "l"
+                  ],
+                  "description": "主视觉字号档"
+                }
+              }
+            }
+          }
+        },
+        "slots": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/slot"
+          }
+        },
+        "contentBindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/binding"
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "constraintsApplied": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[FM][0-9]{1,3}$"
+          }
+        },
+        "speakerNote": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "sectionId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,40}$",
+          "description": "所属章节（narrative.sections[].id）"
+        },
+        "role": {
+          "enum": [
+            "hook",
+            "context",
+            "question",
+            "finding",
+            "evidence",
+            "turn",
+            "options",
+            "decision",
+            "risk",
+            "action",
+            "summary"
+          ],
+          "description": "这页在讲述里的作用"
+        }
+      }
+    }
+  }
+}
