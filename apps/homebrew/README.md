@@ -4,15 +4,15 @@
 
 ## 当前状态
 
-本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。公开仓库与 Tap 未发布之前，下列安装步骤为目标流程，不代表已有公开下载。
+本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。现已提供公开预发布版：源码仓库 https://github.com/qschen86/pi-agent，Tap https://github.com/qschen86/homebrew-pi-agent。
 
 ## 安装与使用
 
-维护者在公开仓库发布版本及配方后，用户执行（替换 OWNER/TAP 为实际发布名称）：
+用户执行：
 
 ```sh
-brew tap OWNER/TAP
-brew install OWNER/TAP/pi-agent
+brew tap qschen86/pi-agent
+brew install qschen86/pi-agent/pi-agent
 brew services start pi-agent
 pi-agent status
 pi-agent open
@@ -67,8 +67,8 @@ node scripts/build-homebrew-release.mjs \
 
 ## 验收边界
 
-本机命令和结构烟测不能代替干净 Mac 的 Homebrew 安装、后台服务重启、真实模型任务或跨版本升级验收。执行记录见 ACCEPTANCE.md。正式发布前必须补齐未验证项。
+公开仓库已通过独立 GitHub Mac ARM 运行器的真实 Homebrew 安装、Formula 测试、后台服务启动/重启/停止、卸载保留数据标记及重新安装。执行记录见 https://github.com/qschen86/pi-agent/actions/runs/43820423908；真实模型任务、系统注销登录及跨版本升级恢复仍待验收。
 
 ## 来源与许可证
 
-向导、本机服务和核心打包适配源自会话 rt-141635bd18a644d5 的 macOS 本机原型，迁移后由本目录维护；应用打包与磁盘映像逻辑不纳入本渠道。自有代码沿用该原型的 MIT LICENSE，第三方依赖保持各自许可。图像库的对应源码附件与载荷必须一并发布。
+向导、本机服务和核心打包适配由 apps/homebrew 维护，公开发行采用 Homebrew。自有代码沿用该原型的 MIT LICENSE，第三方依赖保持各自许可。图像库的对应源码附件与载荷必须一并发布。

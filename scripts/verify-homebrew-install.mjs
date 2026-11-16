@@ -11,7 +11,7 @@ const cli = '/opt/homebrew/bin/pi-agent';
 const formula = 'qschen86/pi-agent/pi-agent';
 const base = join(homedir(), 'Library/Application Support/pi-agent');
 const env = { ...process.env, HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1', HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: '1', HOMEBREW_NO_ANALYTICS: '1' };
-const run = (file, args) => execFileSync(file, args, { env, encoding: 'utf8', timeout: 300_000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 ** 2 }).trim();
+const run = (file, args) => execFileSync(file, args, { env, encoding: 'utf8', timeout: args[0] === 'install' ? 1_200_000 : 300_000, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 ** 2 }).trim();
 const state = () => JSON.parse(run(cli, ['status', '--json']));
 async function expectState(expected) {
   let last;

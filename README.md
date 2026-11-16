@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。当前通过 qschen86/pi-agent 源码仓库及 qschen86/homebrew-pi-agent Tap 提供预发布验收版本。
+本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。现已提供公开预发布版：源码仓库 https://github.com/qschen86/pi-agent，Tap https://github.com/qschen86/homebrew-pi-agent。
 
 ## 安装与使用
 
@@ -67,7 +67,7 @@ node scripts/build-homebrew-release.mjs \
 
 ## 验收边界
 
-本机命令和结构烟测不能代替干净 Mac 的 Homebrew 安装、后台服务重启、真实模型任务或跨版本升级验收。执行记录见 ACCEPTANCE.md。正式发布前必须补齐未验证项。
+公开仓库已通过独立 GitHub Mac ARM 运行器的真实 Homebrew 安装、Formula 测试、后台服务启动/重启/停止、卸载保留数据标记及重新安装。执行记录见 https://github.com/qschen86/pi-agent/actions/runs/43820423908；真实模型任务、系统注销登录及跨版本升级恢复仍待验收。
 
 ## 来源与许可证
 
