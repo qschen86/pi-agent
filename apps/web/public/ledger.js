@@ -466,7 +466,7 @@
         `「${account.name}」市值涨到 150 万`,
         ...(people.length > 1 ? [`把 ${people[0]} 的 20 万转给 ${people[1]}`] : [])
       ]
-      : ["柠檬往富途账户入金 10 万", "东方财富账户股票涨到 130 万", "把 Karen 的 20 万转给柠檬"];
+      : ["小明往富途账户入金 10 万", "东方财富账户股票涨到 130 万", "把小红的 20 万转给小明"];
     const debt = accountList().find(accountIsLiability);
     if (debt && debt.shareholders[0]) examples.push(`向 ${debt.shareholders[0].name} 还款 1 万`);
     return h("div", { class: "ledger-chat-empty" },
@@ -1029,11 +1029,11 @@
         field("账户类型", h("select", { value: draft.kind, onchange: (e) => { draft.kind = e.target.value; renderMain(); } },
           h("option", { value: "asset", selected: draft.kind === "asset" }, "资产账户（股票 / 理财）"),
           h("option", { value: "liability", selected: draft.kind === "liability" }, "负债账户（欠款）"))),
-        field("账户名称", h("input", { required: true, maxlength: "60", placeholder: liability ? "例如：kisen 的负债" : "例如：平安证券主账户", value: draft.name, oninput: (e) => { draft.name = e.target.value; } })),
+        field("账户名称", h("input", { required: true, maxlength: "60", placeholder: liability ? "例如：个人负债" : "例如：平安证券主账户", value: draft.name, oninput: (e) => { draft.name = e.target.value; } })),
         liability ? null : field("券商", h("input", { maxlength: "60", placeholder: "选填", value: draft.broker, oninput: (e) => { draft.broker = e.target.value; } })),
         liability ? null : field("账号", h("input", { maxlength: "60", placeholder: "选填，只作备注", value: draft.accountNo, oninput: (e) => { draft.accountNo = e.target.value; } })),
         field(liability ? "当前负债余额（元）" : "当前市值（元）", h("input", { required: true, inputmode: "decimal", placeholder: liability ? "例如 269000" : "例如 1200000.00", value: draft.marketValue, oninput: (e) => { draft.marketValue = e.target.value; } })),
-        field("备注（选填）", h("input", { maxlength: "500", placeholder: liability ? "例如：欠 Karen 26.9 万" : "选填", value: draft.note, oninput: (e) => { draft.note = e.target.value; } }))),
+        field("备注（选填）", h("input", { maxlength: "500", placeholder: liability ? "例如：欠小红 20 万" : "选填", value: draft.note, oninput: (e) => { draft.note = e.target.value; } }))),
       h("div", { class: "ledger-shareholder-editor" },
         h("div", { class: "ledger-shareholder-head" }, h("span", {}, shareNoun), h("span", {}, liability ? "债权占比 %" : "初始占比 %"), h("span", {}, "")),
         draft.shareholders.map((row, index) => h("div", { class: "ledger-shareholder-edit-row" },
@@ -1128,7 +1128,7 @@
         kind === "deposit" || kind === "withdraw" ? field(shareNoun, h("select", { value: draft.shareholderId, onchange: (e) => { draft.shareholderId = e.target.value; renderMain(); } },
           shareholderOptions(draft.shareholderId),
           kind === "deposit" ? h("option", { value: NEW_SHAREHOLDER, selected: draft.shareholderId === NEW_SHAREHOLDER }, `＋ 新${shareNoun}`) : null)) : null,
-        kind === "deposit" && draft.shareholderId === NEW_SHAREHOLDER ? field(`新${shareNoun}姓名`, h("input", { required: true, maxlength: "60", placeholder: liability ? "例如：Karen" : "例如：王五", value: draft.newName, oninput: (e) => { draft.newName = e.target.value; } })) : null,
+        kind === "deposit" && draft.shareholderId === NEW_SHAREHOLDER ? field(`新${shareNoun}姓名`, h("input", { required: true, maxlength: "60", placeholder: liability ? "例如：小红" : "例如：王五", value: draft.newName, oninput: (e) => { draft.newName = e.target.value; } })) : null,
         kind === "transfer" ? field(`转出${shareNoun}`, h("select", { value: draft.shareholderId, onchange: (e) => { draft.shareholderId = e.target.value; renderMain(); } }, shareholderOptions(draft.shareholderId))) : null,
         kind === "transfer" ? field(`转入${shareNoun}`, h("select", { value: draft.counterpartyId, onchange: (e) => { draft.counterpartyId = e.target.value; } }, account.shareholders.map((s) => h("option", { value: s.shareholderId, selected: s.shareholderId === draft.counterpartyId, disabled: s.shareholderId === draft.shareholderId }, `${s.name}（${pct(s.percent)}）`)))) : null,
         kind !== "revalue" ? field(kind === "transfer" ? "转让金额（元）" : liability ? (kind === "deposit" ? "借款金额（元）" : "还款金额（元）") : "动账金额（元）", h("input", { required: true, inputmode: "decimal", placeholder: "例如 100000.00", value: draft.amount, oninput: (e) => { draft.amount = e.target.value; } })) : null,

@@ -36,6 +36,14 @@ function rtDeploymentNotice(event) {
  * 它是平台的旁白，不是用户的发言，和部署通知一样画成居中的系统消息；完整正文收进「详情」。
  * 只认整条用户消息；被引用的、助手转述的仍是普通对话。
  */
+/**
+ * 首次使用引导会话的第一条「用户消息」：平台发给模型的启动说明，用户看不到，会话从助手的欢迎语开始。
+ * 标记必须与 apps/homebrew/src/onboarding.mjs 的 ONBOARDING_MARK 一致（有测试核对）。
+ */
+const RT_ONBOARDING_MARK = "\u3010pi-agent \u9996\u6b21\u4f7f\u7528\u5f15\u5bfc\u3011";
+function rtOnboardingTrigger(event) {
+  return event?.kind === "message" && event.role === "user" && !event.attachments?.length && String(event.text || "").startsWith(RT_ONBOARDING_MARK);
+}
 const RT_ENFORCEMENT_MARK = "\u3010\u5e73\u53f0\u5f3a\u7ea6\u675f\u68c0\u67e5\u672a\u901a\u8fc7\u3011";
 function rtEnforcementFeedback(event) {
   return event?.kind === "message" && event.role === "user" && !event.attachments?.length && String(event.text || "").startsWith(RT_ENFORCEMENT_MARK);

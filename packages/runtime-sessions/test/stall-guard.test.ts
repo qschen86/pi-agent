@@ -52,7 +52,7 @@ describe("卡住看门狗", () => {
 
   it("到自动中止阈值就停掉本轮，并写明为什么", async () => {
     const { id, turn } = await start();
-    turn.sink.event(tool("t2", "find /Users/kisen -name x", "inProgress"));
+    turn.sink.event(tool("t2", "find /Users/user -name x", "inProgress"));
     await until(() => turn.interrupted);
     await until(() => mgr.store.events(id).some((e) => e.kind === "notice" && (e.text ?? "").includes("已自动中止")));
     const abort = mgr.store.events(id).find((e) => e.kind === "notice" && (e.text ?? "").includes("已自动中止"))!;

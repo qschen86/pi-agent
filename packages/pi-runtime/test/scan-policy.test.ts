@@ -7,32 +7,32 @@ import { createPiToolGate } from "../src/pi-approval-extension.js";
 import { preparePiChatBoundary } from "../src/pi-boundary.js";
 
 /** 会话在自己的 worktree 里：仓库内可以随便扫，家目录其他地方不行。 */
-const wt = { cwd: "/Users/kisen/Documents/pi-agent/.pi-worktrees/rt-1", allow: "/Users/kisen/Documents/pi-agent/.pi-worktrees/rt-1", repoRoot: "/Users/kisen/Documents/pi-agent" };
+const wt = { cwd: "/Users/user/Documents/pi-agent/.pi-worktrees/rt-1", allow: "/Users/user/Documents/pi-agent/.pi-worktrees/rt-1", repoRoot: "/Users/user/Documents/pi-agent" };
 const bash = (command: string) => ({ toolName: "bash", input: { command } });
 
 describe("长命令扫描守卫", () => {
   const denied: Array<[string, string]> = [
     // 真实事故：整台机器 home 递归 find，会话白等 76 分钟
-    ["整盘 find 家目录（2026-11-14 事故原样）", "find /Users/kisen -maxdepth 4 -name \"fontTools\" -type d 2>/dev/null | head -5"],
-    ["ls 拼 find 的家目录探测", "ls /opt/homebrew/lib/python3*/site-packages | head; find /Users/kisen -maxdepth 4 -name fontTools"],
+    ["整盘 find 家目录（2026-11-14 事故原样）", "find /Users/user -maxdepth 4 -name \"fontTools\" -type d 2>/dev/null | head -5"],
+    ["ls 拼 find 的家目录探测", "ls /opt/homebrew/lib/python3*/site-packages | head; find /Users/user -maxdepth 4 -name fontTools"],
     ["find ~ 无深度上限", "find ~ -name '*.ts'"],
     ["find $HOME", "find $HOME -type d -name node_modules"],
     ["find 根目录", "find / -name foo"],
-    ["find 家目录（带 maxdepth 也不放行）", "find /Users/kisen -maxdepth 2 -name x"],
-    ["find 家目录深处无深度上限", "find /Users/kisen/Library -name x"],
-    ["find 家目录深处深度过大", "find /Users/kisen/Library -maxdepth 9 -name x"],
+    ["find 家目录（带 maxdepth 也不放行）", "find /Users/user -maxdepth 2 -name x"],
+    ["find 家目录深处无深度上限", "find /Users/user/Library -name x"],
+    ["find 家目录深处深度过大", "find /Users/user/Library -maxdepth 9 -name x"],
     ["find ~/Documents 子目录无上限", "find ~/Documents/notes -name '*.md'"],
-    ["递归 grep 家目录", "grep -rn \"foo\" /Users/kisen"],
-    ["递归 grep 家目录子目录", "grep -rn \"foo\" /Users/kisen/Documents"],
+    ["递归 grep 家目录", "grep -rn \"foo\" /Users/user"],
+    ["递归 grep 家目录子目录", "grep -rn \"foo\" /Users/user/Documents"],
     ["grep -R 系统目录", "grep -R foo /Library"],
-    ["rg 家目录子目录", "rg foo /Users/kisen/Library"],
-    ["du 整个家目录", "du -sh /Users/kisen"],
-    ["du 家目录子目录且无深度限制", "du /Users/kisen/Library"],
-    ["cd 之后 grep 当前目录", "cd /Users/kisen/Library && grep -rn foo"],
+    ["rg 家目录子目录", "rg foo /Users/user/Library"],
+    ["du 整个家目录", "du -sh /Users/user"],
+    ["du 家目录子目录且无深度限制", "du /Users/user/Library"],
+    ["cd 之后 grep 当前目录", "cd /Users/user/Library && grep -rn foo"],
     ["env/sudo 前置包装", "env FOO=1 find ~ -name x"],
-    ["重定向目标不算扫描路径", "find /Users/kisen/Library -name x > /tmp/out.txt"],
-    ["嵌套 shell 里的整盘扫描", "bash -lc \"find /Users/kisen -name x\""],
-    ["sh -c 里的递归 grep", "sh -c 'grep -rn a /Users/kisen/Library'"]
+    ["重定向目标不算扫描路径", "find /Users/user/Library -name x > /tmp/out.txt"],
+    ["嵌套 shell 里的整盘扫描", "bash -lc \"find /Users/user -name x\""],
+    ["sh -c 里的递归 grep", "sh -c 'grep -rn a /Users/user/Library'"]
   ];
   it.each(denied)("拒绝：%s", (_label, command) => {
     const reason = scanViolation("bash", { command }, wt);
@@ -42,11 +42,11 @@ describe("长命令扫描守卫", () => {
   const allowed: Array<[string, string]> = [
     ["工作区内相对路径 find", "find . -name x"],
     ["工作区内 grep", "grep -rn \"foo\" apps/web"],
-    ["仓库内绝对路径 find", "find /Users/kisen/Documents/pi-agent/packages -name '*.ts'"],
-    ["家目录子目录但带小深度", "find /Users/kisen/Library -maxdepth 3 -name x"],
-    ["家目录子目录正好 5 层", "find /Users/kisen/Library -maxdepth 5 -name x"],
+    ["仓库内绝对路径 find", "find /Users/user/Documents/pi-agent/packages -name '*.ts'"],
+    ["家目录子目录但带小深度", "find /Users/user/Library -maxdepth 3 -name x"],
+    ["家目录子目录正好 5 层", "find /Users/user/Library -maxdepth 5 -name x"],
     ["临时目录", "find /tmp/scan -name x"],
-    ["仓库内 du -sh node_modules", "du -sh /Users/kisen/Documents/pi-agent/node_modules"],
+    ["仓库内 du -sh node_modules", "du -sh /Users/user/Documents/pi-agent/node_modules"],
     ["非递归 grep", "grep -n foo package.json"],
     ["git grep 只扫仓库", "git grep -n foo"],
     ["回归测试命令", "npx vitest run apps/web/test/a.test.ts"],
@@ -61,19 +61,19 @@ describe("长命令扫描守卫", () => {
   });
 
   it("同一轮命令里多处命中只报一条，且能列出全部", () => {
-    const command = "find / -name a; grep -rn b /Users/kisen/Library";
+    const command = "find / -name a; grep -rn b /Users/user/Library";
     expect(scanViolations("bash", { command }, wt)).toHaveLength(2);
     expect(scanViolation("bash", { command }, wt)).toBe(scanViolations("bash", { command }, wt)[0]);
   });
 
   it("拒绝原因直接给替代写法，不只是报错", () => {
-    const reason = scanViolation("bash", { command: "find /Users/kisen -maxdepth 4 -name fontTools" }, wt) ?? "";
+    const reason = scanViolation("bash", { command: "find /Users/user -maxdepth 4 -name fontTools" }, wt) ?? "";
     expect(reason).toContain("command -v");
     expect(reason).toContain("gtimeout");
   });
 
   it("门禁在放行判断之前拦下，不让命令进入执行", async () => {    const ctx = { hasUI: false, ui: { confirm: async () => false } };
-    const blocked = await createPiToolGate("pi-ask")({ toolName: "bash", toolCallId: "c1", input: { command: "find /Users/kisen -maxdepth 4 -name fontTools" } }, ctx);
+    const blocked = await createPiToolGate("pi-ask")({ toolName: "bash", toolCallId: "c1", input: { command: "find /Users/user -maxdepth 4 -name fontTools" } }, ctx);
     expect(blocked).toMatchObject({ block: true });
     expect((blocked as { reason: string }).reason).toContain("SCAN_TOO_BROAD");
     // 允许的命令不在这一层被拒（pi-ask 后续才因为缺少审批 UI 拒绝，原因不同）

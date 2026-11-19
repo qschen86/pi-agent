@@ -283,6 +283,36 @@ describe("manager quick replies", () => {
     expect(mgr.store.binding(id)!.quickReplies).toBeUndefined();
   });
 
+  it("host-fixed replies are used after the first completed turn without calling the model, then give way to normal extraction", async () => {
+    const { id, t } = await finishedTurn("你好，我是 pi-agent。");
+    const fixed = [{ label: "任务一", text: "做任务一" }, { label: "任务二", text: "做任务二" }];
+    const override = vi.fn((_id: string, context: { turnCount: number }) => context.turnCount === 1 ? fixed : undefined);
+    mgr.setQuickReplyOverride(override);
+    // 本轮还在运行：不给固定回复
+    expect(await mgr.finalQuickReplies(id)).not.toMatchObject({ replies: [{ label: "任务一" }] });
+    quick.mockClear();
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(id)!.status === "idle");
+    await tick(400);
+    const result = await mgr.finalQuickReplies(id);
+    expect(result).toMatchObject({ state: "ready", eventKey: "codex:item:a1", replies: fixed });
+    expect(quickCalls()).toHaveLength(0);
+    const expectedRevision = mgr.store.binding(id)!.bindingRevision;
+    // 用户回复后是第二轮：钩子不再返回固定回复，旧的固定结果也已清掉
+    await mgr.sendTurn(id, { idempotencyKey: randomUUID(), prompt: "做任务一", expectedRevision }, "test");
+    expect(mgr.store.binding(id)!.quickReplies).toBeUndefined();
+    expect(override.mock.calls.every(([, context]) => context.turnCount >= 1)).toBe(true);
+  });
+
+  it("host-fixed replies never apply to a different session", async () => {
+    const { id, t } = await finishedTurn("你好。");
+    mgr.setQuickReplyOverride(() => undefined);
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(id)!.status === "idle");
+    const result = await mgr.finalQuickReplies(id);
+    expect(result.replies.some(r => r.label === "任务一")).toBe(false);
+  });
+
   it("does not store a result the finalizer marks as temporary, or one built while the model was unavailable", async () => {
     const { id, t } = await finishedTurn("方案 A 还是 B？");
     mgr.setQuickReplyFinalizer(async (_id, raw) => ({ result: { ...raw, state: "ready", replies: [{ label: "继续", text: "继续。" }] }, cacheable: false }));

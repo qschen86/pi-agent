@@ -426,7 +426,7 @@ export class LedgerChatService {
     const actions = this.runActions(output.actions, input.requestId ?? `chat-${randomUUID()}`);
     const reply = output.reply || (actions.length
       ? "好的。"
-      : "我没太确定你的意思，能再说清楚一点吗？比如「柠檬往富途账户入金 10 万」。");
+      : "我没太确定你的意思，能再说清楚一点吗？比如「小明往富途账户入金 10 万」。");
     const result: LedgerChatResult = {
       reply,
       actions,

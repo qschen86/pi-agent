@@ -51,8 +51,8 @@ import type { ImageAttachment } from "./attachments.js";
 import type { ModelInvocationPort } from "@pi-agent/model-port";
 import { pendingSessionTitle, SessionTitleWorker } from "./session-title.js";
 import { QUOTA_RESUME_MARGIN_MS, QUOTA_RESUME_MAX_STREAK, QUOTA_RESUME_PROMPT, planQuotaResume, stillExhaustedUntil } from "./quota-resume.js";
-import { AUTO_REDEPLOY_LIMIT, RETRY_REPLY, canonicalizeQuickActions, lastAssistantMessage, lastDeploymentOutcome, lastTurnEnd, quotaInterruptedReplies, QuickReplyService, withDeploymentPriority } from "./quick-replies.js";
-import type { QuickReplyResult } from "./quick-replies.js";
+import { AUTO_REDEPLOY_LIMIT, MAX_REPLIES, RETRY_REPLY, canonicalizeQuickActions, lastAssistantMessage, lastDeploymentOutcome, lastTurnEnd, quotaInterruptedReplies, QuickReplyService, withDeploymentPriority } from "./quick-replies.js";
+import type { QuickReply, QuickReplyResult } from "./quick-replies.js";
 
 export const PROJECTION_VERSION = "rt-projection@1";
 const FOLDER_LIST_MAX = 500;
@@ -2757,6 +2757,26 @@ export class RuntimeSessionManager extends EventEmitter {
     this.quickReplyFinalizer = fn;
   }
 
+  /**
+   * 宿主按会话指定固定的快捷回复（例如安装后的首次使用引导：欢迎语之后给预置任务）。
+   * 只在会话空闲、最后一条是已完成的助手回复时生效；不调用模型，不影响其他会话。
+   */
+  private quickReplyOverride?: (platformSessionId: string, context: { turnCount: number }) => QuickReply[] | undefined;
+  setQuickReplyOverride(fn: ((platformSessionId: string, context: { turnCount: number }) => QuickReply[] | undefined) | undefined): void {
+    this.quickReplyOverride = fn;
+  }
+  private fixedQuickReplies(platformSessionId: string): QuickReplyResult | undefined {
+    if (!this.quickReplyOverride) return undefined;
+    const b = this.store.binding(platformSessionId);
+    if (!b || b.archived || b.roomRef || b.comparisonRef || b.projectRef || b.evaluation) return undefined;
+    if (this.running.has(platformSessionId) || b.turns.some(t => t.status === "queued" || t.status === "running" || t.status === "waiting-input")) return undefined;
+    if (b.turns.at(-1)?.status !== "completed") return undefined;
+    const replies = this.quickReplyOverride(platformSessionId, { turnCount: b.turns.length });
+    const last = lastAssistantMessage(this.store.events(platformSessionId));
+    if (!replies?.length || !last) return undefined;
+    return { state: "ready", eventKey: last.key, replies: replies.slice(0, MAX_REPLIES).map(r => ({ ...r })) };
+  }
+
   /** 这条推荐结果挂的消息仍是会话当前的末尾（没有新一轮、没有更新的消息）。 */
   private quickKeyCurrent(platformSessionId: string, eventKey: string): boolean {
     const b = this.store.binding(platformSessionId);
@@ -2794,6 +2814,8 @@ export class RuntimeSessionManager extends EventEmitter {
     if (stored && this.quickKeyCurrent(platformSessionId, stored.eventKey)) {
       return { state: "ready", eventKey: stored.eventKey, replies: stored.replies.map(r => ({ ...r })), ...(stored.deployment ? { deployment: stored.deployment } : {}), ...(stored.deploymentSha ? { deploymentSha: stored.deploymentSha } : {}) };
     }
+    const forced = this.fixedQuickReplies(platformSessionId);
+    if (forced) return this.noteQuickAction(platformSessionId, forced, { persist: true });
     const raw = await this.quickReplies(platformSessionId);
     if (!this.quickReplyFinalizer) return raw;
     const { result, cacheable } = await this.quickReplyFinalizer(platformSessionId, raw);

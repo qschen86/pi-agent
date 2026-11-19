@@ -43,6 +43,7 @@ function rtTurnEndRows(events) {
 }
 /** group：对话视图把过程折叠成块（工具页逐条）；对比页的通道列表也按对话视图 */
 function rtBlocks(events, group = ui.rt.tab === "chat") {
+  events = events.filter(e => !rtOnboardingTrigger(e));
   const out = [];
   const checks = new Map();
   const background = new Map();

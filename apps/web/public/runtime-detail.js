@@ -776,6 +776,7 @@ function rtTabs() {
 }
 
 function rtVisible(e) {
+  if (typeof rtOnboardingTrigger === "function" && rtOnboardingTrigger(e)) return false;
   if (ui.rt.tab === "tools") return e.kind === "tool" || e.kind === "approval";
   return true;
 }
@@ -2736,6 +2737,7 @@ function rtMessageNavigator(box) {
     for (const e of ui.rt.events) {
       if (e.kind !== "message" || e.role !== "user" || e.subagent) continue;
       if (rtEnforcementNotice(e)) continue;      // 平台自动反馈不是用户消息，不进消息导航
+      if (rtOnboardingTrigger(e)) continue;      // 引导会话的启动说明用户看不到，也不进消息导航
       const deployment = rtDeploymentNotice(e);
       map.set(e.key, { key: e.key, seq: e.seq,
         ...(deployment ? { type: "deployment" } : {}),

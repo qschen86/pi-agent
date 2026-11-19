@@ -8,6 +8,7 @@ import { ClaudeDriver, type ClaudeSdkPort } from '../../../packages/runtime-sess
 import { nativeModelPort } from './native-model-port.js';
 import { componentBinary, componentPath } from './optional-installer.mjs';
 import { isolatedEnv } from './network-host.mjs';
+import { onboardingRepliesFor } from './onboarding.mjs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -82,6 +83,8 @@ export async function createCore({ root, port, payloadRoot }: { root: string; po
     pi: new PiDriver({ sourceAgentDir: piConfigDir, sessionDir: join(dataDir, 'runtime/pi-sessions'), binaryPath: piBinary, runtimeExecutable: join(payloadRoot, 'bin/pi-runtime') })
   } });
   await runtime.recovered;
+  // The install-time welcome session offers preset first tasks until the user replies; every other session keeps normal extraction.
+  runtime.setQuickReplyOverride((id, context) => onboardingRepliesFor(installation(), id, context.turnCount));
   const workspace = join(root, 'workspaces');
   if (!runtime.settings().workspaceRoots.length) runtime.updateSettings({ ...runtime.settings(), workspaceRoots: [workspace] }, 'local-installer');
   const shutdown = new AbortController();

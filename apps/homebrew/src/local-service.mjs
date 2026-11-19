@@ -4,17 +4,35 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { initializeInstallation, readInstallation, verifyPassword } from './initialization.mjs';
 import { inspectEnvironment } from './preflight.mjs';
 import { checkModel } from './model-check.mjs';
+import { ONBOARDING_KIND, ONBOARDING_TITLE, onboardingPrompt } from './onboarding.mjs';
 import { PREVIEW_WRAPPER_CSP, renderStatefulPreview } from './preview-storage.mjs';
 import { evaluateRuntimeNetwork, withRuntimeNetworkGate } from './runtime-network-gate.mjs';
 
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
+const KNOWN_MESSAGE = /^(请输入|模型服务|账号没有|无法连接|两次密码|管理员密码|设备检查|数据位置|数据目录|模型配置|输入内容|请求格式)/;
+const oneLine = text => String(text ?? '').replace(/\s+/g, ' ').trim();
+/** Local diagnostics only: every submitted credential, bearer value and long token-like string is masked before logging. */
+export function redactForLog(text, secrets = []) {
+  let out = oneLine(text);
+  for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 4) out = out.split(secret).join('[redacted]');
+  return out.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/\bsk-[A-Za-z0-9_-]+/g, '[redacted]').replace(/[A-Za-z0-9_+/=-]{32,}/g, '[redacted]');
+}
 const safeHeaders = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 
-export function createLocalService({ root, origin, bootstrapToken, webRoot, coreFactory, setAutoStart, networkInspector, componentInstall, environment = () => inspectEnvironment(root), modelCheck = checkModel }) {
-  const sessions = new Set(); let proof; let corePromise; let busy = false; let attempts = 0; let loginWindow = Date.now();
-  let networkKey;
+export function createLocalService({ root, origin, bootstrapToken, webRoot, coreFactory, setAutoStart, networkInspector, componentInstall, environment = () => inspectEnvironment(root), modelCheck = checkModel, log = line => console.error(line) }) {
+  const sessions = new Set(); let corePromise; let proof; let busy = false; let attempts = 0; let loginWindow = Date.now();
+  let networkKey; const secrets = new Set();
+  const remember = value => { if (typeof value === 'string' && value.trim()) secrets.add(value.trim()); if (secrets.size > 16) secrets.delete(secrets.values().next().value); };
+  const record = (request, status, detail) => { try { log(`[pi-agent] ${new Date().toISOString()} ${request.method} ${new URL(request.url).pathname} -> ${status} ${redactForLog(detail, [...secrets, bootstrapToken])}`); } catch { /* Logging must never change the response. */ } };
+  /** Distinguishes what failed at save time so the wizard can tell the user what to do next. */
+  const requireEligible = () => {
+    const report = environment();
+    if (report?.eligible) return;
+    const failed = (report?.checks ?? []).filter(check => !check.passed).map(check => check.label).filter(Boolean);
+    throw Object.assign(Error(`设备检查未通过${failed.length ? `（${failed.join('、')}）` : ''}，请处理后重新保存`), { code: 'DEVICE_INELIGIBLE' });
+  };
   const installed = () => existsSync(join(root, 'installation.json'));
   const core = () => corePromise ??= Promise.resolve().then(() => coreFactory({ root, port: Number(new URL(origin).port) })).catch(error => { corePromise = undefined; throw error; });
   const cookie = request => /(?:^|;\s*)pi_local_session=([a-f0-9]{64})(?:;|$)/.exec(request.headers.get('cookie') ?? '')?.[1];
@@ -41,7 +59,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     if (!installed()) return { configured: false, environment: environment() };
     const config = readInstallation(root);
     const task = config.acceptance.taskSession;
-    if (task && config.acceptance.firstTask !== 'passed') {
+    if (task && config.acceptance.firstTask !== 'passed' && config.acceptance.taskKind !== ONBOARDING_KIND) {
       const app = await core(); const session = app.runtime.store.binding(task);
       const turn = session?.turns?.at(-1);
       const file = join(root, 'workspaces/first-plan.html');
@@ -50,7 +68,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
       }
       return { configured: true, acceptance: config.acceptance, taskStatus: turn?.status ?? session?.status, taskUrl: `/#/rt/${encodeURIComponent(task)}`, previewUrl: '/api/local/first-preview', model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding };
     }
-    return { configured: true, acceptance: config.acceptance, model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding };
+    return { configured: true, acceptance: config.acceptance, model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding, ...(task ? { taskUrl: `/#/rt/${encodeURIComponent(task)}` } : {}) };
   }
   async function handle(request) {
     const url = new URL(request.url);
@@ -132,7 +150,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     }
     if (url.pathname === '/api/local/model-check' && request.method === 'POST') {
       if (installed()) return json({ error: '实例已经初始化' }, 409);
-      const input = await body(request); const models = await modelCheck(input.apiKey);
+      const input = await body(request); remember(input.apiKey); const models = await modelCheck(input.apiKey);
       proof = { keyHash: hash(input.apiKey.trim()), models, expires: Date.now() + 10 * 60_000 };
       return json({ models });
     }
@@ -140,7 +158,8 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
       if (busy || installed()) return json({ error: '实例已初始化或正在处理' }, 409);
       busy = true;
       try {
-        const input = await body(request);
+        const input = await body(request); remember(input.model?.apiKey);
+        requireEligible();
         if (optionalKind(input.runtimeKind)) {
           await gated(input.runtimeKind, 'install', async () => {
             initializeInstallation({ ...input, root, environment: environment(), networkApiKey: networkKey });
@@ -148,14 +167,20 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
           networkKey = undefined;
           return json({ configured: true });
         }
-        // 检查结论只存在内存里（10 分钟、服务重启即失效），界面却一直显示「连接已通过」，所以保存时不能只认这份影子状态：
-        // 结论过期或缺失就用同一固定厂商端点重新校验提交的 Key，模型必须在厂商返回且本发行版支持的列表内。
+        // The check result lives only in memory (10 minutes, lost on restart) while the page keeps saying "connected", so saving never trusts it alone:
+        // a missing, expired or different-key result is re-verified against the same fixed vendor endpoint, within a request budget.
         const key = String(input.model?.apiKey ?? '').trim();
         if (!proof || proof.expires < Date.now() || !same(proof.keyHash, hash(key))) {
-          if (!verificationAllowed()) return json({ error: '连接检查次数过多，请稍后重试' }, 429);
-          proof = { keyHash: hash(key), models: await modelCheck(key), expires: Date.now() + 10 * 60_000 };
+          if (!verificationAllowed()) { record(request, 429, 'save-recheck-rate-limited'); return json({ error: '连接检查次数过多，请稍后重试' }, 429); }
+          let models;
+          try { models = await modelCheck(key); }
+          catch (error) {
+            record(request, 409, `save-recheck-failed ${error.message}`);
+            return json({ error: `保存前重新检查连接未通过：${KNOWN_MESSAGE.test(error.message ?? '') ? error.message : '请返回上一步重新检查连接'}`, code: 'model-recheck-failed' }, 409);
+          }
+          proof = { keyHash: hash(key), models, expires: Date.now() + 10 * 60_000 };
         }
-        if (!proof.models.includes(input.model?.id)) return json({ error: '所选模型不在当前发行版支持的模型列表内，请重新检查连接后选择模型' }, 409);
+        if (!proof.models.includes(input.model?.id)) { record(request, 409, 'save-model-unavailable'); return json({ error: '所选模型不在当前发行版支持的模型列表内，请重新检查连接后选择模型', code: 'model-unavailable' }, 409); }
         initializeInstallation({ ...input, root, environment: environment() });
         const config = readInstallation(root); config.model = { provider: input.model.provider, id: input.model.id }; config.acceptance.modelConnection = 'passed'; saveConfig(config);
         proof = undefined;
@@ -170,12 +195,16 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
         const config = readInstallation(root); const kind = config.runtimeKind || 'pi';
         if (optionalKind(kind) && (config.onboarding?.login !== 'passed' || config.acceptance.modelConnection !== 'passed')) return json({ error: '请先完成组件安装和账号连接检查' }, 409);
         if (!config.acceptance.taskSession) {
+          // API-key installs start a guided welcome session (assistant speaks first); optional runtimes keep the original sample task.
+          const guided = kind === 'pi';
           const createTask = async () => {
           const app = await core(); const profile = await app.runtime.probe(kind);
-          return app.runtime.create({ runtimeKind: kind, confirmedProfileVersion: profile.checkedAt, workspace: join(root, 'workspaces'), model: kind === 'pi' ? `deepseek/${config.model.id}` : config.model.id, permissionMode: kind === 'pi' ? 'pi-ask' : kind === 'codex' ? 'ask' : 'default', worktree: false, prompt: '请生成一份中文的本周计划清单，保存为工作目录内 first-plan.html，使用自包含 HTML 和可勾选的复选框。不要访问外部网站，不要读取其他文件。在回复中引用这个文件，方便我预览。', idempotencyKey: 'installation-first-task-v1' }, 'local-installer');
+          return app.runtime.create({ runtimeKind: kind, confirmedProfileVersion: profile.checkedAt, workspace: join(root, 'workspaces'), model: kind === 'pi' ? `deepseek/${config.model.id}` : config.model.id, permissionMode: kind === 'pi' ? 'pi-ask' : kind === 'codex' ? 'ask' : 'default', worktree: false, ...(guided ? { title: ONBOARDING_TITLE, prompt: onboardingPrompt(), idempotencyKey: 'installation-onboarding-v1' } : { prompt: '请生成一份中文的本周计划清单，保存为工作目录内 first-plan.html，使用自包含 HTML 和可勾选的复选框。不要访问外部网站，不要读取其他文件。在回复中引用这个文件，方便我预览。', idempotencyKey: 'installation-first-task-v1' }) }, 'local-installer');
           };
           const result = optionalKind(kind) ? await gated(kind, 'first-task', createTask) : await createTask();
-          config.acceptance.taskSession = result.session.platformSessionId; config.acceptance.firstTask = 'running'; saveConfig(config);
+          config.acceptance.taskSession = result.session.platformSessionId;
+          if (guided) { config.acceptance.taskKind = ONBOARDING_KIND; config.acceptance.firstTask = 'guided'; config.state = 'ready'; } else config.acceptance.firstTask = 'running';
+          saveConfig(config);
         }
         return json(await status(), 202);
       } finally { busy = false; }
@@ -207,9 +236,12 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     async fetch(request) {
       try { return await handle(request); }
       catch (error) {
-        if (error.code === 'RUNTIME_NETWORK_BLOCKED') return json({ error: '网络检查未通过，已阻止此操作。请重新检查网络。', decision: error.decision }, 409);
+        if (error.code === 'RUNTIME_NETWORK_BLOCKED') { record(request, 409, 'network-gate-blocked'); return json({ error: '网络检查未通过，已阻止此操作。请重新检查网络。', decision: error.decision }, 409); }
         // Never return vendor bodies, stack traces, filesystem contents or submitted credentials.
-        const known = /^(请输入|模型服务|账号没有|无法连接|两次密码|管理员密码|设备检查|数据位置|数据目录|模型配置|输入内容|请求格式)/.test(error.message ?? '');
+        const known = KNOWN_MESSAGE.test(error.message ?? '');
+        const frames = String(error.stack ?? '').split('\n').slice(1, 4).join(' | ');
+        record(request, error.code === 'DEVICE_INELIGIBLE' ? 409 : 400, `${error.code ? `code=${error.code} ` : ''}${error.message ?? ''}${known ? '' : ` | ${frames}`}`);
+        if (error.code === 'DEVICE_INELIGIBLE') return json({ error: error.message, code: 'device-ineligible' }, 409);
         return json({ error: known ? error.message : '操作未完成，请检查设置或导出本机诊断后重试' }, 400);
       }
     },

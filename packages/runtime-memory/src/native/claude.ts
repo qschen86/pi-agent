@@ -13,7 +13,7 @@ export interface ClaudeMemoryProject { key: string; label: string; dir: string }
 
 export const claudeConfigDir = (env: NodeJS.ProcessEnv = process.env, home = homedir()): string => env['CLAUDE_CONFIG_DIR'] || join(home, '.claude');
 
-/** 「-Users-kisen-Documents-pi-agent」→「Documents-pi-agent」：转义是有损的，只用作展示。 */
+/** 「-Users-user-Documents-pi-agent」→「Documents-pi-agent」：转义是有损的，只用作展示。 */
 export const claudeProjectLabel = (key: string): string => key.replace(/^-Users-[^-]+-/, '').replace(/^-+/, '') || key;
 
 export function listClaudeMemoryProjects(configDir = claudeConfigDir()): ClaudeMemoryProject[] {
