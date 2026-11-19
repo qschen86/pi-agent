@@ -108,12 +108,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/release"
+          # gh needs the repository checkout for --verify-tag, so stay in the workspace and pass asset paths.
+          R="$RUNNER_TEMP/release"
           gh release create "${GITHUB_REF_NAME}" \
-            "pi-agent-${VERSION}-macos-arm64.tar.gz" \
-            "pi-agent-${VERSION}-source.tar.gz" \
-            "pi-agent-${VERSION}-image-library-sources.tar.gz" \
-            pi-agent.rb INSTALL.md SHA256SUMS \
+            "$R/pi-agent-${VERSION}-macos-arm64.tar.gz" \
+            "$R/pi-agent-${VERSION}-source.tar.gz" \
+            "$R/pi-agent-${VERSION}-image-library-sources.tar.gz" \
+            "$R/pi-agent.rb" "$R/INSTALL.md" "$R/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "pi-agent ${VERSION}" \
             --generate-notes
