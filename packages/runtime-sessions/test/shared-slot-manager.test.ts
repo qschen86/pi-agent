@@ -251,3 +251,22 @@ it('an unknown operation whose reservation was released with a terminal proof no
  new SharedSlots(slots).release(scope,first.operation.operationId,{outcome:'not-executed',sourceRef:'manual:test verified no native process'});
  expect(a.manager.activity().unknownOps).toBe(0);
 });
+
+it('a native quota rejection (weekly limit error result) is terminal: capacity released as not-executed, never left as an unknown that blocks deploys',async()=>{
+ const{a,slots}=await setup(false,false,'claude-code');const first=await a.create('weekly-limit');await until(()=>a.driver.turns.length===1);
+ // Claude SDK 的 error result 与本轮 uuid 对不上时不算「原生终态」（没有可信的本轮对应关系），
+ // 但它是账号级额度拒绝：本轮不会再产出原生工作，名额必须放掉，否则 unknownOps 永久 > 0，部署永远等不到空闲。
+ a.driver.turns[0]!.finish({status:'failed',code:'rate_limit',reason:"Claude Code returned an error result: You've hit your weekly limit · resets 9am (America/Los_Angeles)",terminalObserved:false});
+ const scope=a.manager.profile('claude-code')!.identity!.identityScopeId;
+ await until(()=>new SharedSlots(slots).snapshot(scope).reservations.every(r=>r.status==='released'));
+ const ledger=new SharedSlots(slots).snapshot(scope);
+ expect(ledger.reservations).toHaveLength(1);
+ expect(ledger.reservations[0]).toMatchObject({status:'released',release:{outcome:'not-executed'}});
+ await until(()=>a.manager.activity().unknownOps===0&&a.manager.activity().active.length===0);
+ expect(a.manager.activity()).toMatchObject({unknownOps:0,active:[],queued:0,dispatching:0});
+ const binding=a.manager.store.binding(first.session.platformSessionId)!;
+ // 额度不是「结果未知」：回合如实标被中断、记额度失败，之后可以显式续聊（或由平台到点自动续）
+ expect(binding.turns[0]).toMatchObject({status:'interrupted',quotaFailure:true});
+ expect(binding.turns[0]!.statusReason).toContain('weekly limit');
+ expect(binding.statusReason).toContain('weekly limit');
+});

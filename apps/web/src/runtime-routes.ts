@@ -22,8 +22,8 @@ import { DirectoryFeed } from "./directory-feed.js";
 import { ReadState } from "./read-state.js";
 import type { Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { AttachmentError, IMAGE_LIMITS, RuntimeError, RUNTIME_KINDS, defaultPermissionMode, listPlatformSkills, permissionOption } from "@pi-agent/runtime-sessions";
-import type { DirectoryEntry, PermissionMode, RuntimeKind, RuntimeSessionManager, RuntimeSettings } from "@pi-agent/runtime-sessions";
+import { AttachmentError, IMAGE_LIMITS, PlatformSkillSwitchError, RuntimeError, RUNTIME_KINDS, defaultPermissionMode, listPlatformSkills, permissionOption } from "@pi-agent/runtime-sessions";
+import type { AuthFlowMode, DirectoryEntry, PermissionMode, RuntimeAuthFlowSnapshot, RuntimeAuthSubmitInput, RuntimeKind, RuntimeSessionManager, RuntimeSettings } from "@pi-agent/runtime-sessions";
 import {factAuditQuery} from './memory/facts.js';
 import { readFileSync } from "node:fs";
 import { revealInFileManager } from "./reveal.js";
@@ -40,7 +40,31 @@ import type {RuntimeSyncSources} from './runtime-sync-source.js';
 import {announceHandoff, streamLifetime} from './stream-lifetime.js';
 import { deviceOfRequest, originKeys, turnOriginsAt } from './turn-origin.js';
 
+export interface RuntimeAuthCapability {
+  managedInstall: boolean;
+  requiresNetworkGate: boolean;
+  installed: boolean;
+  enabled: boolean;
+  isolatedCredentials: boolean;
+  supportsApiKey: boolean;
+  loginMode: AuthFlowMode;
+}
+
+export interface RuntimeAuthService {
+  capabilities(): { isolatedCredentials: boolean; runtimes: Record<RuntimeKind, RuntimeAuthCapability> };
+  networkCheck?(kind: RuntimeKind, apiKey?: string): Promise<Record<string, unknown>>;
+  installComponent?(kind: RuntimeKind): Promise<{ installed: boolean; reused?: boolean; version?: string }>;
+  startLogin(kind: RuntimeKind): Promise<RuntimeAuthFlowSnapshot>;
+  loginStatus(kind: RuntimeKind, flowId?: string): RuntimeAuthFlowSnapshot | null;
+  submitLogin(kind: RuntimeKind, flowId: string, input: RuntimeAuthSubmitInput): Promise<RuntimeAuthFlowSnapshot>;
+  verifyLogin(kind: RuntimeKind, flowId?: string): Promise<RuntimeAuthFlowSnapshot>;
+  cancelLogin(kind: RuntimeKind, flowId?: string): Promise<RuntimeAuthFlowSnapshot | null>;
+  shutdown?(): void;
+}
+
 export interface RuntimeRouteContext {
+  /** 本机可视化运行时安装与官方登录服务（仅 127.0.0.1 可用） */
+  runtimeAuth?: RuntimeAuthService;
   validateRecordSources?: (refs: import("../../../packages/runtime-sessions/src/types.js").EntryRef[])=>Promise<import("../../../packages/runtime-sessions/src/types.js").EntryRef[]>;
   iterations?: NoteIterations;
   authPartition?: (c: Context) => string | null;
@@ -111,7 +135,8 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     catch (e) {
       if (e instanceof AttachmentError && e.decodeReason) uploadLog("decode_failed", { uploadId: c.res.headers.get("x-upload-id"), reason: e.decodeReason });
       if (e instanceof RuntimeError || e instanceof AttachmentError) return c.json({ error: e.message, code: e.code }, e.status);
-      const err = e as { code?: string; message?: string };
+      const err = e as { code?: string; message?: string; decision?: unknown };
+      if (err.code === "RUNTIME_NETWORK_BLOCKED") return c.json({ error: err.message ?? "当前网络检查未通过，已停止操作", code: err.code, ...(err.decision ? { decision: err.decision } : {}) }, 409);
       if (err.code === 'SYNC_CURSOR') return c.json({error:err.message,code:err.code},400);
       if (err.code === "RT_STORE_BUSY") return c.json({ error: err.message, code: err.code }, 503);
       if (err.code === "RT_CONFLICT") return c.json({ error: err.message, code: err.code }, 409);
@@ -121,7 +146,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     }
   };
   const kindOf = (v: string): RuntimeKind => {
-    if (!(RUNTIME_KINDS as readonly string[]).includes(v)) throw new RuntimeError("runtime 只能是 codex、claude-code 或 pi", 400, "RT_INPUT");
+    if (!(RUNTIME_KINDS as readonly string[]).includes(v)) throw new RuntimeError("runtime 只能是 codex、claude-code、pi 或 antigravity", 400, "RT_INPUT");
     return v as RuntimeKind;
   };
   /** 受管会话的读取：对外入口要求控制或查看任一已开启；已发现历史要求查看授权 */
@@ -301,11 +326,29 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
       const option = model ? profile.models.find((m) => m.id === model) : (profile.models.find((m) => m.isDefault) ?? (kind === "pi" ? profile.models[0] : undefined));
       if (!(option?.efforts ?? []).includes(effort)) throw new RuntimeError(`该模型不支持推理强度 ${effort}`, 400, "RT_INPUT");
     }
-    if (permissionMode && !permissionOption(kind, permissionMode)) throw new RuntimeError(`该 runtime 没有审批模式 ${permissionMode}`, 400, "RT_INPUT");
+    if (permissionMode && (!permissionOption(kind, permissionMode) || (profile.permissionOptions && !profile.permissionOptions.some((x) => x.id === permissionMode)))) throw new RuntimeError(`该 runtime 没有审批模式 ${permissionMode}`, 400, "RT_INPUT");
     return mgr.updateSettings({ defaultSessionByRuntime: { [kind]: { model, effort, permissionMode } } }, ctx.actor(c));
   }));
   // 平台级技能目录：输入框 `/` 菜单读取。只给展示用字段，不含服务器上的目录路径与说明正文。
-  app.get("/api/platform-skills", (c) => c.json({ skills: listPlatformSkills() }));
+  // 被用户禁用的技能不出现在菜单里（与不存在一样）。
+  app.get("/api/platform-skills", (c) => c.json({ skills: listPlatformSkills(undefined, mgr.platformSkillSwitches?.disabledIds()) }));
+  // 技能开关：全部技能（含已禁用）+ enabled；只改启用状态，不动技能目录与它产生的数据。
+  app.get("/api/platform-skills/switches", (c) => {
+    c.header("Cache-Control", "private, no-store");
+    return c.json(mgr.platformSkillSwitches?.get() ?? { version: 1, revision: 0, updatedAt: null, skills: listPlatformSkills().map((s) => ({ ...s, enabled: true })) });
+  });
+  app.put("/api/platform-skills/:id", async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    const switches = mgr.platformSkillSwitches;
+    if (!switches) return c.json({ error: "这个实例没有开启技能开关", code: "SKILL_SWITCH_INVALID" }, 400);
+    let body: { enabled?: unknown } = {};
+    try { body = await c.req.json(); } catch { return c.json({ error: "请求不是合法的 JSON", code: "SKILL_SWITCH_INVALID" }, 400); }
+    try { return c.json(switches.set(c.req.param("id"), body.enabled)); }
+    catch (e) {
+      if (e instanceof PlatformSkillSwitchError) return c.json({ error: e.message, code: e.code }, e.code === "SKILL_SWITCH_UNKNOWN" ? 404 : 400);
+      throw e;
+    }
+  });
   app.get("/api/runtime-profiles", async (c) => {
     const profiles: Array<ReturnType<RuntimeSessionManager["profiles"]>[number] & { balances?: ProviderBalance[] }> = mgr.profiles();
     // Pi 没有订阅额度窗口：改为显示它所用模型服务的账户余额
@@ -319,6 +362,68 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
   app.post("/api/runtime-profiles/:kind/probe", guard("control"), (c) => run(c, async () => {
     const b = await c.req.json<{ reloggedIn?: unknown }>().catch(() => ({} as { reloggedIn?: unknown }));
     return mgr.probe(kindOf(param(c, "kind")), { reloggedIn: b.reloggedIn === true });
+  }));
+
+  /* ------------------------------ 可视化运行时安装与官方登录（仅本机 127.0.0.1） ------------------------------ */
+
+  app.get("/api/runtime-auth/capabilities", guard("local"), (c) => {
+    c.header("Cache-Control", "private, no-store");
+    if (!ctx.runtimeAuth) return c.json({ available: false, isolatedCredentials: false, runtimes: {} });
+    const caps = ctx.runtimeAuth.capabilities();
+    return c.json({ available: true, ...caps });
+  });
+  app.post("/api/runtime-auth/:kind/network-check", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth?.networkCheck) throw new RuntimeError("当前实例不需要网络门禁检查", 400, "RT_UNSUPPORTED");
+    const body = await c.req.json<{ apiKey?: unknown }>().catch(() => ({} as { apiKey?: unknown }));
+    if (body.apiKey !== undefined && typeof body.apiKey !== "string") throw new RuntimeError("网络检测 Key 格式无效", 400, "RT_INPUT");
+    return ctx.runtimeAuth.networkCheck(kind, body.apiKey as string | undefined);
+  }));
+  app.post("/api/runtime-auth/:kind/install", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth?.installComponent) throw new RuntimeError("当前实例不支持在此托管安装组件", 400, "RT_UNSUPPORTED");
+    const result = await ctx.runtimeAuth.installComponent(kind);
+    return { ...result, capabilities: ctx.runtimeAuth.capabilities() };
+  }));
+  app.post("/api/runtime-auth/:kind/start", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth) throw new RuntimeError("当前实例不支持网页登录", 400, "RT_UNSUPPORTED");
+    return ctx.runtimeAuth.startLogin(kind);
+  }));
+  app.get("/api/runtime-auth/:kind/status", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth) throw new RuntimeError("当前实例不支持网页登录", 400, "RT_UNSUPPORTED");
+    const flowId = c.req.query("flowId") || undefined;
+    return { flow: ctx.runtimeAuth.loginStatus(kind, flowId) };
+  }));
+  app.post("/api/runtime-auth/:kind/submit", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth) throw new RuntimeError("当前实例不支持网页登录", 400, "RT_UNSUPPORTED");
+    const body = await c.req.json<{ flowId?: unknown; code?: unknown; provider?: unknown; apiKey?: unknown; modelId?: unknown }>().catch(() => ({} as Record<string, unknown>));
+    if (typeof body.flowId !== "string" || !body.flowId.trim()) throw new RuntimeError("缺少登录会话编号", 400, "RT_INPUT");
+    try {
+      return await ctx.runtimeAuth.submitLogin(kind, body.flowId.trim(), {
+        ...(typeof body.code === "string" ? { code: body.code } : {}),
+        ...(typeof body.provider === "string" ? { provider: body.provider } : {}),
+        ...(typeof body.apiKey === "string" ? { apiKey: body.apiKey } : {}),
+        ...(typeof body.modelId === "string" ? { modelId: body.modelId } : {}),
+      });
+    } catch (error) {
+      if (error instanceof RuntimeError) throw error;
+      throw new RuntimeError(error instanceof Error ? error.message : "提交失败", 400, "RT_AUTH_INPUT");
+    }
+  }));
+  app.post("/api/runtime-auth/:kind/verify", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth) throw new RuntimeError("当前实例不支持网页登录", 400, "RT_UNSUPPORTED");
+    const body = await c.req.json<{ flowId?: unknown }>().catch(() => ({} as { flowId?: unknown }));
+    return ctx.runtimeAuth.verifyLogin(kind, typeof body.flowId === "string" ? body.flowId : undefined);
+  }));
+  app.post("/api/runtime-auth/:kind/cancel", guard("local"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    if (!ctx.runtimeAuth) throw new RuntimeError("当前实例不支持网页登录", 400, "RT_UNSUPPORTED");
+    const body = await c.req.json<{ flowId?: unknown }>().catch(() => ({} as { flowId?: unknown }));
+    return { flow: await ctx.runtimeAuth.cancelLogin(kind, typeof body.flowId === "string" ? body.flowId : undefined) };
   }));
   app.post("/api/runtime-profiles/:kind/rate-limits", guard("control"), (c) => run(c, async () => {
     const body = await c.req.json<{ automatic?: unknown }>().catch(() => ({} as { automatic?: unknown }));
@@ -334,7 +439,9 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     // Claude：按所选目录解析项目级设置（允许规则、hooks、MCP）；Codex 的项目层随 AGENTS.md 与配置文件原生加载
     const drv = mgr.drivers[kind] as { settingsSummary?: (cwd: string) => Promise<string[]> };
     const lines = kind === "claude-code" && drv.settingsSummary && cwd.startsWith("/") ? await drv.settingsSummary(cwd) : p.configSummary;
-    const mode = c.req.query("permissionMode") ?? defaultPermissionMode(kind);
+    const savedMode = mgr.settings().defaultSessionByRuntime?.[kind]?.permissionMode;
+    const fallbackMode = savedMode && permissionOption(kind, savedMode) && (!p.permissionOptions || p.permissionOptions.some((x) => x.id === savedMode)) ? savedMode : defaultPermissionMode(kind);
+    const mode = c.req.query("permissionMode") || fallbackMode;
     const permissions = permissionOption(kind, mode);
     if (!permissions || (p.permissionOptions && !p.permissionOptions.some((x) => x.id === mode))) throw new RuntimeError("该运行时不支持所选权限模式，请重新检查连接", 400, "RT_INPUT");
     return { lines, permissions, permissionMode: mode, workspaceRoots: mgr.workspaceRoots(kind), profileVersion: p.checkedAt };
@@ -400,7 +507,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
       return {
         runtimeKind: p.runtimeKind, state: p.state,
         ...(rl && rl.available && rl.windows?.length
-          ? { rateLimit: { windows: rl.windows.map((w) => ({ label: w.label, usedPercent: w.usedPercent ?? null, resetsAt: w.resetsAt ?? null })), sampledAt: rl.sampledAt ?? null, stale: !!rl.stale } }
+          ? { rateLimit: { windows: rl.windows.map((w) => ({ label: w.label, ...(w.group ? { group: w.group } : {}), usedPercent: w.usedPercent ?? null, resetsAt: w.resetsAt ?? null })), sampledAt: rl.sampledAt ?? null, stale: !!rl.stale } }
           : {}),
         ...(p.runtimeKind === "pi" && balances.length ? { balances } : {})
       };

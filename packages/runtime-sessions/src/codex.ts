@@ -16,7 +16,7 @@ import type { QuestionItem } from "./types.js";
  * 一个 profile 共用一个 app-server；停止只发 turn/interrupt，不杀共享进程里的其他会话（F08）。
  */
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -117,6 +117,8 @@ export class CodexDriver implements RuntimeDriver {
   private active = new Map<string, ActiveTurn>();
   private creating = new Set<string>();
   private binary?: string;
+  /** 当前常驻 app-server 启动时的二进制指纹 */
+  private clientStamp?: string;
   private readonly codexHome: string;
   private realms?: CodexRealmRegistry;
   private privateClients = new Map<string, CodexAppServerClient>();
@@ -132,7 +134,8 @@ export class CodexDriver implements RuntimeDriver {
     return this.opts.nativeAuthFile ?? join(this.opts.codexHome ?? process.env["CODEX_HOME"] ?? join(homedir(), ".codex"), "auth.json");
   }
 
-  resolveBinary(): string | undefined {
+  resolveBinary(fresh = false): string | undefined {
+    if (fresh) this.binary = undefined;
     if (this.binary) return this.binary;
     // 明确指定了路径：只用它，找不到就报未安装，不悄悄换成别的 codex
     const pinned = this.opts.binaryPath ?? process.env["PI_AGENT_CODEX_BIN"];
@@ -144,12 +147,31 @@ export class CodexDriver implements RuntimeDriver {
     return undefined;
   }
 
+  /** 可执行文件的路径 + 修改时间：ChatGPT.app 升级会原地替换它，据此发现版本变化 */
+  binaryStamp(): { path: string; mtimeMs: number } | undefined {
+    const bin = this.resolveBinary(true);
+    if (!bin) return undefined;
+    try { return { path: bin, mtimeMs: statSync(bin).mtimeMs }; } catch { return undefined; }
+  }
+
+  /** 常驻 app-server 是按旧二进制启动的：升级后空闲时让它退出，探测与新会话才会用新版本（有进行中的回合就不动它） */
+  private retireStaleClient(): void {
+    const c = this.client;
+    if (!c?.alive || this.clientStamp === undefined) return;
+    const now = this.binaryStamp();
+    if (!now || `${now.path}|${now.mtimeMs}` === this.clientStamp) return;
+    if (this.active.size > 0 || this.creating.size > 0 || this.starting) return;
+    this.client = undefined;
+    c.stop();
+  }
+
   private async ensureClient(): Promise<CodexAppServerClient> {
     if (this.disposed) throw new DriverStageError("Codex driver is shut down", "spawn");
     if (this.client?.alive) return this.client;
     if (this.starting) return this.starting;
     const bin = this.resolveBinary();
     if (!bin) throw new DriverStageError("找不到 Codex CLI（可用 PI_AGENT_CODEX_BIN 指定绝对路径）", "spawn");
+    const stampBefore = this.binaryStamp();
     this.starting = (async () => {
       const c = this.opts.clientFactory ? this.opts.clientFactory(bin) : new CodexAppServerClient({ binaryPath: bin, env: allowlistedEnv() });
       this.startingClient = c;
@@ -157,6 +179,7 @@ export class CodexDriver implements RuntimeDriver {
       try { await c.start(); } catch (e) { c.stop(); throw new DriverStageError(`Codex app-server 启动失败：${(e as Error).message}`, "spawn"); }
       if (this.disposed) { c.stop(); throw new DriverStageError("Codex driver is shut down", "spawn"); }
       this.client = c;
+      this.clientStamp = stampBefore ? `${stampBefore.path}|${stampBefore.mtimeMs}` : undefined;
       return c;
     })();
     try { return await this.starting; } finally { this.starting = undefined; this.startingClient = undefined; }
@@ -242,7 +265,8 @@ export class CodexDriver implements RuntimeDriver {
   async probe(): Promise<ProbeOutcome> {
     const permissions = { label: "workspace-write / on-request", detail: "Codex 沙箱只允许写工作目录；越界或联网等需要审批的动作经 on-request 转到 pi-agent 审批。" };
     const empty = Object.fromEntries(Object.keys(REQUIRED_METHODS).map((k) => [k, cap("unknown", "未探测")])) as Record<CapabilityName, Capability>;
-    const bin = this.resolveBinary();
+    this.retireStaleClient();
+    const bin = this.resolveBinary(true);
     if (!bin) {
       const pinned = this.opts.binaryPath ?? process.env["PI_AGENT_CODEX_BIN"];
       return { state: "not-installed", stateReason: pinned ? `指定的 codex 不存在：${pinned}` : "服务进程环境里找不到 codex（已查 ChatGPT.app 内置 CLI、PATH 与常见位置）", capabilities: empty, models: [], configSummary: [], permissions };

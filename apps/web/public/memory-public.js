@@ -1,6 +1,6 @@
-/* 平台记忆：一级导航里的独立应用页。
+/* 平台记忆：现在挂在「系统设置 → 内容 · 平台记忆」（#/settings/memory），#/memory 仍保留给旧链接和会话里的记忆出处。
  * 只有一个列表：公共记忆（个人偏好 + 各项目），数据来自流水线（从平台会话里你亲口说的话提炼）。
- * 设置页（#/memory/settings）里有：每日自动提炼、新会话注入的开关和注入预览。
+ * 提炼与注入的开关和注入预览和列表在同一页（原来是独立的 #/memory/settings，现已合并进设置页）。
  * 架构页（#/memory/architecture，memory-architecture.js）：当前版本的架构图，对比模式标出相对旧版本的改动；入口在「设置」左边，有新版本时亮红点。
  * 旧机制（扫描 runtime 私有记忆 → 候选 → 逐条审查）的页面、接口与数据读取都已下线。 */
 const PM_API = "/api/memory/public";
@@ -13,20 +13,33 @@ function pmIcon(name) {
 let pmPage = null;
 function pmCreate() {
   const root = h("section", {class:"pm-page pi-memory-dialog pm-dialog", "aria-label":"平台记忆"});
-  return {root, data:null, loading:false, loadedAt:0, busy:false, error:"", versionConflict:false, preview:null};
+  // 设置页里的「平台记忆」：提炼 / 注入配置卡在列表上方，共用一个状态和一份 DOM，切换页面不清空输入。
+  const cards = h("div", {class:"pm-embed-settings"});
+  const wrap = h("section", {class:"pm-embed", "aria-label":"平台记忆"}, cards, root);
+  return {root, wrap, cards, embedded:false, data:null, loading:false, loadedAt:0, busy:false, error:"", versionConflict:false, preview:null};
 }
 /** 路由模块入口：页面状态留在内存里，离开再回来立刻显示上次的内容，同时在后台静默刷新。 */
 function renderPublicMemoryPage() {
   if (!pmPage) pmPage = pmCreate();
   const d = pmPage;
+  d.embedded = false;
   // 从会话里引用记忆的 chip 点回来：#/memory/t/<编号> → 打开那条记忆的详情（地址随即换回 #/memory，关掉详情后刷新不会再弹）
   const link = /^#\/memory\/t\/([\w-]+)$/.exec(location.hash);
   if (link) { const st = pmTopicState(d); st.deepLink = link[1]; st.view = "catalog"; st.entry = null; if (st.state === "ready") st.state = "idle"; history.replaceState(null, "", "#/memory"); }
   renderPublicMemory();
   // 回到页面就静默重读：列表先照旧显示，读完局部更新（比如刚在会话里「加入记忆」）
-  if (!pmOnSettings() && !pmOnArch()) { const st = pmTopicState(d); if (st.state === "ready" && Date.now() - (st.loadedAt || 0) > 5000) { st.state = "idle"; void pmLoadTopics(); } }
+  if (!pmSettingsVisible() && !pmOnArch()) { const st = pmTopicState(d); if (st.state === "ready" && Date.now() - (st.loadedAt || 0) > 5000) { st.state = "idle"; void pmLoadTopics(); } }
   return d.root;
 }
+/** 设置页里的「平台记忆」入口（#/settings/memory）：同一个面板 + 提炼 / 注入配置，嵌在设置内容区里。 */
+function renderPublicMemoryEmbedded() {
+  if (!pmPage) pmPage = pmCreate();
+  const d = pmPage;
+  d.embedded = true;
+  renderPublicMemory();
+  return d.wrap;
+}
+window.renderPublicMemoryEmbedded = renderPublicMemoryEmbedded;
 const PM_ERRORS = {RT_FORBIDDEN:"需要控制权限", busy:"另一个操作正在进行，请稍后重试", "storage-error":"公共记忆的记录文件需要检查", "not-found":"这条记录已不存在，请刷新", conflict:"操作与当前状态冲突，请刷新后重试", "invalid-input":"输入不合规"};
 function pmMessage(e) { const m = e && e.message; return m && /[\u4e00-\u9fff]/.test(m) ? m : (PM_ERRORS[e && e.code] || "操作失败，请重试"); }
 /** 设置页要用的少量数据（开关、项目列表、乐观并发版本）；列表页不读它。 */
@@ -51,7 +64,7 @@ async function pmLoadPipeStatus() {
 /** 运行中每 4 秒问一次状态，跑完再刷一次；离开设置页就停。 */
 function pmPipePoll(d) {
   const p = pmPipe(d); clearTimeout(p.poll);
-  if (p.status?.running && pmOnSettings()) p.poll = setTimeout(() => { if (pmPage === d && pmOnSettings()) void pmLoadPipeStatus(); }, 4000);
+  if (p.status?.running && pmSettingsVisible()) p.poll = setTimeout(() => { if (pmPage === d && pmSettingsVisible()) void pmLoadPipeStatus(); }, 4000);
 }
 async function pmRunPipeline() {
   const d = pmPage; if (!d) return; const p = pmPipe(d);
@@ -70,6 +83,9 @@ async function pmSetSetting(key, value) {
   if (d.preview) { d.preview.result = null; void pmPreview(); }
 }
 const pmOnSettings = () => location.hash === "#/memory/settings";
+// 「平台记忆」现在也在设置页里（#/settings/memory）：提炼流水线的开关、状态和轮询两个入口都要管到。
+const pmOnEmbedded = () => typeof ui !== "undefined" && ui.view === "settings" && ui.settings?.section === "memory";
+const pmSettingsVisible = () => pmOnSettings() || pmOnEmbedded();
 const pmOnArch = () => location.hash === "#/memory/architecture";
 /** 架构页（memory-architecture.js）是按需共享模块：没加载时（比如只载入本脚本的测试页）退化为没有这个入口的红点。 */
 const pmHasArch = () => typeof renderPmArch === "function";
@@ -872,7 +888,8 @@ async function pmPreview() {
   try { const result = await api("/api/memory/public/injection-preview", {method:"POST", body:JSON.stringify({project:target.project})}); if (pmPage === d && d.preview === target) { target.result = result; renderPublicMemory(); } }
   catch (e) { if (pmPage === d) { d.error = pmMessage(e); renderPublicMemory(); } }
 }
-function renderPmSettings(d) {
+/** 提炼 / 注入配置的三张卡：设置页里的「平台记忆」和它原来的独立设置页共用同一份。 */
+function pmSettingsCards(d) {
   const data = d.data;
   const projects = [...new Set(data?.projects || [])].sort();
   const row = (key, label, on, off) => h("div", {class:"pm-settings-row"},
@@ -899,17 +916,67 @@ function renderPmSettings(d) {
       h("div", {class:"pm-row"}, h("span", {class:"muted small"}, "如果现在新建一个会话，所在项目是："),
         h("select", {"aria-label":"预览项目", onchange: e => { d.preview.project = e.target.value === "__global" ? null : e.target.value; d.preview.result = null; renderPublicMemory(); void pmPreview(); }}, [["__global", "（无项目，只含全局）"], ...projects.map(p => [p, p])].map(([v, l]) => h("option", {value:v, selected:(d.preview.project ?? "__global") === v}, l)))),
       d.preview.result ? (d.preview.result.block ? [h("p", {class:"muted small"}, `常驻 ${d.preview.result.block.count} 条（项目 ${d.preview.result.block.project} · 全局 ${d.preview.result.block.global}），约 ${d.preview.result.block.chars} 字 ≈ ${d.preview.result.block.estTokens} token${d.preview.result.block.onDemand ? `；另有 ${d.preview.result.block.onDemand} 条按需查阅（索引：${d.preview.result.block.indexPath || "—"}）` : ""}`), h("pre", {class:"pi-memory-body pm-preview"}, d.preview.result.block.text)] : h("p", {class:"muted small"}, "没有可注入的条目（只注入生效中且没有未决争议的条目）")) : h("p", {class:"muted small"}, "正在生成预览…")] : null) : null;
+  return [switches, pipe, preview].filter(Boolean);
+}
+/** 设置页里的配置卡：外面套一层设置卡片，标题和分组跟其它设置页一致。 */
+function pmSettingsSection(d) {
+  return h("section", {class:"card settings-card", "data-pm-settings":""},
+    h("div", {class:"settings-card-head"}, h("div", {},
+      h("h2", {}, "提炼与注入"),
+      h("p", {class:"muted small"}, "公共记忆由平台会话自动提炼；这里只管提炼的定时与新会话的注入，改完立即生效。"))),
+    d.error ? h("p", {role:"alert", class:"pi-memory-notice warn-text"}, d.error) : null,
+    d.versionConflict ? h("button", {type:"button", class:"btn small", onclick: () => void pmLoadSettings()}, "读取最新版本") : null,
+    h("div", {class:"pm-settings-body pm-settings-body-embedded"}, ...pmSettingsCards(d)),
+    d.busy || d.loading ? h("footer", {class:"pi-memory-status"}, h("span", {role:"status"}, d.busy ? "处理中…" : "正在读取…")) : null);
+}
+function renderPmSettings(d) {
   d.root.replaceChildren(h("div", {class:"pi-memory-panel pm-settings-page"},
     h("header", {class:"pi-memory-head"},
       h("a", {class:"settings-back pm-settings-back", href:"#/memory", "aria-label":"返回平台记忆"}, "‹ 返回"),
       h("div", {class:"pi-memory-heading"}, h("h1", {}, "平台记忆设置"))),
     d.error ? h("p", {role:"alert", class:"pi-memory-notice warn-text"}, d.error) : null,
-    d.versionConflict ? h("button", {type:"button", class:"btn small", onclick:() => void pmLoadSettings()}, "读取最新版本") : null,
-    h("div", {class:"pm-settings-body"}, switches, pipe, preview),
+    d.versionConflict ? h("button", {type:"button", class:"btn small", onclick: () => void pmLoadSettings()}, "读取最新版本") : null,
+    h("div", {class:"pm-settings-body"}, ...pmSettingsCards(d)),
     d.busy || d.loading ? h("footer", {class:"pi-memory-status"}, h("span", {role:"status"}, d.busy ? "处理中…" : "正在读取…")) : null));
+}
+/** 列表面板：独立页和设置页里的嵌入都走这里，只差页头（嵌入时标题由设置页头给）。 */
+function pmListPanel(d) {
+  const st = pmTopicState(d);
+  const scroll = d.root.querySelector(".pi-memory-content")?.scrollTop || 0;
+  if (st.state === "idle") queueMicrotask(() => void pmLoadTopics());
+  if (st.view === "feed" && st.feed.state === "idle") queueMicrotask(() => void pmLoadFeed());
+  const rail = st.view === "feed" ? pmFeedFilters(d) : pmTopicsRail(d);
+  const content = h("div", {class:`pi-memory-content${st.view === "feed" ? " pm-feed-content" : ""}`}, ...(st.view === "feed" ? pmFeedBody(d) : pmTopicsBody(d)));
+  const te = pmTopicsEntry(d);
+  const drawer = te ? pmTopicDrawer(d, te) : null;
+  const panel = h("div", {class:"pi-memory-panel"},
+    h("header", {class:"pi-memory-head"},
+      h("div", {class:"pi-memory-heading"}, h("h1", {}, d.embedded ? "公共记忆" : "平台记忆")),
+      h("div", {class:"pi-memory-head-actions"},
+        h("a", {class:"btn small pm-arch-entry", href:"#/memory/architecture", "aria-label":pmHasArch() && pmArchUnseen(d) ? "架构（有更新）" : "架构"}, "架构", pmHasArch() && pmArchUnseen(d) ? h("span", {class:"pm-red-dot", role:"status", "aria-label":"架构图有更新"}) : null),
+        // 嵌在设置页时，提炼 / 注入配置就在上面，不再给「设置」入口。
+        d.embedded ? null : h("a", {class:"btn small", href:"#/settings/memory"}, "设置"),
+        h("button", {type:"button", class:"btn ghost small pi-memory-icon-button", disabled:st.state === "loading", "aria-label":"刷新", title:"刷新", onclick:() => { st.state = "idle"; void pmLoadTopics(); }}, pmIcon("refresh")))),
+    st.error && st.state !== "error" ? h("p", {role:"alert", class:"pi-memory-notice warn-text"}, st.error) : null,
+    h("div", {class:"pi-memory-layout history pm-layout"}, pmViewTabs(d), rail, content),
+    st.state === "loading" && st.items.length ? h("footer", {class:"pi-memory-status"}, h("span", {role:"status"}, "正在读取…")) : null,
+    ...(drawer ? [drawer] : []));
+  return {panel, drawer, content, scroll};
+}
+/** 设置页里的嵌入渲染：上面是提炼 / 注入配置卡，下面是同一个记忆列表。 */
+function renderPmEmbedded(d) {
+  if (!d.data && !d.loading) void pmLoadSettings();
+  const p = pmPipe(d);
+  if (p.state !== "loading" && Date.now() - (p.loadedAt || 0) > 15000) queueMicrotask(() => void pmLoadPipeStatus());   // 15 秒内的重复渲染不再请求
+  d.cards.replaceChildren(pmSettingsSection(d));
+  const {panel, drawer, content, scroll} = pmListPanel(d);
+  d.root.replaceChildren(panel);
+  if (drawer) { try { drawer.showModal(); } catch {} }
+  content.scrollTop = scroll;
 }
 function renderPublicMemory() {
   const d = pmPage; if (!d) return;
+  if (d.embedded) { renderPmEmbedded(d); return; }
   if (pmOnSettings()) {
     renderPmSettings(d);
     if (!d.data && !d.loading) void pmLoadSettings();
@@ -919,27 +986,18 @@ function renderPublicMemory() {
   }
   if (pmOnArch() && pmHasArch()) { renderPmArch(d); return; }
   if (pmHasArch() && !d.arch?.meta && !d.arch?.tried) queueMicrotask(() => void pmArchLoadMeta(d));   // 只为入口的红点：知道最新架构版本才能判断有没有更新
-  const st = pmTopicState(d);
-  const scroll = d.root.querySelector(".pi-memory-content")?.scrollTop || 0;
-  if (st.state === "idle") queueMicrotask(() => void pmLoadTopics());
-  if (st.view === "feed" && st.feed.state === "idle") queueMicrotask(() => void pmLoadFeed());
-  const rail = st.view === "feed" ? pmFeedFilters(d) : pmTopicsRail(d);
-  const content = h("div", {class:`pi-memory-content${st.view === "feed" ? " pm-feed-content" : ""}`}, ...(st.view === "feed" ? pmFeedBody(d) : pmTopicsBody(d)));
-  const te = pmTopicsEntry(d);
-  const drawer = te ? pmTopicDrawer(d, te) : null;
-  d.root.replaceChildren(h("div", {class:"pi-memory-panel"},
-    h("header", {class:"pi-memory-head"},
-      h("div", {class:"pi-memory-heading"}, h("h1", {}, "平台记忆")),
-      h("div", {class:"pi-memory-head-actions"},
-        h("a", {class:"btn small pm-arch-entry", href:"#/memory/architecture", "aria-label":pmHasArch() && pmArchUnseen(d) ? "架构（有更新）" : "架构"}, "架构", pmHasArch() && pmArchUnseen(d) ? h("span", {class:"pm-red-dot", role:"status", "aria-label":"架构图有更新"}) : null),
-        h("a", {class:"btn small", href:"#/memory/settings"}, "设置"),
-        h("button", {type:"button", class:"btn ghost small pi-memory-icon-button", disabled:st.state === "loading", "aria-label":"刷新", title:"刷新", onclick:() => { st.state = "idle"; void pmLoadTopics(); }}, pmIcon("refresh")))),
-    st.error && st.state !== "error" ? h("p", {role:"alert", class:"pi-memory-notice warn-text"}, st.error) : null,
-    h("div", {class:"pi-memory-layout history pm-layout"}, pmViewTabs(d), rail, content),
-    st.state === "loading" && st.items.length ? h("footer", {class:"pi-memory-status"}, h("span", {role:"status"}, "正在读取…")) : null,
-    ...(drawer ? [drawer] : [])));
+  const {panel, drawer, content, scroll} = pmListPanel(d);
+  d.root.replaceChildren(panel);
   if (drawer) { try { drawer.showModal(); } catch {} }
   content.scrollTop = scroll;
 }
+/** 目录说明：设置页的「平台记忆」一行显示现在有多少条公共记忆。 */
+window.piMemoryHint = () => {
+  const st = pmPage?.topics;
+  if (!st || !st.items?.length) return "公共记忆、提炼与注入";
+  const counts = st.status?.counts;
+  const total = counts?.personal ? Object.values(counts.projects || {}).reduce((n, p) => n + (p.total || 0), 0) + (counts.personal.total || 0) : st.items.length;
+  return `${total} 条公共记忆 · 提炼与注入`;
+};
 
 window.piRouteModules?.register("memory", { render: renderPublicMemoryPage });

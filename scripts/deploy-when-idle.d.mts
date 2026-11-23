@@ -9,13 +9,14 @@ export interface WhenIdleRequest {
   ffBranch?: string; ffFrom?: string;
   /** 守候进程已开始部署它；进入 switching 后不能取消 */
   startedAt?: string;
+  baselineRed?: BaselineRedState | null;
   file: string;
 }
 export interface WhenIdleDirs { root: string; home: string; requests: string; pidFile: string; log: string }
 export function whenIdleDirs(root?: string): WhenIdleDirs;
 export function readRequests(root?: string): WhenIdleRequest[];
 /** 标记请求已开始部署（startedAt）或退回等待（undefined）：列表页相应显示「部署中」/「待部署」 */
-export function markRequests<T extends { file: string; sha: string }>(qs: T[], startedAt: string | undefined): T[];
+export function markRequests<T extends { file: string; sha: string }>(qs: T[], startedAt: string | undefined, update?: Pick<Partial<WhenIdleRequest>, "baselineRed" | "deadline">): T[];
 export function watcherPid(root?: string): number | undefined;
 export function liveCommit(root?: string): string | undefined;
 export function commitSubject(repo: string, sha: string): string | undefined;
@@ -30,14 +31,17 @@ export function planDeploy<T extends { sha: string }>(requests: T[], live: strin
 export function notifyPrompt(input: { outcome: "ok" | "already-live" | "rejected" | "failed" | "expired"; sha: string; subject: string; live?: string; logFile: string; detail?: string; requestSha?: string; requestId?: string }): string;
 export function notifyKey(requestId: string): string;
 export function failureHints(logText: string): string[];
+export function waivedNote(logText: string): string;
 export interface FastForwardResult { result: "moved" | "contained" | "checked-out" | "diverged" | "failed" | "unchanged"; tip?: string; where?: string[]; detail?: string }
 export function fastForwardAfterDeploy(repo: string, branch: string, target: string): FastForwardResult;
 export function branchSyncBlocker(repo: string, branch: string, target?: string): { where?: string[]; detail: string } | undefined;
 export function ffNote(input: { branch: string; sha: string; outcome: "ok" | "failed"; ff?: FastForwardResult }): string;
 export function shouldYieldCutover(repo: string, sha: string, root?: string): boolean;
-export function runDeploy(repo: string, sha: string, logFile: string, root?: string, syncBranches?: string[], options?: { coveredIds?: string[]; action?: "rollback"; expectedLive?: string; stageOnly?: boolean; args?: string[]; env?: Record<string, string> }): Promise<number>;
+export function runDeploy(repo: string, sha: string, logFile: string, root?: string, syncBranches?: string[], options?: { coveredIds?: string[]; action?: "rollback"; expectedLive?: string; stageOnly?: boolean; args?: string[]; env?: Record<string, string>; timeline?: { queuedAt?: string; startedAt: string; stagedAt: string } }): Promise<number>;
+/** 一批请求切换前的节点时间（登记 → 预发检查开始 → 预发完成） */
+export function stagingTimeline(requests: Array<{ id: string; requestedAt?: string }>, staged: StagedState | undefined): { queuedAt?: string; startedAt: string; stagedAt: string } | undefined;
 /** 叠加预发（when-idle/staged.json）：逐个叠加请求，最后一次切换 */
-export interface StagedState { sha: string; ids: string[]; skipped: Record<string, { sha: string; at: string; detail: string }>; live?: string; stale?: boolean; at?: string }
+export interface StagedState { sha: string; ids: string[]; skipped: Record<string, { sha: string; at: string; detail: string }>; live?: string; stale?: boolean; at?: string; timeline?: Record<string, { startedAt: string; stagedAt: string }> }
 export const CUTOVER_WAIT_SECONDS: number;
 export const STAGED_REF: string;
 export function readStaged(root?: string): StagedState | undefined;
@@ -45,7 +49,7 @@ export function writeStaged(state: Omit<StagedState, "at">, root?: string): void
 export function clearStaged(root?: string): void;
 export function keepStagedRef(repo: string, sha: string): void;
 export function retireStagedRef(repo: string, sha?: string, branch?: string): void;
-export function planStaging<T extends { id: string; sha: string }>(input: { requests: T[]; live: string | undefined; staged: StagedState | undefined; isAncestor: (a: string, b: string) => boolean; holdStage?: boolean }):
+export function planStaging<T extends { id: string; sha: string }>(input: { requests: T[]; live: string | undefined; staged: StagedState | undefined; isAncestor: (a: string, b: string) => boolean; isCooling?: (request: T, base?: string) => boolean }):
   | { action: "reset"; reason: string; dependent: [] }
   | { action: "stage"; request: T; base: string | undefined; dependent: Array<{ request: T; on: string }> }
   | { action: "cutover"; sha: string; covered: T[]; dependent: Array<{ request: T; on: string }> }
@@ -57,14 +61,18 @@ export const BUSY_EXIT: number;
 export const TESTS_FAILED_EXIT: number;
 export const BASELINE_RED_EXIT: number;
 export const BASELINE_RED_COOLDOWN_MS: number;
-/** 门禁发现失败的测试线上版本同样红：请求保持排队、不判失败（when-idle/baseline-red.json） */
-export interface BaselineRedState { live?: string; branchTip?: string; target?: string; files: string[]; at: string; logFile?: string }
+/** 门禁发现失败的测试线上版本同样红：冷却状态跟随请求。 */
+export interface BaselineRedState { live?: string; branchTip?: string; base?: string; target?: string; requestId?: string; files: string[]; at: string; logFile?: string }
 export function parseBaselineRed(logText: string): { files: string[]; base?: string } | undefined;
+export function waivedNote(logText: string): string;
 export function writeBaselineRed(state: Omit<BaselineRedState, "at"> & { at?: string }, root?: string): void;
 export function readBaselineRed(root?: string): BaselineRedState | undefined;
 export function clearBaselineRed(root?: string): void;
-export function holdForBaselineRed<T extends { file: string; sha: string }>(input: { repo: string; branch: string; target: string; covered: T[]; logFile: string; root?: string }): { covered: T[]; files: string[] };
-export function baselineRedHolds(state: BaselineRedState | undefined, now: { live?: string; branchTip?: string; target?: string }, nowMs?: number): boolean;
+export function holdForBaselineRed<T extends { file: string; sha: string }>(input: { repo: string; branch: string; target: string; covered: T[]; logFile: string; root?: string; inputs?: { live?: string; base?: string; branchTip?: string } }): { covered: T[]; files: string[] };
+export function baselineRedHolds(state: BaselineRedState | undefined, now: { live?: string; branchTip?: string; target?: string; base?: string }, nowMs?: number): boolean;
+export function baselineRedForRequest(request: Pick<WhenIdleRequest, "action" | "baselineRed" | "id" | "sha">, legacy?: BaselineRedState): BaselineRedState | undefined;
+export function baselineRedWait(request: Pick<WhenIdleRequest, "sha">, state: BaselineRedState | undefined, now: { live?: string; base?: string; branchTip?: string }, nowMs?: number): BaselineRedState | undefined;
+export function requestDeadline(request: Pick<WhenIdleRequest, "deadline">, state?: BaselineRedState, nowMs?: number): number;
 
 export function integrateDeploy(input: { repo: string; target: string; live?: string; branch?: string; root?: string }): { ok: true; sha: string; branch: string; cleanup(): void } | { ok: false; retry?: boolean; conflicts: string[]; detail: string };
 export function resolveIntegratedAssetConflicts(text: string): string | undefined;

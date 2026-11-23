@@ -112,7 +112,7 @@ describe("dispatch", () => {
     tool("n1", "cat ~/.claude/projects/x/memory/gui-harness-fund-deploy.md | head -40");
     tool("c1", "curl -s 'http://127.0.0.1:8780/api/memory/public/index?project=pi-agent&q=%E9%83%A8%E7%BD%B2'", "completed", "bash");
     // 带输出的查阅：模型实际收到的条目（目录行 + 详情）从输出里还原
-    const OUT = ["37e668cc [常驻] #个人偏好/流程 | 改动前先确认需求和方案。 | 个人偏好", "12:7d68b42e [常驻] #部署与发布 | 所有入口链接都使用 gui-backup-cn。 | pi-agent", "### 7d68b42e · pi-agent · 部署与发布 · 常驻", "", "所有入口链接和验收核查都使用 gui-backup-cn.harness.fund。", "依据：2 个会话"].join("\n");
+    const OUT = ["37e668cc [常驻] #个人偏好/流程 | 改动前先确认需求和方案。 | 个人偏好", "12:7d68b42e [常驻] #部署与发布 | 所有入口链接都使用 gui-backup-cn。 | pi-agent", "### 7d68b42e · pi-agent · 部署与发布 · 常驻", "", "所有入口链接和验收核查都使用 console.example.com。", "依据：2 个会话"].join("\n");
     sink.event({ key: "o1", kind: "tool", tool: { name: "命令", input: `grep -n "部署" ${IDX}/pi-agent.catalog.md`, output: OUT, status: "completed" }, source: "stream", parserVersion: "f", availability: "recorded", occurredAt: "2026-11-11T05:01:00.000Z" } as never);
     let page = await mgr.injections(pid);
     for (let i = 0; i < 60 && page.lookups.length < 7; i++) { await tick(); page = await mgr.injections(pid); }
@@ -123,7 +123,7 @@ describe("dispatch", () => {
     expect(byKey["o1"]!.recalledTotal).toBe(2);
     expect(byKey["o1"]!.alsoRead).toBe(false);
     expect(byKey["o1"]!.recalled).toEqual([
-      { id: "7d68b42e", tier: "常驻", scope: "pi-agent·部署与发布", text: "所有入口链接和验收核查都使用 gui-backup-cn.harness.fund。" },   // 详情的正文优先于目录摘要
+      { id: "7d68b42e", tier: "常驻", scope: "pi-agent·部署与发布", text: "所有入口链接和验收核查都使用 console.example.com。" },   // 详情的正文优先于目录摘要
       { id: "37e668cc", tier: "常驻", scope: "个人偏好·流程", text: "改动前先确认需求和方案。" }
     ]);
     expect(byKey["r1"]!.recalled).toEqual([]);   // 输出只有 "ok"

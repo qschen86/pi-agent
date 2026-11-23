@@ -45,7 +45,9 @@
   const collectionCategories = () => (collections().categories || []).filter((c) => !c.parentId).map((c) => ({ ...c, kind: "collection", primaryId: c.id }));
   /* 没有「全部」页签：一级分类各自一页；还没打分类的产物放在最后的「未分类」页签（有才出现），不会丢。 */
   const uncategorizedItems = () => collectionItems().filter((item) => !(item.categoryIds || []).length);
-  const categories = () => [...(collections().catalogRefsSeen ? [] : ((STATE.catalog && STATE.catalog.categories) || [])), ...collectionCategories(), ...(uncategorizedItems().length ? [{ id: "uncategorized", name: "未分类", kind: "uncategorized" }] : [])];
+  /* 「应用」放在最前：待办 / 通讯录 / 股票 / AI浏览器等内置应用也是产物；在这里（和小游戏卡片上）置顶，置顶的常驻导航的产物区。 */
+  const APPS_CATEGORY = { id: "apps", name: "应用", kind: "apps" };
+  const categories = () => [APPS_CATEGORY, ...(collections().catalogRefsSeen ? [] : ((STATE.catalog && STATE.catalog.categories) || [])), ...collectionCategories(), ...(uncategorizedItems().length ? [{ id: "uncategorized", name: "未分类", kind: "uncategorized" }] : [])];
   function catalogRefs(category, secondary = "") {
     if (category.kind === "uncategorized") return [];
     const tree = collections().categories || [];
@@ -64,7 +66,7 @@
 
   /** 当前一级分类的二级行：和页签条放在同一个固顶块里（记忆页的两行筛选也是整块一起），滚动时内容不会从它们中间穿过去。 */
   function subRail(category) {
-    if (!category || category.kind === "eval" || category.kind === "uncategorized") return null;
+    if (!category || category.kind === "apps" || category.kind === "eval" || category.kind === "uncategorized") return null;
     if (category.kind === "collection") {
       const api = window.piArtifactCollect;
       const children = (collections().categories || []).filter((c) => c.parentId && c.parentId === category.primaryId);
@@ -228,6 +230,30 @@
     if (!on && wentFullscreen && document.fullscreenElement) { void document.exitFullscreen().catch(() => {}); wentFullscreen = false; }
   }
 
+  /* 置顶开关：置顶的应用常驻导航「产物区」；没置顶的，最近打开的 1 个会临时出现在产物区末尾。 */
+  function pinButton(pinned, name, onToggle) {
+    return h("button", { class: "btn small artifact-pin" + (pinned ? " on" : ""), type: "button", "aria-pressed": String(pinned), title: pinned ? "取消置顶（从导航产物区移除）" : "置顶到导航产物区", "aria-label": (pinned ? "取消置顶 " : "置顶 ") + name, onclick: onToggle }, pinned ? "已置顶" : "置顶");
+  }
+  function renderApps() {
+    const nav = window.piNav;
+    const apps = nav ? nav.apps() : [];
+    return h("section", { class: "artifact-section", "aria-label": "应用", role: "tabpanel", id: "artifact-panel" },
+      h("div", { class: "artifact-section__head" },
+        h("span", { class: "muted small" }, "待办、通讯录、股票等内置应用都是产物。置顶的常驻在导航的产物区，最近打开的 1 个会临时出现在末尾；小游戏在「小游戏」分类里同样可以置顶。")),
+      apps.length
+        ? h("div", { class: "artifact-grid artifact-app-grid" }, apps.map((app) => h("div", { class: "card artifact-card artifact-app-card", "data-app-id": app.id },
+          h("button", { class: "artifact-card__open", type: "button", "aria-label": "打开 " + app.name, onclick: () => { location.hash = "#/" + app.id; } },
+            h("span", { class: "artifact-card__emoji artifact-app-icon", "aria-hidden": "true" }, app.icon || ""),
+            h("span", { class: "artifact-card__name" }, app.name),
+            h("span", { class: "artifact-card__summary muted small" }, app.title)),
+          h("span", { class: "artifact-card__foot" },
+            h("span", { class: "artifact-card__actions" },
+              h("button", { class: "btn small primary", type: "button", onclick: () => { location.hash = "#/" + app.id; } }, "打开"),
+              pinButton(app.pinned, app.name, () => nav.setAppPinned(app.id, !app.pinned)))))))
+        : h("p", { class: "card muted small", role: "status" }, "暂时没有可用的应用。"));
+  }
+  if (window.piNav) window.piNav.onChange(() => repaint());
+
   function renderCard(item) {
     const local = seenVersion(item.id);
     const stale = !!local && local !== item.version;
@@ -242,6 +268,7 @@
         stale ? h("span", { class: "artifact-badge" }, "可更新") : null,
         h("span", { class: "artifact-card__actions" },
           h("button", { class: "btn small primary", type: "button", onclick: () => enterGame(item) }, "▶ 全屏玩"),
+          window.piNav ? pinButton(window.piNav.gamePinned(item.id), item.name, () => window.piNav.setGamePinned(item, !window.piNav.gamePinned(item.id))) : null,
           // 带孩子隐私数据的产物（错题本）不提供分享
           item.private ? null : h("button", { class: "btn small", type: "button", onclick: () => openShareDialog(item) }, "分享"),
           h("a", { class: "btn small", href: artifactEntry(item), target: "_blank", rel: "noopener" }, "新窗口"))));
@@ -249,6 +276,7 @@
 
   function renderPlayer(item) {
     const src = artifactEntry(item);
+    window.navNoteGame?.(item);   // 没置顶的小游戏：作为「最近打开」临时出现在导航产物区
     if (livePlayer && livePlayer.src === src && livePlayer.section.isConnected) return livePlayer.section;
     // Only an actually opened artifact is a visit. Older APKs reject this optional narrow capability harmlessly.
     if (window.piAndroidShell?.available) void window.piAndroidShell.call("widget.visit", {
@@ -404,7 +432,7 @@
     void refresh();
   }
 
-  const artifactPageHead = () => h("div", { class: "artifact-section__head artifact-page-head" }, h("h1", {}, "产物"),
+  const artifactPageHead = () => h("div", { class: "artifact-section__head artifact-page-head" }, h("h1", {}, "全部产物"),
     h("button", { type: "button", class: "btn small ghost artifact-cat-manage", onclick: () => window.piArtifactCategoryBrowser?.openManager?.() }, "管理分类"));
 
   function syncCollections() {
@@ -591,6 +619,7 @@
 
   function renderCategory(category) {
     if (category.kind === "eval") return window.piEvalArtifacts ? window.piEvalArtifacts.renderSection(category) : null;
+    if (category.kind === "apps") return renderApps();
     if (category.kind === "collection" || category.kind === "uncategorized") return renderCollectionCategory(category);
     const scoped = items().filter((item) => item.category === category.id);
     const secondary = SECONDARIES.get(category.id) || "";
@@ -754,6 +783,7 @@
     if (!frame || ev.source !== frame.contentWindow) return;
     if (ev.data.type === "pi-artifact-exit") exitGame();
     if (ev.data.type === "pi-artifact-ready" && ev.data.exit) frame.closest(".artifact-player")?.classList.add("has-game-exit");
+    if (ev.data.type === "pi-artifact-haptic" && window.piAndroidShell?.haptic) void window.piAndroidShell.haptic(ev.data.payload);
   }
 
   function start() {

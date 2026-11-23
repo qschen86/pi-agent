@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -203,6 +203,47 @@ describe("Codex 驱动 × 协议替身（F02）", () => {
     expect(r.status).toBe("interrupted");
     expect(r.reason).toContain("app-server 退出");
     expect(r.processEnded).toContain("app-server 进程已退出");
+  });
+});
+
+describe("Codex 二进制升级（自动重检的驱动侧）", () => {
+  function driverOnTempBinary() {
+    const root = mkdtempSync(join(tmpdir(), "codex-bin-")); codexFixtureRoots.push(root);
+    const bin = join(root, "codex"); writeFileSync(bin, "#!/bin/sh\necho codex-cli 0.0.1\n", { mode: 0o755 });
+    const d = new CodexDriver({ binaryPath: bin, clientFactory: () => new CodexAppServerClient({ binaryPath: process.execPath, args: [FAKE], env: { ...(process.env as Record<string, string>), FAKE_SCENARIO: "normal" } }) });
+    drivers.push(d);
+    return { d, bin: realpathSync(bin) };
+  }
+  const internals = (d: CodexDriver) => d as unknown as { ensureClient: () => Promise<CodexAppServerClient>; retireStaleClient: () => void; client?: CodexAppServerClient };
+
+  it("指纹是路径 + 修改时间，每次现查：文件被替换后立刻变", () => {
+    const { d, bin } = driverOnTempBinary();
+    const a = d.binaryStamp()!;
+    expect(a.path).toBe(bin);
+    utimesSync(bin, new Date(), new Date(a.mtimeMs + 5_000));
+    expect(d.binaryStamp()!.mtimeMs).not.toBe(a.mtimeMs);
+  });
+
+  it("升级后空闲的常驻 app-server 会退出（探测与新会话换用新版本）；指纹没变则保留", async () => {
+    const { d, bin } = driverOnTempBinary();
+    const c = await internals(d).ensureClient();
+    internals(d).retireStaleClient();
+    expect(c.alive).toBe(true);
+    utimesSync(bin, new Date(), new Date(Date.now() + 60_000));
+    internals(d).retireStaleClient();
+    expect(internals(d).client).toBeUndefined();
+    for (let i = 0; i < 50 && c.alive; i++) await new Promise(r => setTimeout(r, 20));
+    expect(c.alive).toBe(false);
+  });
+
+  it("有进行中的回合时不动常驻进程", async () => {
+    const { d, bin } = driverOnTempBinary();
+    const c = await internals(d).ensureClient();
+    (d as unknown as { active: Map<string, unknown> }).active.set("t", { client: c });
+    utimesSync(bin, new Date(), new Date(Date.now() + 60_000));
+    internals(d).retireStaleClient();
+    expect(c.alive).toBe(true);
+    (d as unknown as { active: Map<string, unknown> }).active.clear();
   });
 });
 
@@ -683,6 +724,17 @@ describe("Claude 进程非零退出时保留结构化错误码", () => {
     const d = new ClaudeDriver({ sdk });
     const r = await (await d.startTurn({ workspace: "/tmp", prompt: "x", clientMessageId: "cm-q" }, recordingSink().sink)).done;
     expect(r).toMatchObject({ status: "failed", code: "rate_limit", processEnded: expect.stringContaining("exited with code 1") });
+  });
+  it("认证失败的 assistant 正文进入失败原因：不再只剩 process exited with code 1", async () => {
+    const sdk = fakeSdk(async function* (_prompt, options) {
+      yield { type: "system", subtype: "init", session_id: options["sessionId"], model: "m" };
+      yield { type: "assistant", error: "authentication_failed", message: { id: "msg_A", model: "m", content: [{ type: "text", text: "Failed to authenticate: OAuth session expired and could not be refreshed" }], usage: { input_tokens: 0, output_tokens: 0 } }, parent_tool_use_id: null };
+      throw new Error("Claude Code process exited with code 1");
+    });
+    const r = await (await new ClaudeDriver({ sdk }).startTurn({ workspace: "/tmp", prompt: "x", clientMessageId: "cm-a" }, recordingSink().sink)).done;
+    expect(r).toMatchObject({ status: "failed", code: "authentication_failed" });
+    expect(r.reason).toContain("process exited with code 1");
+    expect(r.reason).toContain("OAuth session expired and could not be refreshed");
   });
   it.each(["current", "other", "missing", "background"])("SDK rewritten error result requires exact turn and no background work: %s", async (scenario) => {
     const sdk = fakeSdk(async function* (_prompt, options) {

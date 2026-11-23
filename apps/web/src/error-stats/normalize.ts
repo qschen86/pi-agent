@@ -1,18 +1,19 @@
 /**
  * 报错指纹的规则归一化（每晚错误统计，docs/requirements/error-stats-nightly）。
  *
- * 三类错误各自一套：
+ * 四类错误各自一套：
  * - 工具报错：`tool|<归一化工具名>|<主命令>|<退出码>|<错误签名>`，工具名先跨 runtime 对齐（Bash / bash / 命令 → shell），
  *   签名里的路径、数字、id、网址抹成占位符；
  * - 部署报错：`deploy|<失败类别>|<归一化原因>`，自动合并冲突按冲突文件拆开，一个文件一个指纹；
- * - 记忆强约束重试用尽：`memory|<ruleId>`。
+ * - 记忆强约束重试用尽：`memory|<ruleId>`；
+ * - 门禁里「复跑才通过」的测试文件：`flaky|<测试文件路径>`（宿主机上的问题，没有 runtime 之分）。
  * 规则归一化只做「同一工具、同一种报错文案」的合并；不同 runtime 文案不同的同一根因，交给 merge.ts 里的 DeepSeek 归并。
  */
 import { parseDeployHistoryLine } from "../deploy-history.js";
 
 export type StatsRuntime = "pi" | "claude-code" | "codex";
 export const RUNTIMES: readonly StatsRuntime[] = ["pi", "claude-code", "codex"];
-export type ErrorKind = "tool" | "deploy" | "memory";
+export type ErrorKind = "tool" | "deploy" | "memory" | "flaky";
 
 export interface Occurrence {
   kind: ErrorKind;
@@ -188,4 +189,20 @@ export function deployOccurrences(line: string, index: number, runtimeOfSession:
   if (!Number.isFinite(at)) return [];
   const sample = `${e.outcome}｜${e.note}｜${e.subject}`.slice(0, 300);
   return deployFingerprints(e).map((fingerprint) => ({ kind: "deploy" as const, runtime, fingerprint, at, ...(e.sessionId ? { sessionId: e.sessionId } : {}), sample, key: `deploy:${e.at}|${e.sha}|${e.outcome}|${e.sessionId ?? ""}|${fingerprint}` }));
+}
+
+/** 门禁 flaky 记录（<guiRoot>/test-gates/flaky-tests.jsonl）的一行：每个复跑才通过的测试文件一条。 */
+export function flakyOccurrences(line: string): Occurrence[] {
+  let e: { at?: string; tree?: string; files?: unknown; details?: Array<{ file?: string; kind?: string; test?: string; error?: string }> };
+  try { e = JSON.parse(line); } catch { return []; }
+  const at = Date.parse(e.at ?? "");
+  if (!Number.isFinite(at) || !Array.isArray(e.files)) return [];
+  const out: Occurrence[] = [];
+  for (const file of e.files) {
+    if (typeof file !== "string" || !file) continue;
+    const d = e.details?.find((x) => x.file === file);
+    const sample = d ? `${d.kind ?? "unknown"}｜${d.test ?? ""}｜${d.error ?? ""}`.slice(0, 300) : "第一次没过，单独重跑通过";
+    out.push({ kind: "flaky", runtime: "unknown", fingerprint: `flaky|${file}`, at, sample, key: `flaky:${e.at}|${e.tree ?? ""}|${file}` });
+  }
+  return out;
 }

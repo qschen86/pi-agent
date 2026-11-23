@@ -271,7 +271,7 @@ async function showPush(event) {
   const settings = await notificationStore("readonly", store => store.get("settings"));
   if (!settings?.enabled || settings.mode !== "push" || settings.binding !== data.binding) return;
   const url = new URL(data.url, self.location.origin);
-  if (url.origin !== self.location.origin || url.pathname !== "/" || !/^#\/rt(?:\/[A-Za-z0-9_-]+)?$/.test(url.hash)) return;
+  if (url.origin !== self.location.origin || url.pathname !== "/" || !/^#\/(?:rt(?:\/[A-Za-z0-9_-]+)?|notes(?:\/widget\/\d{4}-\d{2}-\d{2}(?:\/[A-Za-z0-9_-]+)?)?)$/.test(url.hash)) return;
   const key = `seen:${data.binding}:${data.id}`;
   if (await notificationStore("readonly", store => store.get(key))) return;
   await self.registration.showNotification(data.title.slice(0, 120), {
@@ -331,13 +331,13 @@ async function finishNotificationOpen(url) {
   const opened = await clickStep(opening);
   if (opened) await clickStep(opened.focus());
 }
-const PRIMARY_ORIGIN = "https://gui.harness.fund";
-const DESKTOP_CLICK_ORIGIN = "https://gui-backup-cn.harness.fund";
+const PRIMARY_ORIGIN = "https://primary.example.com";
+const DESKTOP_CLICK_ORIGIN = "https://console.example.com";
 self.addEventListener("notificationclick", event => {
   const data = event.notification.data;
   let url;
   try { url = new URL(data?.url, self.location.origin); } catch { return; }
-  if (url.origin !== self.location.origin || url.pathname !== "/" || !/^#\/rt(?:\/[A-Za-z0-9_-]+)?$/.test(url.hash)) return;
+  if (url.origin !== self.location.origin || url.pathname !== "/" || !/^#\/(?:rt(?:\/[A-Za-z0-9_-]+)?|notes(?:\/widget\/\d{4}-\d{2}-\d{2}(?:\/[A-Za-z0-9_-]+)?)?)$/.test(url.hash)) return;
   if (url.hash.startsWith("#/rt/")) url.searchParams.set("notification-session", url.hash.slice("#/rt/".length));
   event.notification.close();
   // PC：主域名上收到的推送，点击后改到备用域名打开（跨源，不能复用当前窗口，直接开新窗口）。

@@ -182,33 +182,33 @@ describe("entry-domain rule（入口链接只用国内入口域名）", () => {
   it("四要素齐全，且只挂给讲入口域名的记忆", () => {
     expect(rule.node).toBe("turn-end");
     expect([rule.scope, rule.criteria, rule.feedback].every((x) => x.length > 10)).toBe(true);
-    expect(rule.fits("所有入口链接和验收核查都使用 gui-backup-cn.harness.fund，不再用 gui.harness.fund。")).toBe(true);
+    expect(rule.fits("所有入口链接和验收核查都使用 console.example.com，不再用 primary.example.com。")).toBe(true);
     expect(rule.fits("改动前先确认需求和方案。")).toBe(false);
   });
   it("回复里没有入口网址：不检查", () => {
     expect(rule.applies(run("已改好，测试通过。"))).toBe(false);
   });
   it("给出旧入口链接：不通过，问题里指出旧网址、改法指向国内入口", () => {
-    const ev = run("已上线：[打开](https://gui.harness.fund/#/rt/abc)");
+    const ev = run("已上线：[打开](https://primary.example.com/#/rt/abc)");
     expect(rule.applies(ev)).toBe(true);
     const v = rule.check(ev);
     expect(v.pass).toBe(false);
-    expect(v.problem).toContain("gui.harness.fund/#/rt/abc");           // 问题里指出具体是哪个旧网址
-    expect(v.fix).toContain("gui-backup-cn.harness.fund");              // 改法指向国内入口
+    expect(v.problem).toContain("primary.example.com/#/rt/abc");           // 问题里指出具体是哪个旧网址
+    expect(v.fix).toContain("console.example.com");              // 改法指向国内入口
   });
   it("国内入口通过；代码块、行内代码、引用行、说明旧入口的行、本地地址都不算", () => {
-    expect(rule.check(run("已上线：[打开](https://gui-backup-cn.harness.fund/#/rt/abc)")).pass).toBe(true);
-    const text = ["已上线：https://gui-backup-cn.harness.fund/", "```", "https://gui.harness.fund/log", "```", "日志里是 `https://gui.harness.fund/x`", "> 平台通知：https://gui.harness.fund 已上线", "不再用 https://gui.harness.fund 这个旧入口。", "本地 http://127.0.0.1:8780/ 已验证"].join("\n");
+    expect(rule.check(run("已上线：[打开](https://console.example.com/#/rt/abc)")).pass).toBe(true);
+    const text = ["已上线：https://console.example.com/", "```", "https://primary.example.com/log", "```", "日志里是 `https://primary.example.com/x`", "> 平台通知：https://primary.example.com 已上线", "不再用 https://primary.example.com 这个旧入口。", "本地 http://127.0.0.1:8780/ 已验证"].join("\n");
     const ev = run(text);
     expect(rule.applies(ev)).toBe(true);
     expect(rule.check(ev)).toEqual({ pass: true });
   });
   it("验收用 curl / 浏览器访问了旧入口：不通过；grep 搜旧域名这类不算访问", () => {
-    expect(rule.check(run("验收完成。", ["curl -s https://gui.harness.fund/api/health"])).pass).toBe(false);
+    expect(rule.check(run("验收完成。", ["curl -s https://primary.example.com/api/health"])).pass).toBe(false);
     const ev = turnEvidence([
-      ev0({ kind: "tool", tool: { name: "Bash", input: "grep -rn 'https://gui.harness.fund' docs/" } }),
-      ev0({ kind: "tool", tool: { name: "Bash", input: "curl -s https://gui-backup-cn.harness.fund/api/health" } }),
-      ev0({ kind: "tool", tool: { name: "browser_navigate", input: JSON.stringify({ url: "https://gui.harness.fund/#/memory" }) } })
+      ev0({ kind: "tool", tool: { name: "Bash", input: "grep -rn 'https://primary.example.com' docs/" } }),
+      ev0({ kind: "tool", tool: { name: "Bash", input: "curl -s https://console.example.com/api/health" } }),
+      ev0({ kind: "tool", tool: { name: "browser_navigate", input: JSON.stringify({ url: "https://primary.example.com/#/memory" }) } })
     ], 1);
     expect(ev.commandInputs).toHaveLength(2);
     expect(rule.check({ ...ev, assistantText: "" }).pass).toBe(false);
@@ -271,9 +271,9 @@ describe("manager: 回合结束校验强约束", () => {
   };
 
   it("同轮有通过和失败时，两种明细均保留，反馈仍正常续发", async () => {
-    mgr.setPublicMemoryProvider(() => ({ text: "公共记忆", count: 2, rules: [RULE, { topicId: "t-domain", ruleId: "entry-domain", topic: "入口链接", statement: "所有入口链接使用 gui-backup-cn.harness.fund" }] }));
+    mgr.setPublicMemoryProvider(() => ({ text: "公共记忆", count: 2, rules: [RULE, { topicId: "t-domain", ruleId: "entry-domain", topic: "入口链接", statement: "所有入口链接使用 console.example.com" }] }));
     const pid = await start();
-    say(0, "已修改，使用 https://gui-backup-cn.harness.fund 验证。", true);
+    say(0, "已修改，使用 https://console.example.com 验证。", true);
     driver.turns[0]!.finish({ status: "completed" });
     await until(() => driver.turns.length === 2, 12000);
     const checks = mgr.store.events(pid).filter(e => e.turnNo === 1 && e.enforcement);

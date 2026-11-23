@@ -1,3 +1,4 @@
+import { appData } from '../../../app-data.js';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildCatalog, canonicalProjectOf } from '../projects.js';
@@ -71,13 +72,13 @@ export interface CaptureResult { sessions: SessionDigest[]; projects: string[]; 
 
 /** 读平台事件账本，产出每个会话的用户原话与部署通知。纯读，不写任何文件。 */
 export function captureSessions(opts: CaptureOptions): CaptureResult {
-  const raw = JSON.parse(readFileSync(join(opts.dataDir, 'runtime', 'bindings.json'), 'utf8')) as unknown;
+  const raw = JSON.parse(readFileSync(appData(opts.dataDir, 'memory').foreign('runtime-sessions', 'runtime', 'bindings.json'), 'utf8')) as unknown;
   const list = (Array.isArray(raw) ? raw : Object.values((raw as { bindings?: object }).bindings ?? (raw as object))) as Binding[];
   const bindings = list.filter(b => b?.platformSessionId && b.workspace && !EXCLUDED_WORKSPACE.test(b.workspace));
   const catalog = buildCatalog(bindings.map(b => ({ workspace: repoRootOf(b.workspace!) })));
   const stats = { sessions: 0, userMessages: 0, autoMessages: 0, systemActorMessages: 0, shipped: 0, sensitiveDropped: 0 };
-  const actors = readActorIndex(join(opts.dataDir, 'runtime', 'audit.jsonl'));
-  const eventsDir = join(opts.dataDir, 'runtime', 'events');
+  const actors = readActorIndex(appData(opts.dataDir, 'memory').foreign('runtime-sessions', 'runtime', 'audit.jsonl'));
+  const eventsDir = appData(opts.dataDir, 'memory').foreign('runtime-sessions', 'runtime', 'events');
   const only = opts.sessionIds ? new Set(opts.sessionIds) : null;
   const out: SessionDigest[] = [];
   for (const b of bindings) {

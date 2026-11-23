@@ -17,7 +17,7 @@ import { deploymentActionsSupported, withDeploymentActions } from './deployment-
 //   连续两次检查都空闲才动手（群聊成员之间的轮次间隙不算空闲）。
 // - deploy-gui.sh 退出码 75 = 忙/被锁，回去继续等；测试没过在机器负载下常是超时，等没有 vitest 后重试一次。
 // - deploy-gui.sh 退出码 78 = 失败的测试线上版本同样红（主线本身坏了，比如写死日期的用例过期）：请求保持排队、不通知失败，
-//   不重复跑门禁，直到线上 / 目标分支 / 目标提交任一变化（有人修了）或冷却时间到。状态记在 when-idle/baseline-red.json，排队标签显示。
+//   本请求冷却到期或集成输入变化时再试，后续请求继续预发。冷却状态保存在请求中，等待时间不计入请求期限。
 // - 请求带 ffBranch（会话页「提交并在空闲时部署」：提交在会话分支上，还没进 main）：部署成功（退出码 0 且线上就是目标）
 //   后才把 ffBranch 快进到目标（未检出时比较并交换，干净检出时同步索引与工作区；有本地改动或不能快进就不动，
 //   发布照常收尾并记录同步受阻原因；分支发生并发分叉才重新集成）。部署失败 ffBranch 不动。
@@ -50,10 +50,10 @@ export const BASELINE_RED_COOLDOWN_MS = 30 * 60_000;
 const baselineRedFile = (root = ROOT) => join(whenIdleDirs(root).home, "baseline-red.json");
 /** 从部署日志里取门禁打印的「基线红：{base, files}」；没有返回 undefined */
 export function parseBaselineRed(logText) {
-  const line = String(logText).split("\n").reverse().find((l) => l.startsWith("基线红："));
+  const line = String(logText).split("\n").reverse().find((l) => l.startsWith("基线红：") || l.startsWith("基线红放行："));
   if (!line) return undefined;
   try {
-    const v = JSON.parse(line.slice("基线红：".length));
+    const v = JSON.parse(line.slice(line.indexOf("：") + 1));
     return Array.isArray(v.files) ? { files: v.files.map(String), base: typeof v.base === "string" ? v.base : undefined } : undefined;
   } catch { return undefined; }
 }
@@ -73,19 +73,45 @@ export function clearBaselineRed(root = ROOT) { rmSync(baselineRedFile(root), { 
  * 门禁说失败的测试线上版本同样红（退出码 78）：不是这次部署的问题。请求撤掉「部署中」标记继续排队（不判失败、不通知），
  * 记下 线上/分支尖端/目标 和红的文件，输入不变就不再重跑整套门禁。返回仍在排队的请求和红的文件。
  */
-export function holdForBaselineRed({ repo, branch, target, covered, logFile, root = ROOT }) {
-  const queued = markRequests(covered, undefined);
+export function holdForBaselineRed({ repo, branch, target, covered, logFile, root = ROOT, inputs }) {
   let text = ""; try { text = readFileSync(logFile, "utf8"); } catch { /* 没有日志 */ }
   const files = parseBaselineRed(text)?.files ?? [];
-  writeBaselineRed({ live: liveCommit(root), branchTip: git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`), target, files, logFile }, root);
+  const state = { ...(inputs ?? { live: liveCommit(root), branchTip: branchTip(repo, branch) }), target, files, logFile, at: new Date().toISOString() };
+  const queued = markRequests(covered, undefined, { baselineRed: state });
+  if (queued.length) writeBaselineRed({ ...state, requestId: queued[0].id }, root);
   return { covered: queued, files };
 }
 /**
- * 记录的主线红是否仍然有效：线上、目标分支尖端、目标提交都没变，且没过冷却时间。
- * 有效期内不重复跑整套门禁；任何一项变了（有人修了主线、会话自己带了修复、新请求）就放行再试一次。
+ * 同一线上版本、分支尖端、预发基础及目标提交在冷却期内只检查一次。
  */
-export function baselineRedHolds(state, { live, branchTip, target }, now = Date.now()) {
-  return !!state && state.live === live && state.branchTip === branchTip && state.target === target && now - Date.parse(state.at) < BASELINE_RED_COOLDOWN_MS;
+export function baselineRedHolds(state, { live, branchTip, target, base }, now = Date.now()) {
+  return !!state && state.live === live && state.branchTip === branchTip && state.target === target &&
+    (state.base === undefined || state.base === (base ?? live)) && now - Date.parse(state.at) < BASELINE_RED_COOLDOWN_MS;
+}
+
+export function baselineRedForRequest(request, legacy) {
+  if (request.action) return undefined;
+  if (request.baselineRed !== undefined) return request.baselineRed ?? undefined;
+  return legacy?.target === request.sha && (!legacy.requestId || legacy.requestId === request.id) ? legacy : undefined;
+}
+
+const branchTip = (repo, branch = "main") => git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`);
+
+export function baselineRedWait(request, state, { live, base = live, branchTip }, now = Date.now()) {
+  return baselineRedHolds(state, { live, base, branchTip, target: request.sha }, now) ? state : undefined;
+}
+
+export function requestDeadline(request, state, now = Date.now()) {
+  const heldAt = Date.parse(state?.at);
+  const deadline = Date.parse(request.deadline);
+  return deadline + (heldAt <= deadline ? Math.min(BASELINE_RED_COOLDOWN_MS, Math.max(0, now - heldAt)) : 0);
+}
+
+function coolingRequests(live, legacy, now) {
+  return (q, base) => {
+    const state = baselineRedForRequest(q, legacy);
+    return !!state && !!baselineRedWait(q, state, { live, base, branchTip: branchTip(q.repo, q.ffBranch) }, now);
+  };
 }
 
 /* ------------------------------ 纯逻辑（有单测） ------------------------------ */
@@ -162,6 +188,16 @@ export function writeStaged(state, root = ROOT) {
   writeFileSync(tmp, JSON.stringify({ ...state, at: new Date().toISOString() }, null, 2)); renameSync(tmp, file);
 }
 export function clearStaged(root = ROOT) { rmSync(stagedFile(root), { force: true }); }
+/**
+ * 一批请求在切换前的节点时间（登记 → 预发检查开始 → 预发完成）：取这批里最早的登记 / 预检开始和最晚的预发完成。
+ * 切换那次部署把它写进 progress.json 并随流程存档保存，结果弹窗和耗时统计才看得到预发这一段。
+ */
+export function stagingTimeline(requests, staged) {
+  const marks = requests.map(q => ({ queuedAt: q.requestedAt, ...staged?.timeline?.[q.id] })).filter(t => t.startedAt && t.stagedAt);
+  if (!marks.length) return undefined;
+  const queued = marks.map(t => t.queuedAt).filter(Boolean).sort()[0];
+  return { ...(queued ? { queuedAt: queued } : {}), startedAt: marks.map(t => t.startedAt).sort()[0], stagedAt: marks.map(t => t.stagedAt).sort().at(-1) };
+}
 /** 预发提交用分支引用保住（集成工作区清理后它不在任何分支上，部署脚本要求提交在分支上） */
 export const STAGED_REF = "pi-deploy/staged";
 export function keepStagedRef(repo, sha) {
@@ -184,9 +220,9 @@ export function retireStagedRef(repo, sha, branch = "main") {
  * - cutover：没有要叠加的了，把预发的 sha 一次切上去，covered 是它包含的请求；
  * - idle：什么都不用做。
  * dependent：基于某个已跳过请求的提交（带着它的改动）的请求，一并跳过，不拿它去白跑门禁。
- * holdStage（主线红冷却中）：不再叠加新的，但已预发的照常切换。
+ * isCooling：跳过仍在冷却的请求，继续检查后续请求。
  */
-export function planStaging({ requests, live, staged, isAncestor, holdStage = false }) {
+export function planStaging({ requests, live, staged, isAncestor, isCooling = () => false }) {
   const open = requests.filter((q) => !(live && isAncestor(q.sha, live)));
   const valid = !!(staged && live && isAncestor(live, staged.sha));
   if (staged && !valid) return { action: "reset", reason: live ? `线上 ${live.slice(0, 7)} 不在预发 ${staged.sha.slice(0, 7)} 的历史里` : "读不到线上提交", dependent: [] };
@@ -199,8 +235,8 @@ export function planStaging({ requests, live, staged, isAncestor, holdStage = fa
   const skippedShas = Object.values(skipped).map((s) => s.sha);
   const dependent = [];
   let next;
-  if (!holdStage) for (const q of open) {
-    if (inStack(q) || skipped[q.id]) continue;
+  for (const q of open) {
+    if (inStack(q) || skipped[q.id] || isCooling(q, valid ? staged.sha : live)) continue;
     const on = skippedShas.find((s) => isAncestor(s, q.sha));
     if (on) { dependent.push({ request: q, on }); continue; }
     next = q; break;
@@ -298,6 +334,20 @@ export function integrateDeploy({ repo, target, live, branch = "main", root = RO
   } catch (e) { cleanup(); return { ok: false, conflicts: [], detail: e.message }; }
 }
 
+/** 比较本请求提交与集成候选相对基线的改动差异，列出额外并入的非本请求文件（便于排查为何测试范围扩大）。 */
+export function extraIntegratedFiles(repo, { base, requestSha, candidateSha }) {
+  if (!base || !requestSha || !candidateSha || requestSha === candidateSha) return [];
+  const diffFiles = (from, to) => {
+    const out = git(repo, "diff", "--name-only", "--no-renames", from, to);
+    return out ? out.split("\n").map(s => s.trim()).filter(Boolean) : [];
+  };
+  const mergeBase = git(repo, "merge-base", base, requestSha);
+  if (!mergeBase) return [];
+  const own = new Set(diffFiles(mergeBase, requestSha));
+  const all = diffFiles(base, candidateSha);
+  return all.filter(f => !own.has(f)).sort();
+}
+
 /** 续聊接口的幂等键只接受 [A-Za-z0-9_-]{8,80}：同一请求重试不会发两条 */
 export const notifyKey = (requestId) => `deploy-when-idle-${String(requestId).replace(/[^A-Za-z0-9_-]/g, "-")}`.slice(0, 80);
 
@@ -305,7 +355,7 @@ export function notifyPrompt({ outcome, sha, subject, live, logFile, detail, req
   // 多个请求叠加上线时，线上是集成合并提交；写上本请求自己的提交号，会话页才能认出这条通知就是它的结果
   const included = requestSha && !sha.startsWith(requestSha.slice(0, 7)) ? `本请求的提交 ${requestSha.slice(0, 7)} 已包含在内。` : "";
   const head = {
-    ok: `已上线：${sha.slice(0, 7)}（${subject}）。现在 gui-backup-cn.harness.fund（国内入口，主入口 gui.harness.fund 同步）跑的就是这一版，可以接着验证。${included}`,
+    ok: `已上线：${sha.slice(0, 7)}（${subject}）。现在 console.example.com 跑的就是这一版，可以接着验证。${included}`,
     "already-live": `不用部署：${sha.slice(0, 7)} 已经在线上（线上 ${live?.slice(0, 7)} 已包含它）。`,
     rejected: `没有部署 ${sha.slice(0, 7)}：线上是 ${live?.slice(0, 7)}，它不在这个提交的历史里（这期间有别的提交上线了）。`,
     failed: `部署 ${sha.slice(0, 7)} 没有成功，线上仍是 ${live?.slice(0, 7)}。`,
@@ -544,7 +594,7 @@ export function cancelRequest(id, root = ROOT) {
     if (q.startedAt) {
       let p;
       try { p = JSON.parse(readFileSync(join(whenIdleDirs(root).home, "progress.json"), "utf8")); } catch {}
-      if (!p?.requests?.some(x => x.id === q.id && x.startedAt === q.startedAt) || !["preparing", "waiting"].includes(p.phase))
+      if (!p?.requests?.some(x => x.id === q.id && x.startedAt === q.startedAt) || !["preparing", "idle", "waiting"].includes(p.phase))
         return { ok: false, code: "STARTED", message: "正在核对部署阶段或已进入切换服务，不能取消，请刷新进度" };
     }
     rmSync(q.file, { force: true });
@@ -710,12 +760,12 @@ function finish(q, outcome, note, root = ROOT, deployedSha) {
  * Mark an attempt started or pending under the same lock used for cancellation.
  * r+ 打开：刚被取消（文件已删）的不会被重新写出来，也不算进这次部署。
  */
-export function markRequests(qs, startedAt) {
+export function markRequests(qs, startedAt, update) {
   return qs.filter(q => withDeploymentActions(dirname(dirname(q.file)), () => {
     try {
       const latest = JSON.parse(readFileSync(q.file, "utf8"));
       const tmp = `${q.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...latest, file: undefined, startedAt }, null, 2)); renameSync(tmp, q.file);
+      writeFileSync(tmp, JSON.stringify({ ...latest, ...update, file: undefined, startedAt }, null, 2)); renameSync(tmp, q.file);
       return true;
     } catch { return false; }
   }));
@@ -746,14 +796,13 @@ export function archiveRun(root, progressFile, sha, code) {
 export function shouldYieldCutover(repo, sha, root = ROOT) {
   const staged = readStaged(root);
   if (!staged || staged.sha !== sha) return false;
+  const live = liveCommit(root), legacy = readBaselineRed(root), now = Date.now();
   const requests = readRequests(root).filter(q => q.repo === repo && !q.action &&
-    (staged.ids.includes(q.id) || Date.parse(q.deadline) >= Date.now()));
-  const step = planStaging({ requests, live: liveCommit(root), staged, isAncestor: isAncestorIn(repo) });
-  if (step.action !== "stage") return false;
-  const q = step.request;
-  return !baselineRedHolds(readBaselineRed(root), {
-    live: liveCommit(root), branchTip: git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${q.ffBranch ?? "main"}^{commit}`), target: q.sha
+    (staged.ids.includes(q.id) || requestDeadline(q, baselineRedForRequest(q, legacy), now) >= now));
+  const step = planStaging({ requests, live, staged, isAncestor: isAncestorIn(repo),
+    isCooling: coolingRequests(live, legacy, now)
   });
+  return step.action === "stage";
 }
 
 export function runDeploy(repo, sha, logFile, root = ROOT, syncBranches = [], options = {}) {
@@ -775,7 +824,7 @@ export function runDeploy(repo, sha, logFile, root = ROOT, syncBranches = [], op
       const at = new Date().toISOString();
       const requests = readRequests(root).filter(q => q.startedAt && (options.coveredIds ? options.coveredIds.includes(q.id) : isAncestor(repo, q.sha, sha))).map(q => ({ id: q.id, startedAt: q.startedAt }));
       if (options.coveredIds?.length && !requests.length) return false;
-      writeFileSync(`${progressFile}.tmp`, JSON.stringify({ sha, requests, phase: "preparing", since: at, steps: [{ phase: "preparing", at }] }));
+      writeFileSync(`${progressFile}.tmp`, JSON.stringify({ sha, requests, phase: "preparing", since: at, steps: [{ phase: "preparing", at }], ...(options.timeline ? { staging: options.timeline } : {}) }));
       renameSync(`${progressFile}.tmp`, progressFile);
       return true;
     });
@@ -789,6 +838,14 @@ export function runDeploy(repo, sha, logFile, root = ROOT, syncBranches = [], op
 /**
  * 部署结束后：判定成败、成功时快进请求里的 ffBranch、结束这些请求。返回要发给各会话的通知（由调用方发送）。
  */
+/** 带红放行：门禁里线上同样红的测试没拦这次部署。上线通知里写明文件和已红多久，请会话（或你）有空去修，别让它一直红着。 */
+export function waivedNote(logText) {
+  const lines = String(logText).split("\n");
+  const age = lines.reverse().find((l) => l.startsWith("带红放行（已红时长）："));
+  if (age) return `⚠ 带红上线：${age.slice("带红放行（已红时长）：".length)}。这些测试在线上版本上同样不过，与本次部署无关，所以没有拦；建议另开会话修复，修好前每次发布都会带着它们。`;
+  const v = parseBaselineRed(lines.join("\n"));
+  return v?.files.length ? `⚠ 带红上线：${v.files.join("、")}。这些测试在线上版本上同样不过，与本次部署无关，所以没有拦；建议另开会话修复。` : "";
+}
 export function settleDeploy({ repo, sha, code, covered, logFile, root = ROOT }) {
   covered = covered.filter(q => existsSync(q.file));
   const nowLive = liveCommit(root);
@@ -814,7 +871,7 @@ export function settleDeploy({ repo, sha, code, covered, logFile, root = ROOT })
     finish(q, ok ? "ok" : `failed:${code}`, ff ? `${q.ffBranch}:${ff.result}` : undefined, root, ok ? sha : undefined);
     // 这次部署有了结果（成功或门禁没过）：自动解决冲突的过程到此为止
     if (q.notifySession) clearAutoResolve(q.notifySession, root);
-    const detail = [main, ...hints, ok ? "" : `部署输出最后几行：\n${tail}`].filter(Boolean).join("\n");
+    const detail = [main, ok ? waivedNote(logText) : "", ...hints, ok ? "" : `部署输出最后几行：\n${tail}`].filter(Boolean).join("\n");
     notes.push({ q: ok ? { ...q, sha, subject: commitSubject(repo, sha) ?? q.subject, requestSha: q.sha } : q, outcome: ok ? "ok" : "failed", extra: { live: nowLive, logFile, ...(detail ? { detail } : {}) } });
   }
   return { ok, live: nowLive, ff: Object.fromEntries(ffs), notes };
@@ -832,8 +889,9 @@ async function watch() {
       const reqs = readRequests();
       if (!reqs.length) { if (process.argv.includes("--persistent")) { await sleep(10000); continue; } log("没有排队的请求，退出"); return; }
       const live = liveCommit();
+      const legacyRed = readBaselineRed(), nowMs = Date.now();
       const stagedIds = new Set(readStaged()?.ids ?? []);
-      for (const q of reqs) if (Date.parse(q.deadline) < Date.now() && !stagedIds.has(q.id)) {
+      for (const q of reqs) if (requestDeadline(q, baselineRedForRequest(q, legacyRed), nowMs) < nowMs && !stagedIds.has(q.id)) {
         log(`${q.sha.slice(0, 7)} 等空闲超时，放弃`); finish(q, "expired"); await notify(q, "expired", { live });
       }
       const pending = readRequests();
@@ -869,16 +927,10 @@ async function watch() {
       // 叠加预发：先逐个叠加（不等会话空闲），都处理完再一次切换（见 planStaging）
       const open = pending.filter(q => q.repo === repo && !q.action);
       const staged = readStaged();
-      const red = readBaselineRed();
-      const redTip = (q) => git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${q.ffBranch ?? "main"}^{commit}`);
       const isAnc = isAncestorIn(repo);
-      let step = planStaging({ requests: open, live, staged, isAncestor: isAnc });
-      // 主线红冷却中：不再叠加新的，已预发的照常切换
-      if (step.action === "stage" && red && baselineRedHolds(red, { live, branchTip: redTip(step.request), target: step.request.sha })) {
-        if (lastWait !== "baseline-red") { log(`主线测试红（${red.files.join("、")}），不再叠加新请求，等线上/分支/目标有变化或冷却 30 分钟`); lastWait = "baseline-red"; }
-        step = planStaging({ requests: open, live, staged, isAncestor: isAnc, holdStage: true });
-        if (step.action === "idle") { await sleep(30_000); continue; }
-      }
+      const step = planStaging({ requests: open, live, staged, isAncestor: isAnc,
+        isCooling: coolingRequests(live, legacyRed, nowMs)
+      });
       // 依赖了已跳过请求的请求：一并跳过，切换后再试
       if (step.dependent.length && staged) {
         const skipped = { ...staged.skipped };
@@ -905,9 +957,14 @@ async function watch() {
       if (step.action === "stage") {
         const q = step.request;
         const stacked = step.base !== live;
-        // Mark before integration so cancellation cannot race candidate construction.
-        if (!markRequests([q], new Date().toISOString()).length) { log("要预发的请求刚被取消"); continue; }
         const branch = q.ffBranch ?? "main";
+        const inputs = { live, base: step.base, branchTip: branchTip(repo, branch) };
+        const priorHold = baselineRedForRequest(q, legacyRed);
+        // Mark before integration so cancellation cannot race candidate construction.
+        const stageStartedAt = new Date().toISOString();
+        const deadline = requestDeadline(q, priorHold, nowMs);
+        const resumed = priorHold ? { baselineRed: null, ...(Number.isFinite(deadline) ? { deadline: new Date(deadline).toISOString() } : {}) } : undefined;
+        if (!markRequests([q], stageStartedAt, resumed).length) { log("要预发的请求刚被取消"); continue; }
         const candidate = integrateDeploy({ repo, target: q.sha, live: step.base, branch });
         const skip = (detail) => { writeStaged({ ...staged, skipped: { ...staged.skipped, [q.id]: { sha: q.sha, at: new Date().toISOString(), detail } } }); markRequests([q], undefined); log(`${q.sha.slice(0, 7)} 叠加失败（${detail}），先跳过，切换后以新线上版本重试`); };
         if (!candidate.ok) {
@@ -926,29 +983,39 @@ async function watch() {
         const sha = candidate.sha;
         const logFile = join(HOME_DIR, `stage-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${sha.slice(0, 7)}.log`);
         appendFileSync(logFile, `预发：请求 ${q.sha}，叠加在 ${step.base ?? "-"} 上，候选 ${sha}\n`);
-        log(`开始预发 ${sha.slice(0, 7)}（请求 ${q.sha.slice(0, 7)}，${stacked ? `叠加在已预发的 ${step.base.slice(0, 7)} 上` : "基于线上"}），输出见 ${logFile}`);
+        const extraFiles = extraIntegratedFiles(repo, { base: live, requestSha: q.sha, candidateSha: sha });
+        if (extraFiles.length) {
+          const shown = extraFiles.slice(0, 20).join("、") + (extraFiles.length > 20 ? ` 等共 ${extraFiles.length} 个` : "");
+          appendFileSync(logFile, `额外并入改动（非本请求提交直接修改，来自 ${branch} 或前置预发）：${shown}\n`);
+        }
+        log(`开始预发 ${sha.slice(0, 7)}（请求 ${q.sha.slice(0, 7)}，${stacked ? `叠加在已预发的 ${step.base.slice(0, 7)} 上` : "基于线上"}${extraFiles.length ? `，额外并入 ${extraFiles.length} 个文件` : ""}），输出见 ${logFile}`);
         try {
           keepStagedRef(repo, sha); // 预发过程中部署脚本要求提交在分支上；失败时再还原
           const code = await runDeploy(repo, sha, logFile, ROOT, [], { coveredIds: [q.id], stageOnly: true });
           if (code === 77) { log("预发请求已取消"); if (staged) keepStagedRef(repo, staged.sha); else retireStagedRef(repo, undefined); continue; }
           markRequests([q], undefined);
           if (code === 0) {
-            writeStaged({ sha, ids: [...(staged?.ids ?? []), q.id], skipped: staged?.skipped ?? {}, live });
+            writeStaged({ sha, ids: [...(staged?.ids ?? []), q.id], skipped: staged?.skipped ?? {}, live, timeline: { ...staged?.timeline, [q.id]: { startedAt: stageStartedAt, stagedAt: new Date().toISOString() } } });
             log(`已预发 ${sha.slice(0, 7)}（${(staged?.ids.length ?? 0) + 1} 个请求，线上未改动）`);
             continue;
           }
           // 这一步没预发成：预发引用还原到上一步通过的提交
           if (staged) keepStagedRef(repo, staged.sha); else retireStagedRef(repo, undefined);
           if (code === BUSY_EXIT) { log("预发时部署被占用（退出码 75），稍后重来"); await sleep(15_000); continue; }
+          if ([BASELINE_RED_EXIT, TESTS_FAILED_EXIT].includes(code) && (liveCommit() !== inputs.live || branchTip(repo, branch) !== inputs.branchTip)) {
+            testRetries.delete(q.id);
+            log(`${q.sha.slice(0, 7)} 门禁运行期间线上或目标分支已变化，重新集成后再检查`);
+            continue;
+          }
           if (code === BASELINE_RED_EXIT) {
-            const held = holdForBaselineRed({ repo, branch, target: q.sha, covered: [q], logFile });
+            const held = holdForBaselineRed({ repo, branch, target: q.sha, covered: [q], logFile, inputs });
             log(`主线测试红：${held.files.join("、") || "（见日志）"} 线上版本同样不过，请求保持排队、不通知失败；输出见 ${logFile}`);
             lastWait = "baseline-red";
             continue;
           }
-          if (code === TESTS_FAILED_EXIT && !testRetries.get(q.id)) { testRetries.set(q.id, 1); log("测试没过（负载下常见超时），稍等后重试一次"); await sleep(60_000); continue; }
+          const retryKey = JSON.stringify(inputs);
+          if (code === TESTS_FAILED_EXIT && testRetries.get(q.id) !== retryKey) { testRetries.set(q.id, retryKey); log(`预发门禁未通过，稍等后重试一次；输出见 ${logFile}`); await sleep(60_000); continue; }
           if (stacked) { skip(`预发门禁没过（退出码 ${code}）`); continue; }
-          clearBaselineRed();
           const r = settleDeploy({ repo, sha, code, covered: [{ ...q, ffBranch: q.ffBranch ?? branch }], logFile });
           log(`部署失败（退出码 ${code}），线上 ${r.live?.slice(0, 7)}`);
           for (const n of r.notes) await notify(n.q, n.outcome, n.extra);
@@ -986,8 +1053,8 @@ async function watch() {
       const sha = step.sha;
       const logFile = join(HOME_DIR, `deploy-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${sha.slice(0, 7)}.log`);
       appendFileSync(logFile, `切换预发版本：${sha}，覆盖 ${covered.length} 个请求，同步分支 ${branch}\n`);
-      log(`开始切换预发版本 ${sha.slice(0, 7)}（覆盖 ${covered.length} 个请求；排空后最多等对话结束 ${Math.round(CUTOVER_WAIT_SECONDS / 60)} 分钟），输出见 ${logFile}`);
-      const code = await runDeploy(repo, sha, logFile, ROOT, [branch], { coveredIds: covered.map(q => q.id), args: ["--cutover-wait", String(CUTOVER_WAIT_SECONDS), "--yield-to-requests"] });
+      log(`开始切换预发版本 ${sha.slice(0, 7)}（覆盖 ${covered.length} 个请求；先不排空等空闲最多 ${Math.round(CUTOVER_WAIT_SECONDS / 60)} 分钟，仍不空闲再短排空兜底），输出见 ${logFile}`);
+      const code = await runDeploy(repo, sha, logFile, ROOT, [branch], { coveredIds: covered.map(q => q.id), args: ["--cutover-wait", String(CUTOVER_WAIT_SECONDS), "--yield-to-requests"], timeline: stagingTimeline(covered, readStaged()) });
       if (code === 77) { log("部署请求已取消，预发未切换"); continue; }
       if (code === 79) {
         markRequests(covered, undefined);
@@ -1003,7 +1070,6 @@ async function watch() {
         log(`切换前门禁复核没过（退出码 ${code}），丢弃预发，重新逐个叠加；输出见 ${logFile}`);
         await sleep(15_000); continue;
       }
-      clearBaselineRed();
       const r = settleDeploy({ repo, sha, code, covered: covered.map(q => ({ ...q, ffBranch: q.ffBranch ?? branch })), logFile });
       log(r.ok ? `已上线 ${sha.slice(0, 7)}（${covered.length} 个请求）` : `部署失败（退出码 ${code}），线上 ${r.live?.slice(0, 7)}`);
       for (const [b, ff] of Object.entries(r.ff)) log(`${b}：${ff.result}（${ff.tip?.slice(0, 7) ?? "-"}${ff.result === "moved" ? ` → ${sha.slice(0, 7)}` : ""}）`);

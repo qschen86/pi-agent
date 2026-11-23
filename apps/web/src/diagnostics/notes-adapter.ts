@@ -1,7 +1,7 @@
 /**
  * 诊断待办的读写（V1.4 §7.1）：只在 Web 进程里经 ConsoleService 写，notes.json 始终只有一个写者。
  * - 大类直接定为待办（kindSource=user），不让 AI 改成笔记
- * - 分类人工指定为待办目录的「平台 / debug」，路径不存在时创建
+ * - 分类钉死在待办目录的「平台 / debug」，路径不存在时创建（钉住 = 模型分类和策略升级都不覆盖）
  * - 人工开发判定 + 不进整理器合并池（NoteIterations.markDiagnostic / setDirectSingles）
  */
 import type { ConsoleService } from "../console.js";
@@ -18,10 +18,8 @@ function assignDebug(svc: ConsoleService, noteId: string): void {
   const id = debugCategoryId(svc) ?? svc.noteCategories.create({
     primary: "平台", secondary: "debug", scope: "todo", version: svc.noteCategories.snapshot().version
   }).createdCategoryId;
-  const note = svc.getNote(noteId) as { classification?: { inputHash?: string; categoryIds?: string[]; source?: string; state?: string } };
-  const current = note.classification;
-  if (current?.source === "manual" && current.state === "classified" && current.categoryIds?.length === 1 && current.categoryIds[0] === id) return;
-  svc.noteCategories.decide(noteId, { action: "assign", categoryIds: [id], inputHash: current?.inputHash });
+  // 钉住：正文改写、分类策略升级、模型重分类都不会把它改成别的标签（人手动改分类才解除）。
+  svc.noteCategories.pin(noteId, id);
 }
 
 /** 只接收持久层记录的来源 ID；不通过标题、正文或相似度认领。重复执行不重复写入。 */

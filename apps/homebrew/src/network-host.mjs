@@ -11,9 +11,13 @@ export function isolatedEnv(root) {
     DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
 }
 
+export function antigravityEnv(root) {
+  return { ...isolatedEnv(root), HOME: join(root, 'credentials/antigravity') };
+}
+
 // curl and native runtimes receive the same proxy variables. No personal curlrc is read.
 export function curlFetch(root) {
-  const allowed = new Set(['https://ipconfig.io/json', 'https://api.ipapi.is/', 'https://chatgpt.com/backend-api/wham/usage', 'https://api.anthropic.com/v1/messages']);
+  const allowed = new Set(['https://ipconfig.io/json', 'https://api.ipapi.is/', 'https://chatgpt.com/backend-api/wham/usage', 'https://api.anthropic.com/v1/messages', 'https://accounts.google.com/generate_204']);
   return async (url, options = {}) => {
     if (!allowed.has(String(url))) throw Error('网络检查地址无效');
     return new Promise((yes, no) => {
@@ -44,7 +48,11 @@ export function createNetworkInspector({ root, manifestRoot, fetchImpl = curlFet
     return inspectRuntimeNetwork({ runtime, fetchImpl, apiKey,
       regionPolicy: policy && { ...policy, runtime, expiresAt: Date.parse(policies.expiresAt) },
       checkConnectivity: async kind => {
-        const source = kind === 'codex' ? 'https://chatgpt.com/backend-api/wham/usage' : 'https://api.anthropic.com/v1/messages';
+        const source = kind === 'codex'
+          ? 'https://chatgpt.com/backend-api/wham/usage'
+          : kind === 'claude-code'
+            ? 'https://api.anthropic.com/v1/messages'
+            : 'https://accounts.google.com/generate_204';
         const response = await fetchImpl(source);
         return { source, reachable: response.ok || [401, 405].includes(response.status) };
       }

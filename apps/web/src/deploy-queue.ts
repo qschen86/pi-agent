@@ -1,7 +1,7 @@
 import { createDeployReadCommands, planDeployRead } from "./deploy-read-commands.js";
 import { isFunctionalDeployPath, NO_FUNCTIONAL_DEPLOY_CHANGES } from "./deploy-code-changes.js";
 import { deploymentActionsSupported } from "../../../scripts/deployment-actions.mjs";
-import { deploymentProgress, type DeploymentProgress } from "./deployment-progress.js";
+import { deploymentProgress, readDeploymentRun, runTimes, stagingTimeline, type DeploymentProgress, type StagingTimeline } from "./deployment-progress.js";
 /**
  * 会话页「空闲时部署」：由 Web 服务登记部署请求，不依赖会话里的命令越出 runtime 沙箱，
  * 所以 Claude、Codex、Pi 的会话都能用。排队、守候、部署与回发结果复用 scripts/deploy-when-idle.mjs
@@ -19,7 +19,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { commitSessionWorktree, rebaseSessionWorktree, RuntimeError, sessionWorktreeStatus, sessionWorktreeDeployPaths, type SessionBinding, type WorktreeStatus } from "@pi-agent/runtime-sessions";
-import { enqueueRollback, cancelRequest, clearAutoResolve, enqueue, isAncestor, readAutoResolve, readBaselineRed, readStaged, BASELINE_RED_COOLDOWN_MS, readRequests, watcherPid, whenIdleDirs, writeAutoResolve, type AutoResolveState, type WhenIdleRequest } from "../../../scripts/deploy-when-idle.mjs";
+import { enqueueRollback, cancelRequest, clearAutoResolve, enqueue, isAncestor, readAutoResolve, readBaselineRed, baselineRedForRequest, baselineRedWait, readStaged, BASELINE_RED_COOLDOWN_MS, readRequests, watcherPid, whenIdleDirs, writeAutoResolve, type AutoResolveState, type BaselineRedState, type WhenIdleRequest } from "../../../scripts/deploy-when-idle.mjs";
 import { readLatestDeployForSession, type DeployHistoryEntry } from "./deploy-history.js";
 
 export type { AutoResolveState };
@@ -39,6 +39,8 @@ export interface DeployRequestView {
   ffBranch?: string;
   /** 叠加预发模式：页面按「1排队 → 2预发检查 → 3待切换 → 4切换上线」显示；stage 区分已开始的是预发检查还是切换 */
   staging?: boolean; stage?: "staging" | "cutover";
+  /** 叠加预发：本请求的登记 / 预发检查 / 预发完成时刻（进度弹窗按节点算耗时） */
+  timeline?: StagingTimeline;
   /** 还在排队时：它在等什么（与守候进程的空闲判定同口径） */
   wait?: DeployWait;
 }
@@ -151,11 +153,11 @@ const sha7 = (sha: string): string => sha.slice(0, 7);
  * 有请求正在部署时其它都等它；next 是守候进程下一次要部署的请求（planDeploy 的 covered + 已在线上的），
  * 不在 next 里的要等前面更早的请求；轮到它了就看空闲判定还差什么。
  */
-export function deployWaits(requests: DeployRequestView[], env: { activity: DeployActivity; vitest: number; locked: boolean; watcherRunning: boolean; next: Set<string>; baselineRed?: { files: string[] }; staged?: { ids: Set<string>; skipped: Map<string, string> } }): Map<string, DeployWait> {
+export function deployWaits(requests: DeployRequestView[], env: { activity: DeployActivity; vitest: number; locked: boolean; watcherRunning: boolean; next: Set<string>; baselineRed?: ReadonlyMap<string, Pick<BaselineRedState, "files"> & { at?: string }>; staged?: { ids: Set<string>; skipped: Map<string, string> } }): Map<string, DeployWait> {
   const out = new Map<string, DeployWait>();
   const started = requests.find((q) => q.startedAt);
   const st = env.staged;
-  const pool = st ? requests.filter((q) => !q.startedAt && !st.ids.has(q.id) && !st.skipped.has(q.id)) : [];
+  const pool = requests.filter(q => !q.startedAt && !env.baselineRed?.has(q.id) && !st?.ids.has(q.id) && !st?.skipped.has(q.id));
   const first = st ? pool[0] : requests.find((q) => !q.startedAt && env.next.has(q.id));
   const a = env.activity;
   for (const [i, q] of requests.entries()) {
@@ -163,15 +165,18 @@ export function deployWaits(requests: DeployRequestView[], env: { activity: Depl
     if (!env.watcherRunning) { out.set(q.id, { kind: "watcher", short: "部署服务未运行", detail: "部署守候进程没在运行，排队的请求暂时不会被处理（需要在本机重新安装部署服务：scripts/install-gui-control.mjs）" }); continue; }
     if (st?.ids.has(q.id)) { out.set(q.id, { kind: "staged", short: "已预发·待切换", detail: "已在备用槽位集成并通过检查，线上未改动；等在跑的对话结束后，和其他已预发的请求一次切换上线" }); continue; }
     if (st?.skipped.has(q.id)) { out.set(q.id, { kind: "skipped", short: "预发失败·待重试", detail: `叠加到待切换版本时没通过（${st.skipped.get(q.id)}）；已预发的请求上线后，会以新的线上版本为基线重试一次` }); continue; }
-    if (started) { out.set(q.id, { kind: "deploying", short: `等 ${sha7(started.sha)} 部署完`, detail: `${sha7(started.sha)}（${started.subject}）正在部署（集成、测试、切换），它结束后再处理这个请求` }); continue; }
-    if (st ? q !== first : !env.next.has(q.id)) {
-      const ahead = st ? pool.indexOf(q) : requests.slice(0, i).length || 1;
-      out.set(q.id, { kind: "ahead", short: `前面还有 ${ahead} 个`, detail: `前面还有 ${ahead} 个更早的部署请求${first ? `（下一个是 ${sha7(first.sha)}：${first.subject}）` : ""}，它们部署完再轮到这个` });
+    const red = env.baselineRed?.get(q.id);
+    if (red) {
+      const files = red.files;
+      const until = red.at ? Date.parse(red.at) + BASELINE_RED_COOLDOWN_MS : NaN;
+      const retry = Number.isFinite(until) ? `约 ${Math.max(1, Math.ceil((until - Date.now()) / 60000))} 分钟后` : "冷却结束后";
+      out.set(q.id, { kind: "baseline-red", short: "主线测试红", detail: `门禁里${files.length ? `这些测试（${files.slice(0, 3).join("、")}${files.length > 3 ? ` 等 ${files.length} 个` : ""}）` : "有测试"}在线上版本上同样不过，所以不判部署失败。此请求将在基线变化或${retry}自动重试，其他请求可继续预发` });
       continue;
     }
-    if (env.baselineRed) {
-      const files = env.baselineRed.files;
-      out.set(q.id, { kind: "baseline-red", short: "主线测试红", detail: `门禁里${files.length ? `这些测试（${files.slice(0, 3).join("、")}${files.length > 3 ? ` 等 ${files.length} 个` : ""}）` : "有测试"}在线上版本上同样不过，不是这次改动引起的，所以不判部署失败，请求保持排队。主线修好（或这个提交自带修复）后会自动再试；${Math.round(BASELINE_RED_COOLDOWN_MS / 60000)} 分钟后也会再试一次` });
+    if (started) { out.set(q.id, { kind: "deploying", short: `等 ${sha7(started.sha)} 部署完`, detail: `${sha7(started.sha)}（${started.subject}）正在部署（集成、测试、切换），它结束后再处理这个请求` }); continue; }
+    if (st ? q !== first : !env.next.has(q.id)) {
+      const ahead = st ? pool.indexOf(q) : requests.slice(0, i).filter(request => !env.baselineRed?.has(request.id)).length || 1;
+      out.set(q.id, { kind: "ahead", short: `前面还有 ${ahead} 个`, detail: `前面还有 ${ahead} 个更早的部署请求${first ? `（下一个是 ${sha7(first.sha)}：${first.subject}）` : ""}，它们部署完再轮到这个` });
       continue;
     }
     if (st) {
@@ -233,30 +238,46 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
   const serial = <T>(fn: () => Promise<T>): Promise<T> => { const next = chain.then(fn, fn); chain = next.catch(() => undefined); return next; };
 
   /** 给排队中的请求标上 wait；没有活动信息（老调用方）就原样返回 */
-  const annotate = async (requests: DeployRequestView[], activity?: DeployActivity): Promise<DeployRequestView[]> => {
-    requests = requests.map(q => ({ ...q, ...(q.startedAt ? { progress: deploymentProgress(q, root, activity) } : {}) }));
+  const annotate = async (raw: WhenIdleRequest[], activity?: DeployActivity): Promise<DeployRequestView[]> => {
+    let requests = raw.map(q => ({ ...view(q), ...(q.startedAt ? { progress: deploymentProgress(q, root, activity) } : {}) }));
     // 已安装的部署脚本支持 --stage-only 才是叠加预发模式（守候进程与脚本一起安装）
     let stagingMode = false;
     try { stagingMode = readFileSync(join(root, "control", "deploy-gui.sh"), "utf8").includes("--stage-only"); } catch { /* 没装控制器 */ }
     const stagedState = stagingMode ? readStaged(root) : undefined;
     const staged = stagingMode ? { ids: new Set(stagedState?.ids ?? []), skipped: new Map(Object.entries(stagedState?.skipped ?? {}).map(([id, v]) => [id, v.detail])) } : undefined;
-    if (staged) requests = requests.map((q) => ({ ...q, staging: true, ...(q.startedAt ? { stage: staged.ids.has(q.id) ? "cutover" as const : "staging" as const } : {}) }));
+    const confirmedLive = requests.some(q => q.progress?.phase === "ready") ? await reads.live(root) : undefined;
+    if (staged) requests = requests.map((q) => {
+      const stage = q.startedAt ? (staged.ids.has(q.id) ? "cutover" as const : "staging" as const) : undefined;
+      const progress = q.progress?.phase === "ready" && confirmedLive !== q.progress.sha
+        ? { ...q.progress, phase: "preparing" as const, detail: "预发检查已通过，等待切换，当前线上服务继续运行", steps: q.progress.steps.filter(step => step.phase !== "ready") }
+        : q.progress;
+      const timeline = stagingTimeline({ queuedAt: q.requestedAt, ...stagedState?.timeline?.[q.id] });
+      return { ...q, staging: true, ...(stage ? { stage } : {}), ...(timeline ? { timeline } : {}), ...(progress ? { progress } : {}) };
+    });
     if (!activity || !requests.some((q) => !q.startedAt)) return requests;
     const live = await reads.live(root);
+    const legacy = readBaselineRed(root);
+    const base = stagedState?.live === live ? stagedState?.sha ?? live : live;
+    const baselineRed = new Map<string, BaselineRedState>();
+    await Promise.all(raw.map(async q => {
+      const state = !q.startedAt && !staged?.ids.has(q.id) ? baselineRedForRequest(q, legacy) : undefined;
+      if (!state || state.live !== live || !repo || q.repo !== repo) return;
+      const branchTip = await reads.git(repo, "rev-parse", "--verify", "--quiet", `refs/heads/${q.ffBranch ?? "main"}^{commit}`);
+      const wait = baselineRedWait(q, state, { live, base, branchTip });
+      if (wait) baselineRed.set(q.id, wait);
+    }));
+    const eligible = requests.filter(q => !baselineRed.has(q.id));
     let next: Set<string>;
     try {
-      const plan = repo ? await planDeployRead(requests, live, (a, b) => reads.ancestor(repo, a, b)) : undefined;
-      next = new Set(plan ? [...plan.done, ...plan.covered].map((q) => q.id) : requests.slice(0, 1).map((q) => q.id));
-    } catch { next = new Set(requests.slice(0, 1).map((q) => q.id)); }
-    // 只在同一个线上版本、冷却期内才算「主线红」；线上变了说明有人修过，守候进程会重新尝试
-    const red = readBaselineRed(root);
-    const baselineRed = red && red.live === live && Date.now() - Date.parse(red.at) < BASELINE_RED_COOLDOWN_MS ? { files: red.files } : undefined;
-    const waits = deployWaits(requests, { ...(staged ? { staged } : {}), activity, vitest: await reads.vitestCount(), locked: existsSync(join(whenIdleDirs(root).root, ".deploy.lock")), watcherRunning: !!watcherPid(root), next, ...(baselineRed ? { baselineRed } : {}) });
+      const plan = repo ? await planDeployRead(eligible, live, (a, b) => reads.ancestor(repo, a, b)) : undefined;
+      next = new Set(plan ? [...plan.done, ...plan.covered].map((q) => q.id) : eligible.slice(0, 1).map((q) => q.id));
+    } catch { next = new Set(eligible.slice(0, 1).map((q) => q.id)); }
+    const waits = deployWaits(requests, { ...(staged ? { staged } : {}), activity, vitest: await reads.vitestCount(), locked: existsSync(join(whenIdleDirs(root).root, ".deploy.lock")), watcherRunning: !!watcherPid(root), next, baselineRed });
     return requests.map((q) => { const w = waits.get(q.id); return w ? { ...q, wait: w } : q; });
   };
 
   const info = async (s: DeploySession, activity?: DeployActivity): Promise<DeployInfo> => {
-    const requests = await annotate(readRequests(root).map(view), activity);
+    const requests = await annotate(readRequests(root), activity);
     const auto = readAutoResolve(s.platformSessionId, root);
     const base = { actionsSupported: deploymentActionsSupported(root), branch, requests, watcherRunning: !!watcherPid(root), ...(auto ? { autoResolve: auto } : {}) };
     if (!repo || !repoCommon) return { ...base, eligible: false, reason: "找不到 pi-agent 主仓库，无法从页面部署" };
@@ -358,7 +379,16 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
     },
     saveAutoResolve: (state) => writeAutoResolve(state, root),
     clearAutoResolve: (id) => clearAutoResolve(id, root),
-    lastDeploy: (id) => readLatestDeployForSession(id, root),
+    lastDeploy: (id) => {
+      const last = readLatestDeployForSession(id, root);
+      if (!last || !["ok", "already-live"].includes(last.state)) return last;
+      // 结束后的流程存档还留着开始/结束与等待会话的时间：补上部署耗时（与设置 → 统计同一口径），
+      // 状态行显示「总耗时」。同提交部署过多次时只认结束时间对得上的那一次。
+      const run = readDeploymentRun(last.deployedSha || last.sha, root);
+      const times = run && runTimes(run);
+      if (!times || !last.atMs || Math.abs(times.endMs - last.atMs) >= 10 * 60_000) return last;
+      return { ...last, durationMs: Math.max(0, times.endMs - times.startMs - times.waitingMs) };
+    },
     branchDeployOf(id) {
       const q = readRequests(root).find((x) => x.notifySession === id && x.ffBranch);
       return q ? view(q) : undefined;
@@ -366,7 +396,7 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
     async byNotifySession(activity) {
       const out = new Map<string, DeployRequestView>();
       // readRequests 按登记时间排序：先到的先排队，所以保留最早的一条；有请求已经开始部署就换成那条
-      for (const q of await annotate(readRequests(root).map(view), activity)) {
+      for (const q of await annotate(readRequests(root), activity)) {
         if (!q.notifySession) continue;
         const cur = out.get(q.notifySession);
         if (!cur || (!cur.startedAt && q.startedAt)) out.set(q.notifySession, q);

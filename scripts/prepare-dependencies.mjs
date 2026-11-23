@@ -48,7 +48,9 @@ export function dependencyIdentity({ repo = process.cwd(), toolchain, env = proc
   const userConfig = envValue(env, 'npm_config_userconfig') || join(homedir(), '.npmrc');
   const globalConfig = envValue(env, 'npm_config_globalconfig') || join(dirname(dirname(process.execPath)), 'etc/npmrc');
   const projectConfig = optionalText(join(repo, '.npmrc'));
-  const npmEnv = Object.fromEntries(Object.entries(env).filter(([name]) => /^npm_config_/i.test(name) && !/^npm_config_(user_agent|local_prefix|global_prefix|prefix|cache|logs_dir|userconfig|globalconfig|init_module|npm_version|node_gyp|noproxy|allow_scripts)$/i.test(name)).sort(([a], [b]) => a.localeCompare(b)));
+  // 只影响输出的 npm 配置（loglevel/silent/progress/color/fund/audit/update-notifier）不改变装出来的依赖：
+  // `npm run --silent` 与 `npm run` 必须命中同一个模板，否则同一份锁文件会各冷装一次（约 14 分钟）。
+  const npmEnv = Object.fromEntries(Object.entries(env).filter(([name]) => /^npm_config_/i.test(name) && !/^npm_config_(user_agent|local_prefix|global_prefix|prefix|cache|logs_dir|userconfig|globalconfig|init_module|npm_version|node_gyp|noproxy|allow_scripts|loglevel|silent|progress|color|fund|audit|update_notifier)$/i.test(name)).sort(([a], [b]) => a.localeCompare(b)));
   const user = optionalText(userConfig), global = optionalText(globalConfig);
   const references = new Set([...`${projectConfig}\n${user}\n${global}`.matchAll(/\$\{([^}]+)\}/g)].map(match => match[1]));
   const referencedEnvironment = Object.fromEntries([...references].sort().map(name => [name, env[name] ?? null]));

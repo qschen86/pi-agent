@@ -62,9 +62,10 @@ function rtcListItem(g, a) {
           g.deploy ? rtDeployBadge(g.deploy) : null)));
   const act = a && a.control && !busy ? h("button", {
     type: "button", class: `rt-item-act ${g.archived ? "restore" : "archive"}`, title: g.archived ? "恢复到列表" : "归档整组", "aria-label": `${g.archived ? "恢复" : "归档"}对比：${g.title}`,
+    // 点左滑露出的入口直接归档
     onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); void rtcArchive(g, !g.archived); }
   }, g.archived ? "恢复" : "归档") : null;
-  // 对比里有通道在运行：长按给一句提示，而不是没反应
+  // 对比里有通道在运行：左滑照样露出入口，点它给一句提示，而不是没反应
   const note = a && a.control && busy ? "对比里有通道正在运行，停止后才能归档" : "";
   return rtSessionRow(g.id, item, act, note);
 }

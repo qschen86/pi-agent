@@ -69,8 +69,12 @@ function load(root: string): LoadedSkill[] {
   return skills;
 }
 
-export function listPlatformSkills(root = PLATFORM_SKILLS_ROOT): PlatformSkillInfo[] {
-  return load(root).map(({ id, name, description, trigger }) => ({ id, name, description, trigger }));
+/** 被用户在设置里禁用的技能 id：不进 `/` 菜单、不展开、不进首轮目录；技能目录和文件原样保留。 */
+export type DisabledSkills = readonly string[];
+const enabledSkills = (root: string, disabled: DisabledSkills = []): LoadedSkill[] => load(root).filter((s) => !disabled.includes(s.id));
+
+export function listPlatformSkills(root = PLATFORM_SKILLS_ROOT, disabled: DisabledSkills = []): PlatformSkillInfo[] {
+  return enabledSkills(root, disabled).map(({ id, name, description, trigger }) => ({ id, name, description, trigger }));
 }
 
 /** 平台补的技能文字与用户原文之间的分隔；用户原文一定在它后面。展示层靠它还原用户原文。 */
@@ -101,8 +105,8 @@ export function prependPlatformPreamble(preamble: string, prompt: string): strin
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** 提示词里以 `/技能名` 或 `/技能id` 开头的行（后面是空白或行尾）。返回按出现顺序去重的技能。 */
-export function mentionedPlatformSkills(prompt: string, root = PLATFORM_SKILLS_ROOT): PlatformSkillInfo[] {
-  return mentioned(prompt, load(root)).map(({ id, name, description, trigger }) => ({ id, name, description, trigger }));
+export function mentionedPlatformSkills(prompt: string, root = PLATFORM_SKILLS_ROOT, disabled: DisabledSkills = []): PlatformSkillInfo[] {
+  return mentioned(prompt, enabledSkills(root, disabled)).map(({ id, name, description, trigger }) => ({ id, name, description, trigger }));
 }
 function mentioned(prompt: string, skills: LoadedSkill[]): LoadedSkill[] {
   if (!skills.length || !prompt.includes("/")) return [];
@@ -121,8 +125,8 @@ export interface SkillExpansion { prompt: string; skills: PlatformSkillInfo[] }
  * 把提示词里调用的平台技能展开成「技能说明 + 用户原文」。没有调用时原样返回（同一个字符串）。
  * 用户原文逐字保留（含 `/技能名` 那一行），说明放在前面，由 runtime 的模型读取并执行。
  */
-export function expandPlatformSkills(prompt: string, root = PLATFORM_SKILLS_ROOT): SkillExpansion {
-  const used = mentioned(prompt, load(root));
+export function expandPlatformSkills(prompt: string, root = PLATFORM_SKILLS_ROOT, disabled: DisabledSkills = []): SkillExpansion {
+  const used = mentioned(prompt, enabledSkills(root, disabled));
   if (!used.length) return { prompt, skills: [] };
   const blocks = used.map((s) => [
     `【平台技能：${s.name}】`,
@@ -139,8 +143,8 @@ export function expandPlatformSkills(prompt: string, root = PLATFORM_SKILLS_ROOT
  * 用户用 `/技能名` 调用过的技能已经整段展开，不再重复列出。没有可列的技能时返回空串。
  * 只放名称、描述（写的是「何时使用」）和路径，每个技能约 100–150 个 token。
  */
-export function platformSkillIndex(root = PLATFORM_SKILLS_ROOT, exclude: readonly string[] = []): string {
-  const skills = load(root).filter((s) => !exclude.includes(s.id));
+export function platformSkillIndex(root = PLATFORM_SKILLS_ROOT, exclude: readonly string[] = [], disabled: DisabledSkills = []): string {
+  const skills = enabledSkills(root, disabled).filter((s) => !exclude.includes(s.id));
   if (!skills.length) return "";
   return [
     "【平台技能】本平台为所有 runtime 提供下面的技能。遇到符合「何时使用」的任务时，先用读文件的工具读取它的 SKILL.md（只读），再按其中的流程执行；与当前任务无关就忽略本段。用户也可以在消息里用 /技能名 直接调用。",
@@ -154,13 +158,14 @@ export interface PreparedPrompt extends SkillExpansion { indexed: PlatformSkillI
  * 派发前的提示词加工：`/技能名` 整段展开；首轮再补一份技能目录（排除已展开的技能）。
  * 非首轮、没有可列技能时原样返回。用户原文始终逐字保留在末尾。
  */
-export function preparePlatformPrompt(prompt: string, opts: { firstTurn: boolean; root?: string; /** 首轮目录里不列出的技能 id（评测的「没装这个技能」基线用；用户自己写 /技能名 仍会展开） */ exclude?: readonly string[] }): PreparedPrompt {
+export function preparePlatformPrompt(prompt: string, opts: { firstTurn: boolean; root?: string; /** 首轮目录里不列出的技能 id（评测的「没装这个技能」基线用；用户自己写 /技能名 仍会展开） */ exclude?: readonly string[]; /** 用户在设置里禁用的技能 id：和不存在一样（连 `/技能名` 也不展开） */ disabled?: DisabledSkills }): PreparedPrompt {
   const root = opts.root ?? PLATFORM_SKILLS_ROOT;
-  const expansion = expandPlatformSkills(prompt, root);
+  const disabled = opts.disabled ?? [];
+  const expansion = expandPlatformSkills(prompt, root, disabled);
   if (!opts.firstTurn) return { ...expansion, indexed: [] };
   const skip = [...expansion.skills.map((k) => k.id), ...(opts.exclude ?? [])];
-  const index = platformSkillIndex(root, skip);
+  const index = platformSkillIndex(root, skip, disabled);
   if (!index) return { ...expansion, indexed: [] };
-  const indexed = listPlatformSkills(root).filter((k) => !skip.includes(k.id));
+  const indexed = listPlatformSkills(root, disabled).filter((k) => !skip.includes(k.id));
   return { prompt: expansion.skills.length ? `${index}\n\n${expansion.prompt}` : `${index}${USER_MESSAGE_MARK}${prompt}`, skills: expansion.skills, indexed };
 }

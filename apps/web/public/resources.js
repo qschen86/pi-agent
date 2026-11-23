@@ -16,20 +16,24 @@ const RES_STATE = {
   "quota-unavailable": ["额度不可用", "bad"]
 };
 const RES_KIND = [["model", "模型"], ["search", "搜索"], ["fetch", "抓取"], ["voice", "配音"]];
-const RES_FILTERS = [["all", "全部"], ["model", "大模型"], ["search", "搜索"], ["fetch", "抓取"], ["voice", "语音"], ["runtime", "运行时"]];
+const RES_FILTERS = [["all", "全部"], ["model", "大模型"], ["search", "搜索"], ["fetch", "抓取"], ["voice", "语音"], ["runtime", "运行时"], ["cli", "本机 CLI"]];
 const RES_CAPABILITY = { chat: "对话", search: "检索", read: "阅读", speech: "配音合成" };
 const CRED_SOURCE = { env: "环境变量", "local-file": "受权限保护的本机文件", "pi-config": "Pi 配置", runtime: "运行时订阅登录" };
 const ROLE_LABEL = { executor: "执行 Agent", planner: "填充 Agent", acceptanceJudge: "验收 Agent", contractCritic: "合约评审", voiceover: "视频配音" };
 
+// 设置页里的「外部资源」：它不再是一级导航页，渲染与重绘都由设置页的 content 触发。
+const resourcesEmbedded = () => ui.view === "settings" && ui.settings?.section === "resources";
+const resourcesVisible = () => ui.view === "resources" || resourcesEmbedded();
+
 async function loadResources({force = true} = {}) {
   const context = pageContext();
   ui.resourcesLoading = true; ui.resourcesError = "";
-  if (ui.view === "resources") renderMain();
+  if (resourcesVisible()) renderMain();
   // 「支持模型」一行要用运行时列表、设置与权限：并行读取，到了再补画
-  void Promise.all([rtLoadProfiles(), rtLoadSettings(), rtLoadAccess()]).then(() => { if (ui.view === "resources" && contextCurrent(context)) renderMain(); }).catch(() => {});
+  void Promise.all([rtLoadProfiles(), rtLoadSettings(), rtLoadAccess()]).then(() => { if (resourcesVisible() && contextCurrent(context)) renderMain(); }).catch(() => {});
   try { const value = await readResource("/api/resources", {force}); if (contextCurrent(context)) ui.resources = value; }
   catch (e) { if (contextCurrent(context)) ui.resourcesError = e.message; }
-  finally { if (contextCurrent(context)) { ui.resourcesLoading = false; if (ui.view === "resources") { renderMain(); refreshResourceDrawer(); } } }
+  finally { if (contextCurrent(context)) { ui.resourcesLoading = false; if (resourcesVisible()) { renderMain(); refreshResourceDrawer(); } } }
 }
 
 function when(iso) { return iso ? iso.replace("T", " ").slice(0, 19) : "—"; }
@@ -89,7 +93,22 @@ function resourceCounts(r) {
   const count = (kind) => services.filter((s) => s.kind === kind).length;
   const model = count("model"), search = count("search"), fetch = count("fetch"), voice = count("voice");
   const runtime = r?.runtimeConfigs?.runtimes?.length ?? 0;
-  return { all: model + search + fetch + voice + runtime, model, search, fetch, voice, runtime };
+  const cli = r?.localClis?.length ?? 0;
+  return { all: model + search + fetch + voice + runtime + cli, model, search, fetch, voice, runtime, cli };
+}
+
+function renderLocalClis(entries) {
+  if (!entries?.length) return null;
+  return h("section", { class: "resource-section resource-local-clis", "aria-label": "本机 CLI" },
+    h("h2", {}, "本机 CLI"),
+    h("p", { class: "muted small" }, "本机命令行工具；已安装不代表已登录或已授权。"),
+    h("div", { class: "resource-cli-list" }, entries.map(cli =>
+      h("article", { class: "resource-cli-card", "data-cli": cli.id },
+        h("div", { class: "resource-cli-head" }, h("strong", {}, cli.label),
+          h("span", { class: `badge ${cli.installed ? "ok" : "warn"}` }, cli.installed ? "已安装" : "未找到")),
+        h("p", { class: "resource-cli-version small" }, h("code", {}, cli.command), " · ",
+          cli.version ? `版本 ${cli.version}` : cli.installed ? (cli.versionError || "版本未知") : "当前运行环境 PATH 中未找到"),
+        h("p", { class: "resource-cli-purpose small" }, cli.purpose)))));
 }
 
 function renderResourceFilters(counts, filter) {
@@ -920,7 +939,7 @@ function renderWebResearch(w, r, filter = "all") {
   })].filter(Boolean);
 }
 
-function renderResources() {
+function renderResources(embedded = false) {
   // 重绘时收起旧浮层：它挂在 body 上，格子被替换后不能再指向旧节点
   if (capabilityPopOwner) closeCapabilityPop();
   // 旧表头副本的监听跟着旧 DOM 一起作废（这次可能不再渲染能力表）
@@ -931,15 +950,20 @@ function renderResources() {
   const counts = resourceCounts(r);
   const show = (kind) => filter === "all" || filter === kind;
   const models = r ? r.services.filter((s) => s.kind === "model" && s.service !== "model:zhipu") : [];
-  return h("div", { class: "resources", onkeydown: resourceShortcut },
-    h("div", { class: "resource-page-head" }, h("div", {}, h("h1", {}, "外部资源"),
-      h("p", { class: "muted small" }, "运行时、模型（含 Claude / OpenAI 订阅账号）、DeepSeek token 消耗渠道、联网检索、配音与各服务的状态、用量和账户余额。")),
-      h("button", { class: "btn small resource-page-refresh", type: "button", "aria-label": "重新读取本机状态", title: "重新读取本机状态", onclick: () => loadResources().then(renderMain) }, "重新读取本机状态")),
+  const refresh = h("button", { class: "btn small resource-page-refresh", type: "button", "aria-label": "重新读取本机状态", title: "重新读取本机状态", onclick: () => loadResources().then(renderMain) }, "重新读取本机状态");
+  // 嵌在设置页里时，标题和说明由设置页头自己给，这里只留刷新按钮。
+  const head = embedded
+    ? h("div", { class: "resource-embed-head" }, h("p", { class: "muted small" }, "本机只读：CLI 安装状态与版本，模型、搜索、抓取、配音的凭据状态、用量、余额。"), refresh)
+    : h("div", { class: "resource-page-head" }, h("div", {}, h("h1", {}, "外部资源"),
+      h("p", { class: "muted small" }, "运行时、本机 CLI、模型（含 Claude / OpenAI 订阅账号）、DeepSeek token 消耗渠道、联网检索、配音与各服务的状态、用量和账户余额。")), refresh);
+  return h("div", { class: `resources${embedded ? " resources-embedded" : ""}`, onkeydown: resourceShortcut },
+    head,
     ui.resourcesLoading ? h("p", {role:"status", "aria-busy":"true"}, "正在读取本机状态…") : null,
     ui.resourcesError ? h("div", { class: "error" }, ui.resourcesError) : null,
     ui.resourceMsg ? h("div", { class: "warn-text", role: "status" }, ui.resourceMsg) : null,
     r ? h("p", { class: "muted small resource-meta" }, h("span", { class: "resource-meta-scope" }, `${r.scope} · ${r.timezone} · `), `更新于 ${when(r.generatedAt)}`) : null,
     r ? renderResourceFilters(counts, filter) : null,
+    r && show("cli") ? renderLocalClis(r.localClis) : null,
     r && show("runtime") ? renderRuntimeConfigs(r.runtimeConfigs) : null,
     r && show("model") && models.length ? resourceSection("模型", models) : null,
     r && r.webResearch && (show("search") || show("fetch")) ? renderWebResearch(r.webResearch, r, filter) : null,
@@ -963,5 +987,5 @@ function renderResources() {
 
 // Standalone embedders retain their existing entry points.
 Object.assign(window, { renderResources, loadResources });
-window.piRouteModules?.register("resources", { render: renderResources });
+window.piRouteModules?.register("resources", { render: () => renderResources() });
 })();

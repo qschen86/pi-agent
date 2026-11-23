@@ -4,6 +4,7 @@
  * 一个进程一个实例，由 main.ts 创建并传给 createWebApp；测试按需传入。
  * 任何一步失败都只记进 health，不影响业务请求本身。
  */
+import { appData } from "../app-data.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DiagnosticsStore, type Limits } from "./store.js";
@@ -264,4 +265,4 @@ export class ServerDiagnostics {
   }
 }
 
-export function diagnosticsDir(dataDir: string): string { return join(dataDir, "diagnostics"); }
+export function diagnosticsDir(dataDir: string): string { return appData(dataDir, "deploy-ops").path("diagnostics"); }

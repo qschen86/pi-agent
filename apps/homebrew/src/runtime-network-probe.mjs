@@ -13,7 +13,7 @@ const evidence = (status, source, extra = {}) => ({ status, source, ...extra });
 // Uses the caller's runtime network transport: do not silently bypass its proxy.
 // Do not log requests/bodies: the type lookup may contain the user's own API key.
 export async function inspectRuntimeNetwork({ runtime, fetchImpl, apiKey, regionPolicy, checkConnectivity, now = () => Date.now() }) {
-  if (!['codex', 'claude-code'].includes(runtime)) throw Error('不支持的可选运行时');
+  if (!['codex', 'claude-code', 'antigravity'].includes(runtime)) throw Error('不支持的可选运行时');
   if (typeof fetchImpl !== 'function') throw Error('必须指定与运行时一致的网络传输');
   if (apiKey !== undefined && (typeof apiKey !== 'string' || !apiKey.trim() || apiKey.length > 4096 || /[\r\n\0]/.test(apiKey))) throw Error('IP 检测 Key 无效');
   const report = { runtime, checkedAt: now(), networkId: '', checks: {

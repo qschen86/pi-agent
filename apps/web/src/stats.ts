@@ -5,6 +5,7 @@ import type { OperationRecord, SessionBinding, UsageRecord } from "@pi-agent/run
 import { usageTime } from "@pi-agent/runtime-sessions";
 import { runtimeDeepSeekChannel, type DeepSeekDailyRow, type DeepSeekDeviceOf } from "./deepseek-usage.js";
 import { parseDeployHistoryLine, type DeployHistoryEntry } from "./deploy-history.js";
+import { runTimes, type RunTimes } from "./deployment-progress.js";
 import { whenIdleDirs } from "../../../scripts/deploy-when-idle.mjs";
 import { PLATFORM_TIME_ZONE, beijingDateKey } from "./platform-time.js";
 import { BILLING_RUNTIMES, subscriptionAccrued, usdRate, type BillingConfig, type BillingRuntime } from "./platform-billing.js";
@@ -17,7 +18,15 @@ import type { TurnOrigins } from "./turn-origin.js";
  */
 export type StatsDomain = "cost" | "sessions" | "deploys";
 export type StatsDim = "runtime" | "app" | "device" | "controller";
-export interface StatsMetric { total: number; by: Partial<Record<StatsDim, Record<string, number>>> }
+export interface StatsMetric {
+  total: number;
+  by: Partial<Record<StatsDim, Record<string, number>>>;
+  /**
+   * 交叉明细：维度组合（按 Table 的 dims 顺序，用 \u001f 连接）→ 值。
+   * 前端按它做「筛选」：选中某几维的取值后，重新算边际合计；by 仍是全量的各维边际合计。
+   */
+  x?: Record<string, number>;
+}
 export interface StatsDay { day: string; v: Record<string, StatsMetric> }
 export interface StatsResult {
   domain: StatsDomain;
@@ -44,10 +53,20 @@ const daysInMonthOf = (day: string): number => {
   return new Date(Date.UTC(y, m, 0)).getUTCDate();
 };
 
+/**
+ * 交叉明细的维度顺序：前端按同一顺序解释 x 的键。
+ * 消耗 / 会话是 runtime × 应用·功能 × 发起端；部署没有「应用·功能」，换成控制器版本。
+ */
+export const STATS_DIMS: Record<StatsDomain, StatsDim[]> = {
+  cost: ["runtime", "app", "device"],
+  sessions: ["runtime", "app", "device"],
+  deploys: ["runtime", "controller", "device"],
+};
+
 /** 区间内每一天都先放一个空行，趋势图和热力图不用补零。 */
 export class Table {
   readonly days = new Map<string, Record<string, StatsMetric>>();
-  constructor(readonly from: string, readonly to: string) {
+  constructor(readonly from: string, readonly to: string, readonly dims: readonly StatsDim[] = STATS_DIMS.cost) {
     for (let day = from; day <= to; day = shiftDay(day, 1)) this.days.set(day, {});
   }
   add(day: string, metric: string, value: number, dims: Partial<Record<StatsDim, string>>): void {
@@ -59,6 +78,9 @@ export class Table {
       const bucket = (m.by[dim] ??= {});
       bucket[key] = (bucket[key] ?? 0) + value;
     }
+    const cellKey = this.dims.map((dim) => dims[dim] ?? "").join("\u001f");
+    const cross = (m.x ??= {});
+    cross[cellKey] = (cross[cellKey] ?? 0) + value;
   }
   has(day: string): boolean { return this.days.has(day); }
   rows(): StatsDay[] { return [...this.days.entries()].map(([day, v]) => ({ day, v })); }
@@ -229,22 +251,7 @@ export async function costStats(input: {
 
 /* ------------------------------ 部署 ------------------------------ */
 
-interface RunTimes { startMs: number; endMs: number; waitingMs: number }
-
-/** 一次部署的流程步骤 → 开始 / 结束时刻和「等待会话」占掉的时间（耗时要扣掉它）。 */
-export function runTimes(run: { steps?: Array<{ phase: string; at: string }>; finishedAt?: string }): RunTimes | undefined {
-  const steps = (run.steps ?? []).map((s) => ({ phase: s.phase, at: Date.parse(s.at) })).filter((s) => Number.isFinite(s.at));
-  if (!steps.length) return undefined;
-  const startMs = steps[0]!.at;
-  const finished = run.finishedAt ? Date.parse(run.finishedAt) : NaN;
-  const endMs = Number.isFinite(finished) ? finished : steps[steps.length - 1]!.at;
-  let waitingMs = 0;
-  for (let i = 0; i < steps.length; i++) {
-    if (steps[i]!.phase !== "waiting") continue;
-    waitingMs += Math.max(0, (steps[i + 1]?.at ?? endMs) - steps[i]!.at);
-  }
-  return endMs >= startMs ? { startMs, endMs, waitingMs: Math.min(waitingMs, endMs - startMs) } : undefined;
-}
+export { runTimes, type RunTimes } from "./deployment-progress.js";
 
 let historyCache: { key: string; entries: DeployHistoryEntry[] } | undefined;
 function readAllDeployEntries(file: string): DeployHistoryEntry[] {
@@ -321,27 +328,24 @@ export class StatsService {
     const hit = this.cache.get(key);
     if (hit) return hit;
     const notes: string[] = [];
-    const table = new Table(from, to);
+    const dims = STATS_DIMS[domain];
+    const table = new Table(from, to, dims);
     const bindings = this.src.bindings();
     const deviceAt = deviceResolver(bindings, this.src.operations(), this.src.origins);
-    let dims: StatsDim[];
     if (domain === "deploys") {
       deployStats({ table, deviceAt, ...(this.src.deployRoot ? { root: this.src.deployRoot } : {}) });
-      dims = ["runtime", "controller", "device"];
       notes.push("部署耗时 = 从开始准备到上线完成，扣掉等待会话空闲的时间；只保留了最近约 300 次部署的流程记录，更早的只有次数。",
         "控制器版本从该功能上线后才开始记录，更早的部署记为「未知」。发起端取发起部署的会话在部署开始时的那一轮的第一条消息来源。");
     } else {
       // 会话与消耗共用会话活动：消耗里的订阅费用要按各天的轮次数分摊
-      const activity = sessionStats({ bindings, deviceAt, table: domain === "sessions" ? table : new Table(from, to) });
+      const activity = sessionStats({ bindings, deviceAt, table: domain === "sessions" ? table : new Table(from, to, dims) });
       if (domain === "sessions") {
-        dims = ["runtime", "app", "device"];
         notes.push("会话数 = 当天有新事件的会话：当天创建，或当天有轮次开始 / 结束 / 最后一次活动（含已归档）。发起端取当天第一轮的第一条消息来源；一个会话一天只算一次。");
       } else {
         const { partial } = await costStats({
           bindings, usage: this.src.usage(), deviceAt, table, deepseek: this.src.deepseekRows(deviceAt),
           billing: this.src.billing(), activity, now, dataDir: this.src.dataDir
         });
-        dims = ["runtime", "app", "device"];
         notes.push("费用单位为美元，是估算而非账单：Pi 按 DeepSeek 官方单价（含平台自身调用）；Claude Code / Codex 按订阅月费摊到每天，今天只算已过去的小时。",
           "token 含缓存读写。Codex 只提供会话累计值、没有每次请求的时间，不能分到某一天，所以没有 token 趋势。");
         if (partial) notes.push("有部分费用暂缺（汇率不可用或含未知单价的模型），合计偏低。");
@@ -354,4 +358,3 @@ export class StatsService {
     return result;
   }
 }
-

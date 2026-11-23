@@ -2,6 +2,8 @@ export * from "./console.js";
 export * from "./server.js";
 export * from "./notes.js";
 export * from "./calendar.js";
+export * from "./note-reminder.js";
+export * from "./note-reminders.js";
 export * from "./agent-calendar.js";
 export * from "./platform-scheduled-tasks.js";
 export * from "./runtime-configs.js";

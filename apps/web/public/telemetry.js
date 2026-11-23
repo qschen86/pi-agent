@@ -384,8 +384,8 @@
     try {
       const u = new URL(location.href), h = u.hostname.toLowerCase();
       if (['localhost','127.0.0.1','[::1]'].includes(h)) return 'local';
-      if (u.origin === 'https://gui.harness.fund') return 'primary';
-      if (u.origin === 'https://gui-backup.harness.fund:9443') return 'backup';
+      if (u.origin === 'https://primary.example.com') return 'primary';
+      if (u.origin === 'https://backup.example.com:9443') return 'backup';
     } catch {}
     return 'unknown';
   }

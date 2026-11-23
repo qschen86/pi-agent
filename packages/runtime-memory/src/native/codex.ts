@@ -181,4 +181,3 @@ export function codexInjectionFromRollout(path: string | null, home = codexHome(
   const head = readHead(real, 512 * 1024);
   return head ? scanCodexInjection(head) : null;
 }
-

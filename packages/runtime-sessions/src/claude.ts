@@ -86,6 +86,14 @@ function claudeUserMessage(uuid: string, sessionId: string, prompt: string, imag
   } as SDKUserMessage;
 }
 
+/** assistant 消息的正文（错误码之外的原因说明，如 OAuth 过期） */
+function assistantText(msg: unknown): string {
+  const content = (msg as { message?: { content?: unknown } }).message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? String((b as { text?: string }).text ?? "") : "")).filter(Boolean).join("\n");
+}
+
 /** SDK 只在子进程退出后才结束消息迭代，或抛出这两种退出错误（getProcessExitError） */
 const CLAUDE_STREAM_ENDED = "Claude Code 进程已退出（SDK 消息流结束）";
 const CLAUDE_PROCESS_EXIT = /^Claude Code process (exited with code|terminated by signal)/;
@@ -317,6 +325,13 @@ export class ClaudeDriver implements RuntimeDriver {
     let lastResultAt = 0;
     /** 结构化错误码：assistant 消息的 error（rate_limit、billing_error、authentication_failed…）或被拒的额度事件 */
     let lastError: string | undefined;
+    /** 带错误码的那条 assistant 消息正文：SDK 退出只报「process exited with code 1」，真正原因（如 OAuth 过期）在这里 */
+    let lastErrorText: string | undefined;
+    /** 失败原因：补上原生错误正文，页面上才看得到是哪一种认证失败 */
+    const failureReason = (base: string): string => {
+      const head = bounded(base, 600).text;
+      return !lastErrorText || head.includes(lastErrorText) ? head : bounded(`${head}；${lastErrorText}`, 800).text;
+    };
     const state: ClaudeStreamState = { partial: new Map(), ordinals: new Map(), currentMessageId: undefined, usage: new Map(), backgroundTasks: new Map() };
     // 插话送达：Claude 在工具之间把排队的消息合并进本轮时发 command_lifecycle started（未写进 SDK 类型，有就用，位置最准）；
     // 兜底是 result 的 user_message_uuids
@@ -366,7 +381,11 @@ export class ClaudeDriver implements RuntimeDriver {
           } else if (msg.type === "assistant") {
             sawAssistant = true;
             const err = (msg as { error?: string }).error;
-            if (err) lastError = err;
+            if (err) {
+              lastError = err;
+              const text = assistantText(msg).trim();
+              if (text) lastErrorText = bounded(text, 300).text;
+            }
             settle();
           } else if (msg.type === "rate_limit_event" && (msg as unknown as { rate_limit_info?: { status?: string } }).rate_limit_info?.status === "rejected") lastError = "rate_limit";
           else if (msg.type === "system") {
@@ -385,7 +404,7 @@ export class ClaudeDriver implements RuntimeDriver {
         const r = ownResult ?? lastResult;
         if (r) {
           const status = r.subtype === "success" && !r.is_error ? "completed" : interrupted ? "interrupted" : "failed";
-          finish({ status, terminalObserved: !lingered && bgTasks.size === 0, processEnded: CLAUDE_STREAM_ENDED, ...(status !== "completed" ? { reason: bounded(r.errors?.join("；") || r.result || r.terminal_reason || r.subtype, 600).text, ...(lastError ? { code: lastError } : {}) } : lingered ? { reason: "后台任务超过 15 分钟，已关闭进程" } : {}) });
+          finish({ status, terminalObserved: !lingered && bgTasks.size === 0, processEnded: CLAUDE_STREAM_ENDED, ...(status !== "completed" ? { reason: failureReason(r.errors?.join("；") || r.result || r.terminal_reason || r.subtype), ...(lastError ? { code: lastError } : {}) } : lingered ? { reason: "后台任务超过 15 分钟，已关闭进程" } : {}) });
         } else finish({ status: "interrupted", processEnded: CLAUDE_STREAM_ENDED, reason: forceClosed ? CLAUDE_FORCE_CLOSED : interrupted ? "已按请求停止" : `进程结束但没有本轮结束记录${stderrTail ? `：${stderrTail.slice(-300)}` : ""}` });
       } catch (e) {
         if (!sawInit) fail(new DriverStageError(`Claude Code ${resume ? "恢复" : "创建"}会话失败：${(e as Error).message}${stderrTail ? `；${stderrTail.slice(-300)}` : ""}`, "create", resume));
@@ -394,7 +413,7 @@ export class ClaudeDriver implements RuntimeDriver {
         // SDK may replace a transport/exit error with its last error result. Only an exact
         // current-turn result with no background work proves terminal completion.
         const terminalObserved = ownResult?.is_error === true && bgTasks.size === 0 && !lingered;
-        finish({ status: interrupted ? "interrupted" : "failed", ...(terminalObserved ? { terminalObserved: true } : {}), ...(CLAUDE_PROCESS_EXIT.test((e as Error).message) ? { processEnded: `Claude Code 进程已退出：${bounded((e as Error).message, 120).text}` } : forceClosed ? { processEnded: CLAUDE_FORCE_CLOSED } : {}), reason: `${(e as Error).message}${stderrTail ? `；${stderrTail.slice(-300)}` : ""}`, ...(lastError ? { code: lastError } : {}) });
+        finish({ status: interrupted ? "interrupted" : "failed", ...(terminalObserved ? { terminalObserved: true } : {}), ...(CLAUDE_PROCESS_EXIT.test((e as Error).message) ? { processEnded: `Claude Code 进程已退出：${bounded((e as Error).message, 120).text}` } : forceClosed ? { processEnded: CLAUDE_FORCE_CLOSED } : {}), reason: failureReason(`${(e as Error).message}${stderrTail ? `；${stderrTail.slice(-300)}` : ""}`), ...(lastError ? { code: lastError } : {}) });
       }
     })();
     await confirmed;

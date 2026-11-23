@@ -2,7 +2,7 @@
  * 测试替身：可编排的 runtime 驱动。每次 startTurn 生成一个可由测试推进的 turn。
  */
 import { randomUUID } from "node:crypto";
-import type { DriverEvent, HistoryItem, HistoryRead, ProbeOutcome, RuntimeDriver, StartTurnArgs, TurnHandle, TurnResult, TurnSink } from "../src/driver.js";
+import type { DriverEvent, HistoryItem, HistoryRead, NativeFingerprint, ProbeOutcome, RuntimeDriver, StartTurnArgs, TurnHandle, TurnResult, TurnSink } from "../src/driver.js";
 import { cap } from "../src/driver.js";
 import type { CapabilityName, RuntimeKind } from "../src/types.js";
 
@@ -18,6 +18,7 @@ export interface FakeTurn {
 }
 
 export class FakeDriver implements RuntimeDriver {
+  readContinuation?: RuntimeDriver["readContinuation"];
   evaluationPolicy?: () => { version: string; channels: string[] } | undefined;
   turns: FakeTurn[] = [];
   history: HistoryItem[] = [];
@@ -36,6 +37,9 @@ export class FakeDriver implements RuntimeDriver {
   /** 模拟支持运行中插话（Pi steer）；steerFail 时插话被 runtime 拒绝 */
   steerable = false;
   steerFail?: string;
+
+  /** 测试：模拟 CLI 二进制指纹（不设就没有独立二进制） */
+  binaryStamp?: () => { path: string; mtimeMs: number } | undefined;
 
   constructor(readonly kind: RuntimeKind) {}
 
@@ -88,7 +92,7 @@ export class FakeDriver implements RuntimeDriver {
     return this.reads.get(nativeSessionId) ?? { events: [], usage: [], status: "unknown", coverage: "unknown", notes: ["fake: no data"] };
   }
 
-  async fingerprint(nativeSessionId: string): Promise<{ value: string; lastTurnStatus?: string } | undefined> {
+  async fingerprint(nativeSessionId: string, _opts: { workspace?: string; previous?: string } = {}): Promise<NativeFingerprint | undefined> {
     const v = this.fingerprints.get(nativeSessionId);
     return v === undefined ? { value: `fp-${nativeSessionId}` } : { value: v };
   }

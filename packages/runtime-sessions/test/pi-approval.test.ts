@@ -40,14 +40,26 @@ it("host-authorized evaluation tools run without UI while duplicate and unknown 
 });
 
 const oldMode=process.env.PI_CHAT_PERMISSION_MODE,oldToken=process.env.PI_CHAT_GATE_TOKEN;
-afterEach(()=>{if(oldMode===undefined)delete process.env.PI_CHAT_PERMISSION_MODE;else process.env.PI_CHAT_PERMISSION_MODE=oldMode;if(oldToken===undefined)delete process.env.PI_CHAT_GATE_TOKEN;else process.env.PI_CHAT_GATE_TOKEN=oldToken;});
+afterEach(()=>{vi.unstubAllEnvs();if(oldMode===undefined)delete process.env.PI_CHAT_PERMISSION_MODE;else process.env.PI_CHAT_PERMISSION_MODE=oldMode;if(oldToken===undefined)delete process.env.PI_CHAT_GATE_TOKEN;else process.env.PI_CHAT_GATE_TOKEN=oldToken;});
 it("attests actual registered builtin sources and active tools through the original native Pi API",()=>{
+ // 本用例不关心平台浏览器：宿主（pi 会话）带着 PI_PLATFORM_BROWSER_SOCKET 时也必须得到同样的结果。
+ vi.stubEnv("PI_PLATFORM_BROWSER_SOCKET","");
  process.env.PI_CHAT_PERMISSION_MODE="pi-evaluation";process.env.PI_CHAT_GATE_TOKEN="host-startup-nonce";
  const callbacks:Record<string,any>={},messages:string[]=[];
  install({on:(name:string,callback:any)=>{callbacks[name]=callback;},getActiveTools:()=>["read","write"],getAllTools:()=>[{name:"read",sourceInfo:{source:"builtin"}},{name:"write",sourceInfo:{source:"builtin"}}]});
  callbacks.session_start({}, {ui:{notify:(message:string)=>messages.push(message)}});
  const message=messages.find(m=>m.startsWith("pi-chat-evaluation-tools:"));expect(message).toBeDefined();
  expect(JSON.parse(message!.slice("pi-chat-evaluation-tools:".length))).toEqual({version:1,token:"host-startup-nonce",activeTools:["read","write"],registeredTools:[{name:"read",source:"builtin"},{name:"write",source:"builtin"}]});
+});
+it("session start fails closed when the platform browser socket is set but the browser tool is not active", () => {
+  vi.stubEnv("PI_PLATFORM_BROWSER_SOCKET", "/tmp/platform-browser.sock");
+  const callbacks: Record<string, any> = {};
+  install({ on: (name: string, callback: any) => { callbacks[name] = callback; }, getActiveTools: () => ["read"], getAllTools: () => [] });
+  expect(() => callbacks.session_start({}, { ui: { notify: () => {} } })).toThrow("Platform browser tool missing from active Pi inventory");
+  callbacks.session_start = undefined;
+  const ok: Record<string, any> = {};
+  install({ on: (name: string, callback: any) => { ok[name] = callback; }, getActiveTools: () => ["read", "platform_browser"], getAllTools: () => [] });
+  expect(() => ok.session_start({}, { ui: { notify: () => {} } })).not.toThrow();
 });
 it("does not impose a native deadline on a human decision", async () => {
   const { createPiToolGate } = await import("../src/pi-approval-extension.js");
@@ -71,4 +83,11 @@ it.each(['pi-native','pi-ask','pi-evaluation'])('screenshot policy blocks before
  vi.stubEnv('PI_PLATFORM_BROWSER_SOCKET','/tmp/platform-browser.sock');
  const result=await createPiToolGate(mode)({toolName:'bash',toolCallId:'capture',input:{command:'node -e "page.screenshot()"'}},{hasUI:true,ui:{confirm:async()=>true}});
  expect(result).toMatchObject({block:true,reason:expect.stringContaining('SCREENSHOT_TOOL_REQUIRED')});vi.unstubAllEnvs();
+});
+it("codemode itself passes outside evaluation, while its nested mutation calls still hit the gate", async () => {
+  const ctx = { hasUI: false, ui: { confirm: async () => true } };
+  for (const mode of ["pi-read-only", "pi-ask", "pi-native"]) expect(await createPiToolGate(mode)(action("codemode", "cm"), ctx)).toBeUndefined();
+  expect(await createPiToolGate("pi-evaluation")(action("codemode", "cm"), ctx)).toMatchObject({ block: true });
+  const readOnly = createPiToolGate("pi-read-only");
+  for (const tool of ["write", "edit", "bash"]) expect(await readOnly(action(tool, `nested-${tool}`), ctx)).toMatchObject({ block: true });
 });

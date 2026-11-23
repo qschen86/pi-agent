@@ -6,7 +6,7 @@
 import type { EnforcementRule, RuleVerdict, TurnEvidence } from "../memory-enforcement.js";
 
 // ===== 辅助常量 =====
-/** 旧域名本体（严格边界：前面不能是域名/单词字符，后面不能是域名延续，避免误伤 gui-backup-cn.harness.fund、xxxgui.harness.fund、gui.harness.fund.evil.com） */
+/** 旧域名本体（严格边界：前面不能是域名/单词字符，后面不能是域名延续，避免误伤 console.example.com、xxxprimary.example.com、primary.example.com.evil.com） */
 const OLD_HOST = /(?<![\w.-])gui\.harness\.fund(?![\w-]|\.\w)/i;
 /** 旧域名以「链接」形态出现：紧跟着 http(s):// 、// 或 www. 前缀；裸写域名文字不算链接 */
 const OLD_URL = /(?:https?:\/\/|\/\/|www\.)gui\.harness\.fund(?![\w-]|\.\w)/i;
@@ -91,13 +91,13 @@ function summarize(hits: string[]): string {
 // ===== 规则 =====
 export const rule: EnforcementRule = {
   id: "entry-domain",
-  title: "入口链接与线上验收只能用 gui-backup-cn.harness.fund",
+  title: "入口链接与线上验收只能用 console.example.com",
   description:
-    "适合记录「线上入口域名 / 验收地址必须用哪个域名、不得再用哪个旧域名」这类约定。当记忆明确规定：给用户的入口链接和模型自己做的线上验收都要使用 gui-backup-cn.harness.fund，并排除旧入口 gui.harness.fund 时，挂这条规则。其他域名、本地地址、SSL、DNS 等无关事项不要挂。",
+    "适合记录「线上入口域名 / 验收地址必须用哪个域名、不得再用哪个旧域名」这类约定。当记忆明确规定：给用户的入口链接和模型自己做的线上验收都要使用 console.example.com，并排除旧入口 primary.example.com 时，挂这条规则。其他域名、本地地址、SSL、DNS 等无关事项不要挂。",
   node: "turn-end",
   scope:
     [
-      "什么时候查：本回合回复或访问命令里出现 harness.fund（新旧域名都算）；两处都没出现就放行",
+      "什么时候查：本回合回复或访问命令里出现 example.com（新旧域名都算）；两处都没出现就放行",
       "查哪两处：",
       "· 回复正文里给用户的旧域名可点击链接（带 http(s):// 、// 或 www. 前缀才算）",
       "· 本回合访问网址的命令（curl / wget / open / 浏览器工具）里是否访问旧域名",
@@ -111,15 +111,15 @@ export const rule: EnforcementRule = {
   criteria:
     [
       "通过：",
-      "· 正文里没有旧域名 gui.harness.fund 的可点击链接",
-      "· 访问命令里没有访问旧域名（gui-backup-cn.harness.fund 是新域名，不算违规）",
+      "· 正文里没有旧域名 primary.example.com 的可点击链接",
+      "· 访问命令里没有访问旧域名（console.example.com 是新域名，不算违规）",
       "不要求：本回合必须出现新域名；没给链接、没做线上访问的回合默认通过"
     ].join("\n"),
   feedback:
     [
       "1. 指出具体哪一行文字或哪条访问命令用了旧域名",
-      "2. 入口链接换成 https://gui-backup-cn.harness.fund",
-      "3. 线上验收用它重做（如 curl -I https://gui-backup-cn.harness.fund 或浏览器打开），确认后再汇报"
+      "2. 入口链接换成 https://console.example.com",
+      "3. 线上验收用它重做（如 curl -I https://console.example.com 或浏览器打开），确认后再汇报"
     ].join("\n"),
 
   fits(statement: string): boolean {
@@ -143,11 +143,11 @@ export const rule: EnforcementRule = {
     if (hits.length === 0) return { pass: true };
     return {
       pass: false,
-      problem: `本回合仍用到旧入口域名 gui.harness.fund：\n${summarize(hits)}`,
+      problem: `本回合仍用到旧入口域名 primary.example.com：\n${summarize(hits)}`,
       fix:
-        "改用国内入口 gui-backup-cn.harness.fund 重做一次：\n" +
-        "1) 回复里给用户的入口链接统一写成 https://gui-backup-cn.harness.fund，不要保留任何 gui.harness.fund 的链接；\n" +
-        "2) 线上验收换成 curl -I https://gui-backup-cn.harness.fund（或浏览器打开该地址），确认响应正常后再汇报；\n" +
+        "改用国内入口 console.example.com 重做一次：\n" +
+        "1) 回复里给用户的入口链接统一写成 https://console.example.com，不要保留任何 primary.example.com 的链接；\n" +
+        "2) 线上验收换成 curl -I https://console.example.com（或浏览器打开该地址），确认响应正常后再汇报；\n" +
         "3) 如果只是需要说明「旧域名已停用」，可以保留说明文字，但不要给出旧域名的可点击链接或对旧域名做访问。",
     };
   },

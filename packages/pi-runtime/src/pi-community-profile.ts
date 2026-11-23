@@ -141,6 +141,8 @@ export interface CommunityPermissionScope {
   /** 本轮注册了联网检索工具：它们是只读工具，来源范围由 Broker 判定，不再逐次问人。 */
   webResearch?: boolean;
   platformBrowser?: boolean;
+  /** 本轮注册了 bash 后台运行：bash_output / bash_kill 只碰本进程自己的任务，不另外执行命令。 */
+  backgroundBash?: boolean;
 }
 /** Read-only system and toolchain locations that every sandboxed command touches. */
 const SYSTEM_READ_ROOTS = Object.freeze(["/usr", "/bin", "/sbin", "/opt", "/etc", "/private/etc", "/Library", "/System", "/Applications"]);
@@ -191,7 +193,10 @@ export function communityPermissionConfig(tools: string[], scope: CommunityPermi
   }
   return { permission: { "*": "deny", read: "allow", grep: "allow", find: "allow", ls: "allow",
     write: "allow", edit: "allow", bash, bash_escalated: "allow",
+    // codemode 自己不产生副作用；脚本里嵌套的 write/edit/bash 仍逐个按上面的规则判定（危险命令照常审批）。
+    codemode: "allow",
     ...(scope.platformBrowser ? {platform_browser:"allow"} : {}),
+    ...(scope.backgroundBash ? { bash_output: "allow", bash_kill: "allow" } : {}),
     ...(scope.webResearch ? { web_search: "allow", web_open: "allow" } : {}),
     external_directory_read: externalRead, external_directory_write: externalWrite,
     ...Object.fromEntries(tools.filter(tool => [...HERMES_TOOLS,...FACT_TOOLS].includes(tool)).map(tool => [tool, 'allow'])), mcp },

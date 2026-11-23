@@ -531,8 +531,8 @@ async function noteCreate(text) {
     void window.imageIntake?.saved(submittedItems.map(i => i.intakeId).filter(Boolean));
     for (const item of submittedItems) noteReleaseLocalImage(item);
     // 输入框下方跟着显示这条被 AI 归到了哪一类；新记录在当前类型筛选下看不到时切到它自己的大类。
-    ui.notesLastCreated = note.id;
-    ui.notesLastCreatedNote = note;
+    // 连发几条时，前一条的提示不能被后一条顶掉（DeepSeek 慢的时候前一条还在判断中）：前一条退到「更早」列表里各自跟踪。
+    noteTrackCreated(note);
     ui.notesCreatedFollow = { id: note.id, epoch: kindEpoch };
     // 大类尚未确定时保留当前 Tab，避免先跳待办再跳最终类型。
     if (!note.kindPending && kindEpoch === noteKindManualEpoch) ui.notesKindFilter = noteDisplayKind(note);
@@ -583,6 +583,7 @@ function noteReplaceLocal(note) {
   if (ui.notesCalendarRecordNote?.id === note.id) ui.notesCalendarRecordNote = noteKeepSessions(ui.notesCalendarRecordNote, note);
   ui.notes = (ui.notes || []).map((n) => (n.id === note.id ? noteKeepSessions(n, note) : n));
   if (ui.notesLastCreated === note.id) ui.notesLastCreatedNote = note;
+  for (const entry of noteEarlierCreated()) if (entry.id === note.id) entry.note = note;
   noteFollowCreatedKind(note);
 }
 
@@ -725,6 +726,7 @@ function noteFollowPendingKinds() {
   const pending = (n) => n?.kindPending || n?.writing?.state === "pending";
   const ids = new Set((ui.notes || []).filter(pending).map((n) => n.id));
   if (pending(ui.notesLastCreatedNote)) ids.add(ui.notesLastCreatedNote.id);
+  for (const entry of noteEarlierCreated()) if (pending(entry.note)) ids.add(entry.id);
   if (!ids.size) return Promise.resolve();
   const epoch = noteOperationEpoch;
   const flight = (async () => {
@@ -734,7 +736,7 @@ function noteFollowPendingKinds() {
         if (epoch === noteOperationEpoch) noteReplaceLocal(note);
       } catch (e) {
         // 已被删除：不再跟踪
-        if (ui.notesLastCreated === id && /不存在/.test(e?.message || "")) { ui.notesLastCreated = null; ui.notesLastCreatedNote = null; }
+        if (/不存在/.test(e?.message || "")) noteUntrackCreated(id);
       }
     }
   })().finally(() => {
@@ -745,17 +747,51 @@ function noteFollowPendingKinds() {
   return flight;
 }
 
-/** 输入框下方：刚记下的这条被归到哪一类，附一键改类。 */
+/** 输入框下方最多同时跟踪几条刚记下的记录（最新一条 + 更早的几条）。 */
+const NOTE_KIND_RESULT_MAX = 3;
+
+/** 比最新一条更早记下、提示还没关掉的记录（新 → 旧）；每项 { id, note }。 */
+function noteEarlierCreated() {
+  return Array.isArray(ui.notesEarlierCreated) ? ui.notesEarlierCreated : (ui.notesEarlierCreated = []);
+}
+
+/** 记下一条新记录：它成为最新一条，原来的最新一条退到更早列表，各自继续显示自己的判断状态。 */
+function noteTrackCreated(note) {
+  const earlier = noteEarlierCreated().filter((e) => e.id !== note.id);
+  if (ui.notesLastCreated && ui.notesLastCreated !== note.id) earlier.unshift({ id: ui.notesLastCreated, note: ui.notesLastCreatedNote || null });
+  ui.notesEarlierCreated = earlier.slice(0, NOTE_KIND_RESULT_MAX - 1);
+  ui.notesLastCreated = note.id;
+  ui.notesLastCreatedNote = note;
+}
+
+/** 不再跟踪这条（关闭提示 / 记录已被删）；关掉的是最新一条时，由更早的一条顶上来。 */
+function noteUntrackCreated(id) {
+  ui.notesEarlierCreated = noteEarlierCreated().filter((e) => e.id !== id);
+  if (ui.notesLastCreated !== id) return;
+  const next = ui.notesEarlierCreated.shift();
+  ui.notesLastCreated = next ? next.id : null;
+  ui.notesLastCreatedNote = next ? next.note : null;
+}
+
+/** 输入框下方：刚记下的这几条各被归到哪一类，每条附一键改类；最新一条在最上面。 */
 function noteKindResult() {
-  const id = ui.notesLastCreated;
-  const note = id ? ((ui.notes || []).find((n) => n.id === id) || ui.notesLastCreatedNote) : null;
-  if (!note) return h("div", { id: "notes-kind-result", class: "notes-kind-result", hidden: true });
+  const entries = [];
+  if (ui.notesLastCreated) entries.push({ id: ui.notesLastCreated, note: ui.notesLastCreatedNote });
+  entries.push(...noteEarlierCreated());
+  const notes = entries.map((entry) => (ui.notes || []).find((n) => n.id === entry.id) || entry.note).filter(Boolean);
+  const rows = notes.map((note, index) => noteKindResultRow(note, index === 0, notes.length > 1));
+  return h("div", { id: "notes-kind-stack", class: "notes-kind-stack", hidden: !rows.length }, ...rows);
+}
+
+function noteKindResultRow(note, latest, showRef) {
+  // 最新一条保留原来的 #notes-kind-result；更早的几条用 data-note-id 区分。
+  const rowAttrs = latest ? { id: "notes-kind-result" } : { "data-note-id": note.id };
   const busy = ui.notesBusy === note.id;
   const kind = noteDisplayKind(note);
-  const dismiss = h("button", { type: "button", class: "notes-kind-result-close", "aria-label": "关闭归类提示", title: "关闭", onclick: () => { ui.notesLastCreated = null; ui.notesLastCreatedNote = null; noteSyncKindResult(); } }, "×");
+  const dismiss = h("button", { type: "button", class: "notes-kind-result-close", "aria-label": "关闭归类提示", title: "关闭", onclick: () => { noteUntrackCreated(note.id); noteSyncKindResult(); } }, "×");
   if (note.kindPending) {
-    return h("div", { id: "notes-kind-result", class: "notes-kind-result pending", role: "status" },
-      h("span", { class: "notes-kind-spinner", "aria-hidden": "true" }), h("span", { class: "notes-kind-result-text" }, "已记下，AI 正在判断是笔记、待办还是日程…"), dismiss);
+    return h("div", { ...rowAttrs, class: "notes-kind-result pending", role: "status" },
+      h("span", { class: "notes-kind-spinner", "aria-hidden": "true" }), h("span", { class: "notes-kind-result-text" }, showRef ? h("span", { class: "notes-kind-result-ref" }, `「${noteKindResultRef(note)}」`) : null, showRef ? "AI 正在判断类型…" : "已记下，AI 正在判断是笔记、待办还是日程…"), dismiss);
   }
   const label = NOTE_KIND_LABEL[kind];
   const actions = [];
@@ -763,15 +799,22 @@ function noteKindResult() {
   if (kind !== "note") actions.push(h("button", { type: "button", class: "notes-kind-result-action", disabled: busy, onclick: () => void noteChangeKind(note, { kind: "note" }) }, "改为笔记"));
   if (kind !== "todo") actions.push(h("button", { type: "button", class: "notes-kind-result-action", disabled: busy, onclick: () => void noteChangeKind(note, { kind: "todo" }) }, kind === "event" ? "改为待办（去掉时间）" : "改为待办"));
   const by = note.kindSource === "user" ? "已改为" : note.kindSource === "ai" ? "AI 已归入" : "已按";
-  return h("div", { id: "notes-kind-result", class: `notes-kind-result kind-${kind}`, role: "status", "data-kind": kind },
+  return h("div", { ...rowAttrs, class: `notes-kind-result kind-${kind}`, role: "status", "data-kind": kind },
     h("span", { class: "notes-kind-result-text" },
+      // 一次连记几条时，用正文开头区分每行说的是哪一条
+      showRef ? h("span", { class: "notes-kind-result-ref" }, `「${noteKindResultRef(note)}」`) : null,
       `${by}「${label}」`, kind === "event" ? h("span", { class: "muted" }, ` · ${noteScheduleLabel(note.schedule)}`) : null,
       !note.kindSource ? h("span", { class: "muted" }, "保存（AI 未能判断）") : null),
     h("span", { class: "notes-kind-result-actions" }, ...actions), dismiss);
 }
 
+function noteKindResultRef(note) {
+  const first = String(note.text || "").split("\n")[0].trim();
+  return first.length > 12 ? first.slice(0, 12) + "…" : first || "图片记录";
+}
+
 function noteSyncKindResult() {
-  const el = document.getElementById("notes-kind-result");
+  const el = document.getElementById("notes-kind-stack");
   if (el && ui.view === "notes") el.replaceWith(noteKindResult());
 }
 
@@ -1100,10 +1143,12 @@ function noteCountdown(event, now = Date.now()) {
 function noteUpcomingRow(event, scope = "human") {
   const day = noteUpcomingDay(event), time = noteCalendarEventTime(event), countdown = noteCountdown(event);
   const calendarName = scope === "agent" ? "Agent 日历" : "日历";
+  const reminding = noteEventReminding(event);
+  const remindText = reminding ? `，${noteReminderWhenLabel(reminding.at)} 提醒（${reminding.label}）` : "";
   return h("li", { class: "notes-upcoming-item" },
     h("button", {
-      type: "button", class: `notes-upcoming-card${countdown === "进行中" ? " ongoing" : ""}`, "data-note-id": event.noteId || "",
-      "aria-label": `${event.title}，${day} ${time}${countdown ? `，${countdown}` : ""}，在${calendarName}中查看`, title: `${day} ${time} · 在${calendarName}中查看`,
+      type: "button", class: `notes-upcoming-card${countdown === "进行中" ? " ongoing" : ""}${reminding ? " reminding" : ""}`, "data-note-id": event.noteId || "",
+      "aria-label": `${event.title}，${day} ${time}${countdown ? `，${countdown}` : ""}${remindText}，在${calendarName}中查看`, title: `${day} ${time}${remindText} · 在${calendarName}中查看`,
       onclick: () => noteOpenEventInCalendar(event, { scope })
     },
       h("span", { class: "notes-upcoming-when" },
@@ -1160,8 +1205,8 @@ function noteUpcomingSection() {
 // 人的日历不含 Agent 日程，Agent 卡片的「更多」进入只看 Agent 的日历。
 
 const NOTE_AGENT_ACTIVE_STATUS = new Set(["creating", "running", "waiting-input", "stopping"]);
-const NOTE_AGENT_RUNTIME_ORDER = ["pi", "claude-code", "codex"];
-const NOTE_RUNTIME_LABEL = { pi: "Pi", codex: "Codex", "claude-code": "Claude" };
+const NOTE_AGENT_RUNTIME_ORDER = ["pi", "claude-code", "codex", "antigravity"];
+const NOTE_RUNTIME_LABEL = { pi: "Pi", codex: "Codex", "claude-code": "Claude", antigravity: "Antigravity" };
 const NOTE_AGENT_READ_TIMEOUT_MS = 8000;
 
 /** 当前展示哪张卡片：人的卡片是默认，只有明确选过 Agent 才切过去。 */
@@ -4156,6 +4201,41 @@ function noteInstallCalendarGridSwipe(view) {
   view.addEventListener("pointercancel", (ev) => end(ev, true));
 }
 
+/**
+ * 「更多」菜单默认向下展开，贴近屏幕底部时会被手机底栏和右下角「＋」盖住。展开后量一下可见区
+ * （吸顶筛选区之下、底栏 / 「＋」之上）：下方放得下就不动；放不下先把页面往上滚一点；
+ * 页面已滚到头（卡片在列表末尾）就改向上展开；上下都放不下，取大的一侧限高并在菜单内滚动。
+ */
+function noteFitMoreMenu() {
+  const menu = document.querySelector(".note-entry.more-open .note-more-menu");
+  if (!menu) return;
+  menu.style.cssText = "";
+  let bottom = window.innerHeight - 8;
+  for (const sel of [".phone-bottom-nav", "#notes-new-fab"]) {
+    const el = document.querySelector(sel);
+    // 只看钉在屏幕上的遮挡物（桌面端没有固定底栏）
+    if (!el || getComputedStyle(el).visibility === "hidden" || getComputedStyle(el).position !== "fixed") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width && r.height) bottom = Math.min(bottom, r.top - 8);
+  }
+  const head = document.querySelector(".notes-sticky-head");
+  // 吸顶区贴住屏幕顶时占掉的高度（页面往上滚时卡片最多滚到它下面）；它没贴住时以当前所在位置为准
+  const stuck = head ? (parseFloat(getComputedStyle(head).top) || 0) + head.offsetHeight + 8 : 8;
+  const top = head ? Math.max(stuck, head.getBoundingClientRect().bottom + 8) : 8;
+  const anchor = menu.parentElement;
+  const height = menu.getBoundingClientRect().height;
+  const roomBelow = () => bottom - anchor.getBoundingClientRect().bottom - 4;
+  const roomAbove = () => anchor.getBoundingClientRect().top - top - 4;
+  if (height <= roomBelow()) return;
+  // 往上滚；卡片不能滚到吸顶区下面去
+  window.scrollBy({ top: Math.min(height - roomBelow(), Math.max(0, anchor.getBoundingClientRect().top - stuck - 4)), behavior: "instant" });
+  if (height <= roomBelow()) return;
+  const up = height <= roomAbove() || roomAbove() > roomBelow();
+  if (up) menu.style.cssText = "top:auto;bottom:calc(100% + 4px)";
+  const room = Math.max(120, Math.floor(up ? roomAbove() : roomBelow()));
+  if (height > room) menu.style.cssText += `;max-height:${room}px;overflow-y:auto`;
+}
+
 /** 点页面其他地方收起「更多」菜单与筛选下拉（触发元素自身在各自容器内，不会被误收）。 */
 if (typeof document !== "undefined") {
   document.addEventListener("click", (ev) => {
@@ -4487,7 +4567,7 @@ function noteEntry(note) {
   const li = h("li", { "data-kind": kind, class: `note-entry kind-${kind}${done ? " done" : ""}${note.pinned ? " pinned" : ""}${moreOpen ? " more-open" : ""}${expanded ? " is-expanded" : ""}`, "data-note-id": note.id, ...(note.pinned ? { "data-pinned": "true" } : {}) });
   // 「更多」菜单：标记完成 / 取消完成，以及删除；操作区不再平铺一排按钮
   const more = h("div", { class: "note-more" },
-    h("button", { type: "button", class: "btn small", disabled: busy, "aria-haspopup": "menu", "aria-expanded": moreOpen ? "true" : "false", "aria-label": "更多操作", title: "更多操作", onclick: () => { ui.notesMore = moreOpen ? null : note.id; noteRefreshList(); } }, "更多"),
+    h("button", { type: "button", class: "btn small", disabled: busy, "aria-haspopup": "menu", "aria-expanded": moreOpen ? "true" : "false", "aria-label": "更多操作", title: "更多操作", onclick: () => { ui.notesMore = moreOpen ? null : note.id; noteRefreshList(); if (ui.notesMore) noteFitMoreMenu(); } }, "更多"),
     moreOpen ? h("div", { class: "note-more-menu", role: "menu" },
       noteWritingControl(note, busy),
       kind !== "note" ? null : h("button", { type: "button", role: "menuitem", class: "btn small", disabled: busy, onclick: () => void noteChangeKind(note, { kind: "todo" }) }, "改为待办"),
@@ -4547,6 +4627,9 @@ function noteEntry(note) {
       title: "在日历中查看这条日程", "aria-label": `在日历中查看日程：${noteScheduleLabel(note.schedule)}`,
       onclick: () => noteOpenNoteInCalendar(note)
     }, "日程 · " + noteScheduleLabel(note.schedule)) : null,
+    note.schedule?.remind
+      ? h("span", { class: "note-remind-badge", title: `到点前全端推送（${NOTE_REMIND_SCENE_TEXT[note.schedule.remind.scene] || "按场景推断"}）` }, noteRemindAlarm(), noteRemindSummary(note.schedule.remind.offsets) + "提醒")
+      : null,
     noteCategoryBadge(note),
     noteSessionLinks(note.sessions, noteRelationBadge(note)),
     noteDiagnosticLine(note),
@@ -5056,6 +5139,45 @@ function noteCalendarGrid(st, events, selected) {
   return grid;
 }
 
+/** 日程提醒：闹钟图形（与底部导航同一套线性图标口径）。 */
+function noteRemindAlarm() {
+  return h("svg", { class: "notes-remind-alarm", viewBox: "0 0 16 16", width: "12", height: "12", "aria-hidden": "true", focusable: "false" },
+    h("circle", { cx: "8", cy: "8.4", r: "4.2", fill: "none", stroke: "currentColor", "stroke-width": "1.2" }),
+    h("path", { d: "M8 6v2.6l1.7 1.1", fill: "none", stroke: "currentColor", "stroke-width": "1.2", "stroke-linecap": "round", "stroke-linejoin": "round" }),
+    h("path", { d: "M3.2 3.6 4.7 2.4M12.8 3.6 11.3 2.4M4.5 12.1 3.3 13.4M11.5 12.1l1.2 1.3", fill: "none", stroke: "currentColor", "stroke-width": "1.2", "stroke-linecap": "round" }));
+}
+
+/** 日程是否「进入提醒」：下一次提醒在 48 小时内，今日卡上用更深底色标一下。 */
+function noteEventReminding(event, now = Date.now()) {
+  const next = noteEventReminders(event).find((r) => Date.parse(r.at) > now);
+  return next && Date.parse(next.at) - now <= 2 * 86400000 ? next : null;
+}
+
+/** 提醒计划的一句话：与服务器 note-remind 的算法一致（1/3/5/7 天合并）。 */
+function noteRemindSummary(offsets) {
+  const list = [...new Set(offsets || [])].filter((m) => m > 0).sort((a, b) => b - a);
+  if (!list.length) return "";
+  const part = (m) => m % 1440 === 0 ? `${m / 1440} 天` : m % 60 === 0 ? `${m / 60} 小时` : `${m} 分钟`;
+  if (list.every((m) => m % 1440 === 0)) return `提前 ${list.map((m) => m / 1440).join(" / ")} 天`;
+  return `提前 ${list.map(part).join("、")}`;
+}
+
+const NOTE_REMIND_SCENE_TEXT = { explicit: "按你说的", travel: "按机票 / 火车票场景", birthday: "按生日 / 纪念日场景", commute: "按上班回家场景" };
+
+/** 某次日程的提醒，按时间先后。 */
+function noteEventReminders(event) {
+  return Array.isArray(event?.reminders) ? [...event.reminders].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)) : [];
+}
+
+/** 提醒时刻的写法：今天 17:00 / 明天 09:00 / 11 月 9 日 09:00。 */
+function noteReminderWhenLabel(at) {
+  const d = new Date(at);
+  if (!Number.isFinite(d.getTime())) return "";
+  const p = noteBeijingParts(d);
+  const day = noteUpcomingDay({ start: d.toISOString() });
+  return `${day} ${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+}
+
 /** 日程行：标题占满整行（最多两行），时间与来源降为第二行小字，来源用左侧色条表达。 */
 function noteCalendarSourceKind(event) {
   return event.source === "pi" ? "local" : event.source === "agent" ? "agent" : "google";
@@ -5092,7 +5214,11 @@ function noteCalendarAgendaItem(st, event, dayKey) {
       h("span", { class: "notes-calendar-agenda-meta" },
         h("span", { class: "notes-calendar-agenda-time" }, time),
         h("span", { class: "notes-calendar-agenda-sep", "aria-hidden": "true" }, "·"),
-        h("span", { class: "notes-calendar-agenda-source" }, noteCalendarSourceLabelFor(st, event)))));
+        h("span", { class: "notes-calendar-agenda-source" }, noteCalendarSourceLabelFor(st, event)),
+        noteEventReminders(event).find((r) => Date.parse(r.at) > Date.now())
+          ? h("span", { class: "notes-calendar-agenda-remind", title: `已设置提醒：${noteRemindSummary(event.remind?.offsets)}` },
+            noteRemindAlarm(), noteEventReminders(event).find((r) => Date.parse(r.at) > Date.now()).label + "提醒")
+          : null)));
 }
 
 /** 下方日程列表只列所选那一天；没有日程时给一句怎么让日程出现的提示。 */
@@ -5440,15 +5566,15 @@ function noteReplaceCalendarRecent() {
   if (focusedKey) fresh.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
 }
 function noteCalendarRecentSection(st) {
-  const recent = noteCalendarRecentState(), events = noteCalendarRecentEvents(st);
+  const recent = noteCalendarRecentState(), events = noteCalendarRecentEvents(st), now = Date.now();
   return h("section", { class: "notes-calendar-recent", "aria-label": "最近48h日程" },
     h("div", { class: "notes-calendar-recent-head" }, h("h2", {}, "最近 48h"), h("span", { class: "muted small" }, "进行中与未来 48 小时")),
     h("div", { class: "notes-calendar-recent-track", "data-key": "calendar-recent-track", tabindex: "0", role: "region", "aria-label": "横向滑动查看最近48h日程", "aria-busy": String(recent.loading) },
       events.length ? events.map(event => h("button", {
-        type: "button", class: "notes-calendar-recent-card", "data-event-id": event.id, "data-key": `calendar-recent:${noteCalendarSourceKey(event)}:${event.id}`,
+        type: "button", class: `notes-calendar-recent-card${noteEventReminding(event, now) ? " reminding" : ""}`, "data-event-id": event.id, "data-key": `calendar-recent:${noteCalendarSourceKey(event)}:${event.id}`,
         onclick: () => noteShowCalendarEvent(st, event)
       }, h("span", { class: "notes-calendar-recent-day" }, noteUpcomingDay(event)), h("strong", {}, event.title),
-      h("span", { class: "muted small" }, `${noteCalendarEventTime(event)} · ${noteCalendarSourceLabelFor(st, event)}`)))
+      h("span", { class: "muted small" }, `${noteCalendarEventTime(event)} · ${noteCalendarSourceLabelFor(st, event)}${noteEventReminders(event).find((r) => Date.parse(r.at) > now) ? ` · ${noteReminderWhenLabel(noteEventReminders(event).find((r) => Date.parse(r.at) > now).at)} 提醒` : ""}`)))
       : h("p", { class: "muted small" }, recent.loading || !recent.loaded ? "正在读取日程…" : recent.errors.length ? "日程读取失败，请重试。" : "未来 48 小时没有日程")),
     recent.errors.length ? h("button", { type: "button", class: "notes-calendar-recent-retry", title: recent.errors.join("；"), onclick: () => void noteLoadCalendarRecent(true) }, "部分来源读取失败，重试") : null);
 }
@@ -5745,6 +5871,21 @@ function noteOpenEventInCalendar(event, { scope = "human" } = {}) {
   });
 }
 
+/** 日程详情里的提醒说明：提前多久、来自哪里、最近一次什么时候响；没有提醒也直说原因。 */
+function noteCalendarReminderDetail(event) {
+  const list = noteEventReminders(event);
+  const plan = event.remind;
+  if (!list.length) return h("p", { class: "notes-calendar-reminder-detail muted small" }, "提醒：不提醒。文字里没写提前多久，也不在上班回家 / 生日纪念 / 出行场景里。");
+  const now = Date.now();
+  const next = list.find((r) => Date.parse(r.at) > now);
+  const label = noteRemindSummary(plan?.offsets) || [...new Set(list.map((r) => r.label))].join("、");
+  return h("p", { class: "notes-calendar-reminder-detail muted small" },
+    h("span", { class: "notes-calendar-reminder-detail-icon" }, noteRemindAlarm()),
+    `提醒：${label}（${NOTE_REMIND_SCENE_TEXT[plan?.scene] || "按场景推断"}）`,
+    next ? ` · 最近一次 ${noteReminderWhenLabel(next.at)}` : " · 都已经提醒过了",
+    " · 日程到点前全端推送");
+}
+
 function noteShowCalendarEvent(st, event) {
   const dialog = h("dialog", { class: "notes-calendar-dialog", "aria-label": event.title },
     h("div", { class: "notes-calendar-dialog-head" },
@@ -5756,6 +5897,7 @@ function noteShowCalendarEvent(st, event) {
       event.agentStatus === "paused" ? h("p", { class: "muted small" }, "状态：已暂停") : null,
       event.agentStatus === "unknown" ? h("p", { class: "muted small" }, "状态：未在 launchd 中找到（按平台默认时间展示）") : null) : null,
     event.location ? h("p", { class: "muted small" }, `地点：${event.location}`) : null,
+    event.source === "pi" ? noteCalendarReminderDetail(event) : null,
     event.description ? h("p", { class: "notes-calendar-dialog-desc" }, event.description) : null,
     h("div", { class: "note-actions" },
       event.noteId || event.relationRef ? noteRelationActions(event.relationRef || {kind:"note",noteId:event.noteId},event.relationCount,undefined,()=>dialog.close()) : h("span", {class:"muted small"}, "此自动任务没有本地记录，暂不支持条目关联"),
