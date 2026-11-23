@@ -100,7 +100,28 @@ const SOURCES: Source[] = [
     entry: "/games/word-detective/",
     root: join(HERE, "../../word-detective"),
   },
+  {
+    id: "ring-toss",
+    category: "games",
+    name: "夜市套圈摊",
+    emoji: "⭕",
+    accent: "#eb523d",
+    summary: "自选圈数与奖品 · 手指上滑控力道旋转 · 真实物理与震动触感",
+    description:
+      "还原夜市套圈手感：开局先确定拿几个圈，再确认要摆上摊位的奖品（支持自定义真实兑奖清单）。进入摊位后手指从圈往上滑，根据力道、速度与甩弧控制投掷距离、方向和旋转；3D 物理碰撞与震动触感覆盖出手、砸奖品、弹跳与最终套中，套中就真的归你。",
+    tags: ["套圈", "物理互动", "震动触感", "兑奖", "可离线"],
+    version: "",
+    entry: "/games/ring-toss/",
+    root: join(HERE, "../../ring-toss"),
+  },
 ];
+
+/**
+ * 分类器用的产物清单：只带名称 / 分类 / 概览 / 标签，不读文件系统、不带路径。
+ * 待办分类的实体词表从这里取产品名与标签（单一来源）：新增一个小游戏只要在上面登记一次，
+ * 分类器下次启动就认得它，不用再改提示词。
+ */
+export const ARTIFACT_PRODUCTS = SOURCES.map(({ id, category, name, summary, tags }) => ({ id, category, name, summary, tags: [...tags] }));
 
 /** 只允许这几个入口文件；其余一律 404（路径穿越因此不成立） */
 const TOP_FILES = [

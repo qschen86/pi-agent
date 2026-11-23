@@ -253,6 +253,23 @@ describe("manager quick replies", () => {
     expect((await mgr.directory({ source: "chat", includeHistory: false })).entries.find(e => e.id === id)?.quickAction).toBeUndefined();
   });
 
+  it("drops the list badge once the user has queued a new message", async () => {
+    const { id, t } = await finishedTurn("要归档这个会话吗？");
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(id)!.status === "idle");
+    mgr.noteQuickAction(id, { state: "ready", eventKey: "codex:item:a1", replies: [{ label: "部署上线", text: "可以，提交并部署。", action: "deploy" }] });
+    const entry = async () => (await mgr.directory({ source: "chat", includeHistory: false })).entries.find(e => e.id === id)?.quickAction;
+    expect(await entry()).toEqual({ action: "deploy", label: "部署", eventKey: "codex:item:a1" });
+    // 用户已经又发了消息（还在排队里，没轮到发送）：推荐的下一步过期，列表不再显示旧标签
+    const messageId = randomUUID();
+    mgr.enqueueMessage(id, { messageId, prompt: "先别部署，这个入口我再调一下" }, "test");
+    expect(mgr.store.binding(id)!.quickAction).toBeDefined();
+    expect(await entry()).toBeUndefined();
+    // 撤销这条输入后仍是对同一条回复的推荐：标签回来
+    mgr.removeQueuedMessage(id, messageId, "test");
+    expect(await entry()).toEqual({ action: "deploy", label: "部署", eventKey: "codex:item:a1" });
+  });
+
   it("precomputes the final result at turn end, stores it on the session and serves it without recomputing", async () => {
     const { id, t } = await finishedTurn("方案 A 还是 B？");
     const finalizer = vi.fn(async (_id: string, raw: { state: "ready" | "none" | "unavailable"; eventKey?: string; replies: Array<{ label: string; text: string; action?: "deploy" | "archive" }> }) => ({
@@ -281,36 +298,6 @@ describe("manager quick replies", () => {
     // 新一轮开始就清掉，不会把旧回复的推荐挂到新消息上
     await mgr.sendTurn(id, { idempotencyKey: randomUUID(), prompt: "用方案 A", expectedRevision: revision }, "test");
     expect(mgr.store.binding(id)!.quickReplies).toBeUndefined();
-  });
-
-  it("host-fixed replies are used after the first completed turn without calling the model, then give way to normal extraction", async () => {
-    const { id, t } = await finishedTurn("你好，我是 pi-agent。");
-    const fixed = [{ label: "任务一", text: "做任务一" }, { label: "任务二", text: "做任务二" }];
-    const override = vi.fn((_id: string, context: { turnCount: number }) => context.turnCount === 1 ? fixed : undefined);
-    mgr.setQuickReplyOverride(override);
-    // 本轮还在运行：不给固定回复
-    expect(await mgr.finalQuickReplies(id)).not.toMatchObject({ replies: [{ label: "任务一" }] });
-    quick.mockClear();
-    t.finish({ status: "completed" });
-    await until(() => mgr.store.binding(id)!.status === "idle");
-    await tick(400);
-    const result = await mgr.finalQuickReplies(id);
-    expect(result).toMatchObject({ state: "ready", eventKey: "codex:item:a1", replies: fixed });
-    expect(quickCalls()).toHaveLength(0);
-    const expectedRevision = mgr.store.binding(id)!.bindingRevision;
-    // 用户回复后是第二轮：钩子不再返回固定回复，旧的固定结果也已清掉
-    await mgr.sendTurn(id, { idempotencyKey: randomUUID(), prompt: "做任务一", expectedRevision }, "test");
-    expect(mgr.store.binding(id)!.quickReplies).toBeUndefined();
-    expect(override.mock.calls.every(([, context]) => context.turnCount >= 1)).toBe(true);
-  });
-
-  it("host-fixed replies never apply to a different session", async () => {
-    const { id, t } = await finishedTurn("你好。");
-    mgr.setQuickReplyOverride(() => undefined);
-    t.finish({ status: "completed" });
-    await until(() => mgr.store.binding(id)!.status === "idle");
-    const result = await mgr.finalQuickReplies(id);
-    expect(result.replies.some(r => r.label === "任务一")).toBe(false);
   });
 
   it("does not store a result the finalizer marks as temporary, or one built while the model was unavailable", async () => {
@@ -393,7 +380,7 @@ describe("manager quick replies", () => {
     t.finish({ status: "completed" });
     await until(() => quickCalls().length === 1);
     const b = mgr.store.binding(id)!;
-    await mgr.sendTurn(id, { idempotencyKey: randomUUID(), prompt: "[pi-agent 自动部署通知] 已上线：abcdef1（调整快捷回复）。现在 gui.harness.fund 跑的就是这一版，可以接着验证。\n部署日志：/tmp/deploy.log", expectedRevision: b.bindingRevision }, "test");
+    await mgr.sendTurn(id, { idempotencyKey: randomUUID(), prompt: "[pi-agent 自动部署通知] 已上线：abcdef1（调整快捷回复）。现在 primary.example.com 跑的就是这一版，可以接着验证。\n部署日志：/tmp/deploy.log", expectedRevision: b.bindingRevision }, "test");
     await until(() => driver.turns.length === 2);
     quick.mockImplementationOnce(async () => reply([{ label: "继续验证", text: "我继续验证这一版。" }, { label: "总结", text: "总结这一轮改动。" }]));
     driver.turns[1]!.sink.event(ev("codex:item:a2", "已上线，可以继续验证。"));

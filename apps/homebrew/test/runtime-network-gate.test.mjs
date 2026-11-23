@@ -12,7 +12,7 @@ const input = runtime => ({ runtime, networkId: 'network-a', now, report: {
   }
 } });
 
-for (const runtime of ['codex', 'claude-code']) {
+for (const runtime of ['codex', 'claude-code', 'antigravity']) {
   test(`${runtime}: only complete fresh evidence permits the operation`, async () => {
     const value = input(runtime); let called = 0;
     assert.equal(evaluateRuntimeNetwork(value).allowed, true);

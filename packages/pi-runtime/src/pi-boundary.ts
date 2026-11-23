@@ -8,7 +8,7 @@ import { canonicalPath, compileRuntimeGuardPolicy, isWithin } from "../../adapte
 import { SeatbeltRuntimeGuard } from "../../adapter-pi/src/os-sandbox.js";
 import { verifyRuntimeGuard } from "../../adapter-pi/src/runtime-guard.js";
 import type { PreparedRuntimeGuard, RuntimeGuardProvider } from "@pi-agent/runtime-contracts";
-import { PI_ISOLATION_ARGS, PI_TOOL_NAMES } from "./policy.js";
+import { PI_BACKGROUND_TOOL_NAMES, PI_CODEMODE_EXTENSION, PI_CODEMODE_TOOL, PI_ISOLATION_ARGS, PI_TOOL_NAMES } from "./policy.js";
 import { isPiPermissionMode } from "./policy.js";
 import { piWorktreeAccess } from "./pi-worktree-access.js";
 import type { PiWorktreeIdentity } from "./pi-worktree-access.js";
@@ -96,7 +96,7 @@ export async function preparePiChatBoundary(options: PiBoundaryOptions): Promise
   const WEB_TOOL_NAMES = ["web_search", "web_open"];
   let web: SessionWebResearch | undefined;
   try {
-    const runtime = preparePiRuntime(root, { sourceAgentDir: options.sourceAgentDir, provider: options.provider, model: options.model });
+    const runtime = preparePiRuntime(root, { sourceAgentDir: options.sourceAgentDir, provider: options.provider, model: options.model, compactionDefaults: !evaluation });
     const sharedBrowsers = sharedPlaywrightBrowsersPath();
     // 共享浏览器目录只读放行：仅 pi-ask（评估边界不放）。只是浏览器二进制，不含任何凭据。
     // 同时放行所属仓库的 node_modules、根 package.json 与 packages/ 源码（只读，不可写）：
@@ -117,6 +117,13 @@ export async function preparePiChatBoundary(options: PiBoundaryOptions): Promise
     writeFileSync(extension, readFileSync(fileURLToPath(new URL("./pi-approval-extension.ts", import.meta.url))), { mode: 0o400 });
     writeFileSync(join(guardDir,"screenshot-policy.mjs"),readFileSync(fileURLToPath(new URL("./screenshot-policy.mjs",import.meta.url))),{mode:0o400});
     writeFileSync(join(guardDir,"scan-policy.mjs"),readFileSync(fileURLToPath(new URL("./scan-policy.mjs",import.meta.url))),{mode:0o400});
+    // bash 后台运行：评测装配保持固定工具清单不加；只读会话没有 bash，也不加。
+    let backgroundEntry: string | undefined;
+    if (!evaluation && options.mode !== "pi-read-only") {
+      writeFileSync(join(guardDir, "background-jobs.ts"), readFileSync(fileURLToPath(new URL("./background-jobs.ts", import.meta.url))), { mode: 0o400 });
+      backgroundEntry = join(guardDir, "background-bash.ts");
+      writeFileSync(backgroundEntry, readFileSync(fileURLToPath(new URL("./background-bash-extension.ts", import.meta.url))), { mode: 0o400 });
+    }
     let browserEntry:string|undefined;
     if(options.platformBrowser&&!evaluation){
       env["PI_PLATFORM_BROWSER_SOCKET"]=options.platformBrowser.socketPath;
@@ -139,7 +146,7 @@ export async function preparePiChatBoundary(options: PiBoundaryOptions): Promise
       webEntry = join(guardDir, "web-research.ts");
       writeFileSync(webEntry, readFileSync(fileURLToPath(new URL("./web-research-extension.ts", import.meta.url))), { mode: 0o400 });
     }
-    const webTools = [...(web ? WEB_TOOL_NAMES : []),...(browserEntry?["platform_browser"]:[])];
+    const extensionTools = [...(web ? WEB_TOOL_NAMES : []),...(browserEntry?["platform_browser"]:[]),...(backgroundEntry?PI_BACKGROUND_TOOL_NAMES:[])];
     const writable = community ? [runtime.homeDir, runtime.tmpDir, join(runtime.agentDir, "sessions"), join(runtime.agentDir, "extensions", "pi-permission-system", "logs"), join(runtime.agentDir, "auth.json.lock")] : [root];
     for (const dir of writable.filter(p => !p.endsWith("auth.json.lock"))) mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (memory) {
@@ -185,6 +192,7 @@ export default async function(pi) {
         writeRoots: [...writable, ...(browserData ? [browserData] : []), ...(memory ? [join(memory.storeRoot, "data")] : []), ...(worktreeAccess?.writeRoots ?? [])].map(p => canonicalPath(p)),
         persistentBrowser: !!community.profile.browser?.profileRoot,
         platformBrowser: !!browserEntry,
+        backgroundBash: !!backgroundEntry,
         webResearch: !!web
       })), { mode: 0o400 });
       // Config parents are not writable. Logs and sessions have separate writable roots.
@@ -266,7 +274,7 @@ export default async function(pi) {
           socket.once('end',()=>{clearTimeout(timer);socket.destroy();if(reply==='closed\n')resolve();else reject(new Error('Browser state flush failed'));});
         });
       },
-      argsPrefix: [...roleArgs, ...PI_ISOLATION_ARGS, "--no-approve", ...(community?.profile.browser||community?.profile.testing ? ["--extension", "builtin:mcp"] : ["--no-mcp"]), "--extension", entry, ...(webEntry ? ["--extension", webEntry] : []), ...(browserEntry ? ["--extension", browserEntry] : []), "--tools", (options.mode === "pi-read-only" ? [...PI_TOOL_NAMES.slice(0, 4), ...webTools] : !evaluation && options.mode === "pi-ask" ? [...PI_TOOL_NAMES, "bash_escalated", ...(community?.tools ?? []), ...webTools] : [...PI_TOOL_NAMES, ...(nativeMemory ? [...HERMES_TOOLS,...(factsEnabled?FACT_TOOLS:[])] : []), ...webTools]).join(",")],
+      argsPrefix: [...roleArgs, ...PI_ISOLATION_ARGS, "--no-approve", ...(community?.profile.browser||community?.profile.testing ? ["--extension", "builtin:mcp"] : ["--no-mcp"]), "--extension", entry, ...(webEntry ? ["--extension", webEntry] : []), ...(browserEntry ? ["--extension", browserEntry] : []), ...(backgroundEntry ? ["--extension", backgroundEntry] : []), ...(evaluation ? [] : ["--extension", PI_CODEMODE_EXTENSION]), "--tools", [...(options.mode === "pi-read-only" ? [...PI_TOOL_NAMES.slice(0, 4), ...extensionTools] : !evaluation && options.mode === "pi-ask" ? [...PI_TOOL_NAMES, "bash_escalated", ...(community?.tools ?? []), ...extensionTools] : [...PI_TOOL_NAMES, ...(nativeMemory ? [...HERMES_TOOLS,...(factsEnabled?FACT_TOOLS:[])] : []), ...extensionTools]), ...(evaluation ? [] : [PI_CODEMODE_TOOL])].join(",")],
       wrap: prepared ? prepared.wrap.bind(prepared) : async (command, args) => ({ command, args }),
       dispose: async () => { try{await prepared?.dispose();}finally{try{await web?.close();}finally{releaseBrowserProfile?.();rmSync(root, { recursive: true, force: true }); rmSync(guardDir, { recursive: true, force: true });}} }
     };

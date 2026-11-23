@@ -32,7 +32,7 @@ export interface ProjectExecutionUsage {
 /** Exact operation terminal receipt. Session totals and display text are not accepted here. */
 export interface NativeTurnUsageReceipt {
   version: 1;
-  runtimeKind: "codex" | "claude-code" | "pi";
+  runtimeKind: "codex" | "claude-code" | "pi" | "antigravity";
   nativeSessionId: string;
   nativeTurnId: string;
   clientMessageId: string;
@@ -53,7 +53,7 @@ export function nativeTurnUsageReceipt(value: unknown): NativeTurnUsageReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid native usage receipt");
   const v = value as Record<string, unknown>;
   const fields = ["version", "runtimeKind", "nativeSessionId", "nativeTurnId", "clientMessageId", "sourceRef", "tokens", "reportedCostUsd"];
-  if (Object.keys(v).some(k => !fields.includes(k)) || v.version !== 1 || !["codex", "claude-code", "pi"].includes(String(v.runtimeKind))) throw new Error("Invalid native usage receipt");
+  if (Object.keys(v).some(k => !fields.includes(k)) || v.version !== 1 || !["codex", "claude-code", "pi", "antigravity"].includes(String(v.runtimeKind))) throw new Error("Invalid native usage receipt");
   for (const key of ["nativeSessionId", "nativeTurnId", "clientMessageId", "sourceRef"]) if (typeof v[key] !== "string" || !(v[key] as string).trim() || (v[key] as string).length > 2000) throw new Error("Invalid native usage identity/source");
   if (v.tokens === undefined && v.reportedCostUsd === undefined) throw new Error("Native usage receipt has no known units");
   if (Object.hasOwn(v, "tokens") && (typeof v.tokens !== "number" || !Number.isSafeInteger(v.tokens) || v.tokens < 0)) throw new Error("Invalid native tokens usage");

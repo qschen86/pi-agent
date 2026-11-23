@@ -2,7 +2,8 @@ import type { Hono,Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { RuntimeSessionManager,ProjectedEvent } from '@pi-agent/runtime-sessions';
 import { NativeNotifications,type NativePushConfig } from './native-notifications.js';
-export function mountNativeNotificationRoutes(app:Hono,options:{config?:NativePushConfig;runtime:RuntimeSessionManager;owner:(c:Context)=>string|undefined;authorized:(owner:string)=>boolean;canRead:()=>boolean;shutdown?:AbortSignal}):void {
+export const NATIVE_SESSION_TTL_MS = 30 * 60_000;
+export function mountNativeNotificationRoutes(app:Hono,options:{config?:NativePushConfig;runtime:RuntimeSessionManager;owner:(c:Context)=>string|undefined;authorized:(owner:string)=>boolean;canRead:()=>boolean;shutdown?:AbortSignal}):NativeNotifications|undefined {
  const runtime=options.runtime;
  const readable=(id:string)=>{const b=runtime.store.binding(id);return options.canRead() && !!b && !b.archived && !b.evaluation && b.sourceMode==='platform-managed';};
  const push=options.config?new NativeNotifications({...options.config,authorized:owner=>options.authorized(owner)&&options.canRead(),readable}):undefined;
@@ -29,9 +30,9 @@ export function mountNativeNotificationRoutes(app:Hono,options:{config?:NativePu
  if(!push)return;
  const collectSession=(id:string)=>{
   if(!readable(id))return;const b=runtime.store.binding(id)!;
-  for(const turn of b.turns.slice(-20))if((turn.status==='completed'||turn.status==='failed')&&turn.endedAt){const at=Date.parse(turn.endedAt);push.enqueue({eventId:`turn:${id}:${turn.turnNo}:${turn.status}`,sessionId:id,kind:turn.status,at,expiresAt:at+7*86400000});}
+  for(const turn of b.turns.slice(-20))if((turn.status==='completed'||turn.status==='failed')&&turn.endedAt){const at=Date.parse(turn.endedAt);push.enqueue({eventId:`turn:${id}:${turn.turnNo}:${turn.status}`,sessionId:id,kind:turn.status,at,expiresAt:at+NATIVE_SESSION_TTL_MS});}
   for(const a of runtime.pendingApprovals().filter(a=>a.platformSessionId===id)){
-   const at=Date.parse(a.createdAt);push.enqueue({eventId:`approval:${a.approvalId}`,sessionId:id,kind:'approval',at,expiresAt:Math.min(a.expiresAt?Date.parse(a.expiresAt):Infinity,at+7*86400000)});
+   const at=Date.parse(a.createdAt);push.enqueue({eventId:`approval:${a.approvalId}`,sessionId:id,kind:'approval',at,expiresAt:Math.min(a.expiresAt?Date.parse(a.expiresAt):Infinity,at+NATIVE_SESSION_TTL_MS)});
   }
  };
  const onSession=(u:{platformSessionId:string})=>{try{collectSession(u.platformSessionId);}catch{/* Durable recovery retries without logging tokens or content. */}};
@@ -41,4 +42,5 @@ export function mountNativeNotificationRoutes(app:Hono,options:{config?:NativePu
  const tick=()=>{try{if(++recovery%15===1)for(const b of runtime.store.allBindings().slice().sort((a,b)=>b.lastActivityAt.at.localeCompare(a.lastActivityAt.at)).slice(0,100))collectSession(b.platformSessionId);void push.flush().catch(()=>{});}catch{/* Retry next tick. */}};
  const timer=setInterval(tick,2000);timer.unref();
  options.shutdown?.addEventListener('abort',()=>{clearInterval(timer);runtime.off('session',onSession);runtime.off('event',onEvent);},{once:true});
+ return push;
 }

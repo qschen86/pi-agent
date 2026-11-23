@@ -43,6 +43,31 @@ export interface NoteSchedule {
   allDay?: boolean;
   repeats?: string[];
   repeat?: NoteRepeat;
+  /** 新建 / 编辑时同步判断出的提醒计划（`note-reminder.ts`）；没有提醒时字段缺省 */
+  remind?: NoteRemind;
+}
+
+/** 提醒场景：用户明说的，或需求里明确的三种场景（出门上班回家 / 生日纪念日 / 机票火车票）。 */
+export type NoteReminderScene = "explicit" | "commute" | "birthday" | "travel";
+
+/** 一条日程的提醒计划：每个提前量各提醒一次，页面上合并成一句话展示。 */
+export interface NoteRemind {
+  /** 提前多少分钟，从早到晚（如生日 7/5/3/1 天 = 10080/7200/4320/1440） */
+  offsets: number[];
+  source: "explicit" | "inferred";
+  scene: NoteReminderScene;
+}
+
+/** 提醒计划校验：字段白名单、1–8 个 1–30 天的整数分钟、来源与场景。 */
+export function isNoteRemind(value: unknown): value is NoteRemind {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const r = value as Partial<NoteRemind>;
+  if (Object.keys(r).some((key) => key !== "offsets" && key !== "source" && key !== "scene")) return false;
+  if (!Array.isArray(r.offsets) || !r.offsets.length || r.offsets.length > 8) return false;
+  if (r.offsets.some((m) => !Number.isInteger(m) || m < 1 || m > 30 * 1440) || new Set(r.offsets).size !== r.offsets.length) return false;
+  if (r.source !== "explicit" && r.source !== "inferred") return false;
+  if (r.scene !== "explicit" && r.scene !== "commute" && r.scene !== "birthday" && r.scene !== "travel") return false;
+  return r.source === "explicit" ? r.scene === "explicit" : r.scene !== "explicit";
 }
 
 export type NoteRepeatFrequency = "daily" | "weekly" | "monthly" | "yearly";
@@ -221,7 +246,7 @@ function isImage(value: unknown): value is NoteImage {
 export function isSchedule(value: unknown): value is NoteSchedule {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const s = value as Partial<NoteSchedule>;
-  if (Object.keys(s).some((key) => key !== "start" && key !== "end" && key !== "allDay" && key !== "repeats" && key !== "repeat")) return false;
+  if (Object.keys(s).some((key) => key !== "start" && key !== "end" && key !== "allDay" && key !== "repeats" && key !== "repeat" && key !== "remind")) return false;
   if (s.allDay !== undefined && s.allDay !== true) return false;
   if (s.start === undefined && s.end === undefined) return false;
   for (const key of ["start", "end"] as const) {
@@ -240,6 +265,7 @@ export function isSchedule(value: unknown): value is NoteSchedule {
     if (s.repeats !== undefined) return false;
     if (!isNoteRepeat(s.repeat, s.allDay === true)) return false;
   }
+  if (s.remind !== undefined && !isNoteRemind(s.remind)) return false;
   if (s.start !== undefined && s.end !== undefined && Date.parse(s.end) < Date.parse(s.start)) return false;
   return true;
 }
@@ -248,7 +274,8 @@ function cloneSchedule(schedule: NoteSchedule): NoteSchedule {
   return {
     ...schedule,
     ...(schedule.repeats ? { repeats: [...schedule.repeats] } : {}),
-    ...(schedule.repeat ? { repeat: normalizeNoteRepeat(schedule.repeat) } : {})
+    ...(schedule.repeat ? { repeat: normalizeNoteRepeat(schedule.repeat) } : {}),
+    ...(schedule.remind ? { remind: { ...schedule.remind, offsets: [...schedule.remind.offsets] } } : {})
   };
 }
 

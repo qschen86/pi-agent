@@ -11,7 +11,34 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const run = (command, args) => execFileSync(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, COPYFILE_DISABLE: '1' } });
 const blocked = new Set(['node_modules', 'dist', '.git', '.pi-agent', '.diagnostics', 'evidence', '.release', '.platform-browser']);
+// 导出模块只在维护者仓库里有（公开源码包不带它）：有就按清单导出——私有 / 未发布应用换空桩、index.html 裁剪、
+// 域名与本机用户名匿名化，并在写出前跑一遍公开前扫描，命中就中止；没有说明源码已经是导出后的，沿用整目录拷贝。
+const exporterPath = new URL('./lib/public-export.mjs', import.meta.url);
+const exporter = existsSync(exporterPath) ? await import(exporterPath.href) : null;
+function copySourcesFromManifest(destination) {
+  const listing = exporter.publicSourceFiles(repo);
+  const { findings } = exporter.scanPublicSource(repo);
+  if (findings.length) {
+    const lines = findings.slice(0, 20).map(f => `  ${f.file}:${f.line} [${f.label}] ${f.text}`);
+    throw Error(`公开前扫描发现 ${findings.length} 处个人信息，已中止发行：\n${lines.join('\n')}`);
+  }
+  for (const [kind, files] of [['copy', listing.copy], ['stub', listing.stub], ['html', listing.html]]) {
+    for (const file of files) {
+      const source = join(repo, file), stat = lstatSync(source);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw Error('公开源码不得含符号链接或特殊文件');
+      mkdirSync(dirname(join(destination, file)), { recursive: true });
+      if (kind === 'copy' && !exporter.TEXT_FILE.test(file)) cpSync(source, join(destination, file));
+      else writeFileSync(join(destination, file), exporter.publicFileContent(repo, file, kind));
+    }
+  }
+  return listing;
+}
 export function copySources(destination) {
+  if (exporter) {
+    copySourcesFromManifest(destination);
+    cpSync(join(repo, 'apps/homebrew/README.md'), join(destination, 'README.md'));
+    return;
+  }
   const copy = path => cpSync(join(repo, path), join(destination, path), { recursive: true, dereference: false, filter: file => {
     const parts = relative(repo, file).split(sep);
     if (parts.some(part => blocked.has(part) || part.startsWith('.env') || part === '.DS_Store' || part === 'ACCEPTANCE.md')) return false;
@@ -22,7 +49,10 @@ export function copySources(destination) {
   for (const path of ['LICENSE', 'package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.base.json', 'apps/homebrew', 'apps/web/src', 'apps/web/public', 'packages']) copy(path);
   // Keep workspace manifests so npm ci can reproduce the root lockfile.
   for (const name of readdirSync(join(repo, 'apps'))) if (existsSync(join(repo, 'apps', name, 'package.json'))) copy(`apps/${name}/package.json`);
-  for (const path of ['scripts/build-homebrew-release.mjs', 'scripts/build-homebrew-payload.mjs', 'scripts/check-homebrew-payload.mjs', 'scripts/prepare-homebrew-image-sources.py', 'scripts/runtime-record.mjs', 'scripts/prepare-dependencies.mjs', 'scripts/deploy-when-idle.mjs', 'scripts/deployment-actions.mjs', 'scripts/deploy-when-idle.d.mts', 'scripts/deployment-actions.d.mts', 'scripts/verify-homebrew-install.mjs']) copy(path);
+  for (const path of ['scripts/build-homebrew-release.mjs', 'scripts/build-homebrew-payload.mjs', 'scripts/check-homebrew-payload.mjs', 'scripts/prepare-homebrew-image-sources.py', 'scripts/runtime-record.mjs', 'scripts/prepare-dependencies.mjs']) copy(path);
+  for (const path of ['scripts/deploy-when-idle.mjs', 'scripts/deploy-when-idle.d.mts', 'scripts/deployment-actions.mjs', 'scripts/deployment-actions.d.mts', 'scripts/lib/public-transform.mjs']) {
+    if (existsSync(join(repo, path))) copy(path);
+  }
   cpSync(join(repo, 'apps/homebrew/README.md'), join(destination, 'README.md'));
 }
 export function buildRelease({ payload, imageSources, output, repository }) {

@@ -30,6 +30,11 @@ try {
   for (const match of html.matchAll(/(?:src|href)="(\/[^"#]+)"/g)) {
     if (/\.(?:js|css)(?:\?|$)/.test(match[1])) await get(match[1]);
   }
+  const notesDisabled = await core.fetch(new Request('http://127.0.0.1:45124/api/notes'));
+  assert.equal(notesDisabled.status, 404);
+  assert.equal((await core.fetch(new Request('http://127.0.0.1:45124/api/apps/notes', {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true })
+  }))).status, 200);
   for (const path of ['/api/notes', '/api/artifacts', '/api/memory/public']) await get(path);
   const cost = await (await get('/api/platform/today-cost')).json();
   assert.equal(cost.total, 0, 'empty installation has no purchased subscriptions or usage');
@@ -37,6 +42,8 @@ try {
   assert.equal(process.env.CODEX_HOME, join(root, 'credentials/codex'));
   assert.equal(process.env.CLAUDE_CONFIG_DIR, join(root, 'credentials/claude'));
   assert.equal((await core.fetch(new Request('http://127.0.0.1:45124/api/ledger'))).status, 404);
+  // 数据目录只有公开版发布的应用的条目，没有私有应用或未发布应用的数据。
+  assert.deepEqual(core.strayData(), [], '数据目录出现了不属于公开版的条目');
   const invalidRecord = await core.fetch(new Request('http://127.0.0.1:45124/api/runtime-sessions/rt-synthetic/records', { method: 'POST', headers: { 'content-type': 'application/json', 'x-pi-record-capability': 'invalid' }, body: '{}' }));
   assert.equal(invalidRecord.status, 401);
   const locations = JSON.parse(readFileSync(join(payloadRoot, 'runtime-locations.json'), 'utf8'));

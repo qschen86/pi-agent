@@ -83,12 +83,13 @@ describe("preparePiChatBoundary 的联网检索装配", () => {
     expect(boundary.env["PI_WEB_RESEARCH_TOOLS"]).toBe("web_search,web_open");
     expect(boundary.webResearch?.tools).toEqual(["web_search", "web_open"]);
     const entries = extensions(boundary.argsPrefix);
-    expect(entries).toHaveLength(2);
+    // 审批闸门、联网检索、bash 后台运行、codemode
+    expect(entries).toHaveLength(4);
     const webEntry = entries[1]!;
     // 边界会把 guard 目录规范化（macOS 上 /var 是 /private/var 的符号链接）。
     expect(webEntry).toBe(join(realpathSync(args.guardDir), "web-research.ts"));
     expect(readFileSync(webEntry, "utf8")).toContain("web_search");
-    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "web_search", "web_open"]);
+    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "web_search", "web_open", "bash_output", "bash_kill", "codemode"]);
     // 密钥不在 pi 的环境里：只多了一个 socket 路径。
     expect(Object.keys(boundary.env).some((name) => /API_KEY|BRAVE|FIRECRAWL|DEEPSEEK/i.test(name))).toBe(false);
     // Broker 真的在这条 socket 上应答并拒绝：没有凭据时是 CONFIG_MISSING，
@@ -102,7 +103,7 @@ describe("preparePiChatBoundary 的联网检索装配", () => {
     const args = layout();
     const boundary = await preparePiChatBoundary({ ...args, mode: "pi-read-only", webResearch: { sourceDomains: ["*"] } });
     boundaries.push(boundary);
-    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "web_search", "web_open"]);
+    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "web_search", "web_open", "codemode"]);
     const socketPath = boundary.env["PI_WEB_RESEARCH_SOCKET"]!;
     expect(existsSync(socketPath)).toBe(true);
     await boundary.dispose();
@@ -116,8 +117,8 @@ describe("preparePiChatBoundary 的联网检索装配", () => {
     boundaries.push(boundary);
     expect(boundary.env["PI_WEB_RESEARCH_SOCKET"]).toBeUndefined();
     expect(boundary.webResearch).toBeUndefined();
-    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash"]);
-    expect(extensions(boundary.argsPrefix)).toHaveLength(1);
+    expect(toolList(boundary.argsPrefix)).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "bash_output", "bash_kill", "codemode"]);
+    expect(extensions(boundary.argsPrefix)).toEqual([expect.any(String), expect.stringMatching(/background-bash\.ts$/), "builtin:codemode"]);
   });
 
   it("缺凭据时工具照常注册，调用如实报 CONFIG_MISSING", async () => {

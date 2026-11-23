@@ -4,6 +4,7 @@ import sharp from "sharp";
 import { invokeStructured, type ModelInvocationPort, type RoleModelConfig, type ModelImage } from "@pi-agent/model-port";
 import { noteDisplayKind, type Note, type NoteStore } from "./notes.js";
 import { NOTE_CATEGORY_POLICY, NOTE_CATEGORY_SYSTEM, NOTE_CATEGORY_MODULES, NOTE_MAX_CATEGORIES, NOTE_TOPIC_POLICY, NOTE_TOPIC_SYSTEM, NOTE_TOPIC_MAX_CATEGORIES, NOTE_EVENT_POLICY, NOTE_EVENT_SYSTEM, allowedNotePrimary, validateNoteCategories, validateNoteTopicCategories, reuseNoteModule } from "./note-category-policy.js";
+import { NOTE_ENTITY_LEXICON, noteCategoryEntities, noteEntityGroup } from "./note-category-entities.js";
 
 export const NOTE_TOPIC_CONFIG: RoleModelConfig = { role: "noteCategory", provider: "deepseek", model: "deepseek-flash", thinking: "off", promptVersion: `${NOTE_TOPIC_POLICY}-confidence-v1`, schemaVersion: "note-category@2", timeoutMs: 30_000, maxAttempts: 1 };
 export const NOTE_CATEGORY_CONFIG: RoleModelConfig = { role: "noteCategory", provider: "deepseek", model: "deepseek-flash", thinking: "off", promptVersion: `${NOTE_CATEGORY_POLICY}-confidence-v1`, schemaVersion: "note-category@2", timeoutMs: 30_000, maxAttempts: 1 };
@@ -14,14 +15,31 @@ export const noteCategoryScope = (n: Pick<Note, "kind" | "schedule">): NoteCateg
 const parseScope = (v: unknown): NoteCategoryScope | undefined => v === "note" || v === "todo" || v === "event" ? v : undefined;
 export const NOTE_EVENT_CONFIG: RoleModelConfig = { ...NOTE_TOPIC_CONFIG, promptVersion: `${NOTE_EVENT_POLICY}-confidence-v1` };
 type Choice = { primary: string; secondary: string; reason: string; newModuleReason?: string; confidence?: "high" | "uncertain" };
-type Job = { policyVersion?: string; source?: "manual" | "model"; hash: string; state: "pending" | "running" | "confirmation" | "failed" | "classified"; attempts: number; categoryId?: string; categoryIds?: string[]; suggestion?: Choice; suggestions?: Choice[]; error?: string; audit?: unknown[] };
-type State = { eventCategoryPolicy?: string; categories: Category[]; jobs: Record<string, Job>; redirects?: Record<string, string>; primaryAliases?: Record<string, string>; pathAliases?: Record<string, string> };
-// 待办那套的哈希保持不变（不让已有分类作废）；笔记多带一个范围标记，改类型后会按新的一套重新分类。
+/** 用户亲手改过的分类（学习闭环）：原话片段 → 最终路径。只当 few-shot 样例，不当规则。 */
+type Correction = { primary: string; secondary: string; excerpt: string; at: string };
+type Job = { policyVersion?: string; source?: "manual" | "model"; hash: string; contentHash?: string; state: "pending" | "running" | "confirmation" | "failed" | "classified"; attempts: number; categoryId?: string; categoryIds?: string[]; suggestion?: Choice; suggestions?: Choice[]; error?: string; audit?: unknown[]; /** 机器写死的分类（平台 / debug）：模型分类、策略升级、正文改写都不覆盖，人手动改分类才解除 */ pin?: string };
+type State = { eventCategoryPolicy?: string; contentHashPolicy?: string; categories: Category[]; jobs: Record<string, Job>; corrections?: Correction[]; redirects?: Record<string, string>; primaryAliases?: Record<string, string>; pathAliases?: Record<string, string> };
+/** 每套分类自己的策略版本：改待办提示词不会连带重打笔记。 */
+const policyForScope = (scope: NoteCategoryScope): string => scope === "event" ? NOTE_EVENT_POLICY : scope === "note" ? NOTE_TOPIC_POLICY : NOTE_CATEGORY_POLICY;
+/** 只由内容决定的身份：用来区分「正文/图片变了」和「分类策略升级了」。 */
+const contentHash = (n: Note) => createHash("sha256").update(JSON.stringify([noteCategoryScope(n), n.text, (n.images ?? []).map(i => i.id)])).digest("hex");
+// 待办那套的哈希保持不变（不让已有分类作废）；笔记带自己的策略与范围标记，改类型或改笔记策略会重新分类。
 const hash = (n: Note) => createHash("sha256").update(JSON.stringify(noteCategoryScope(n) === "event"
   ? [NOTE_EVENT_POLICY, n.text, (n.images ?? []).map(i => i.id), "event"]
   : noteCategoryScope(n) === "note"
-  ? [NOTE_CATEGORY_POLICY, n.text, (n.images ?? []).map(i => i.id), "note"]
+  ? [NOTE_TOPIC_POLICY, n.text, (n.images ?? []).map(i => i.id), "note"]
   : [NOTE_CATEGORY_POLICY, n.text, (n.images ?? []).map(i => i.id)])).digest("hex");
+/**
+ * 迁移前线上跑的待办策略（v3）。必须写成固定字符串：历史哈希里嵌的是**当时的**策略，
+ * 用当前常量去对永远对不上——上线时正是这个错误把 700 多条已经分好的记录整批排回了队列。
+ */
+const LEGACY_CATEGORY_POLICY = "note-category@entity-module-v3";
+/** 迁移前的哈希口径（笔记那套借用了待办策略）。只用来辨认「旧数据里这条没变过」。 */
+const legacyHash = (n: Note) => createHash("sha256").update(JSON.stringify(noteCategoryScope(n) === "event"
+  ? [NOTE_EVENT_POLICY, n.text, (n.images ?? []).map(i => i.id), "event"]
+  : noteCategoryScope(n) === "note"
+  ? [LEGACY_CATEGORY_POLICY, n.text, (n.images ?? []).map(i => i.id), "note"]
+  : [LEGACY_CATEGORY_POLICY, n.text, (n.images ?? []).map(i => i.id)])).digest("hex");
 const unique = <T>(items: T[]): T[] => [...new Set(items)];
 /** 一个分类属于哪一套：二级跟着它的一级，一级自己带 scope 标记（没有 = 待办那套）。 */
 const catScope = (c: Category | undefined, cats: Category[]): NoteCategoryScope => parseScope((c?.parentId ? cats.find(x => x.id === c.parentId) : c)?.scope) ?? "todo";
@@ -62,9 +80,38 @@ export class NoteCategories {
       if (!Array.isArray(this.data.categories) || !this.data.jobs) throw new Error("待办分类数据损坏");
     }
     this.initializeEventCategories();
+    this.initializeContentHashes();
     for (const job of Object.values(this.data.jobs)) if (job.state === "running") job.state = job.attempts >= 2 ? "failed" : "pending";
     this.sync(); this.save();
     if (port) { this.timer = setInterval(() => { try { this.wake(); } catch { /* Retry storage on next tick. */ } }, 1000); this.timer.unref(); }
+  }
+  /**
+   * 一次性迁移：补上「只由内容决定」的身份，并把笔记的哈希改用笔记自己的策略。
+   * 只改身份、不改状态，所以迁移不会重打任何已经分好的记录；之后策略升级时才能分清
+   * 「正文变了」和「只是换了策略」，不去动人工结果和另一套目录。
+   */
+  private initializeContentHashes() {
+    // 迁移只刷新身份，**从不重新排队**：能落盘的记录本来就是按当前正文算过哈希的，
+    // 拿不准的时候保留已有判断，比整批重打（覆盖人工结果、翻转历史标签）安全得多。
+    if (this.data.contentHashPolicy === "content-hash@2") return;
+    // v1 把历史哈希算错了（用当前策略去对历史哈希），把已分好的记录整批排回了队列；
+    // v2 顺手把这批恢复回去：有分类、又不是新代码重跑过的，直接还原成已归类。
+    const repairing = this.data.contentHashPolicy === "content-hash@1";
+    let restored = 0;
+    for (const n of this.notes.list()) {
+      const job = this.data.jobs[n.id];
+      if (!job) continue;
+      const classifiedByNewCode = (job.audit ?? []).some(entry => !!entry && typeof entry === "object" && "lexicon" in entry);
+      job.contentHash = contentHash(n);
+      job.hash = hash(n);
+      job.policyVersion = policyForScope(noteCategoryScope(n));
+      if (repairing && job.state === "pending" && !classifiedByNewCode && jobIds(job).length) {
+        job.state = "classified";
+        restored++;
+      }
+    }
+    this.data.contentHashPolicy = "content-hash@2";
+    if (restored) console.warn(`待办分类：恢复 ${restored} 条被误排队的已有分类`);
   }
   /** 首次启用独立日程目录：原文件备份成功后才迁移；标记与新任务一起持久化。 */
   private initializeEventCategories() {
@@ -85,7 +132,7 @@ export class NoteCategories {
     // 旧日程无论人工分类还是待确认建议都重新归纳，审计记录保留且不进入模型输入。
     for (const n of this.notes.list()) if (noteCategoryScope(n) === "event") {
       const old = this.data.jobs[n.id];
-      this.data.jobs[n.id] = { policyVersion: NOTE_EVENT_POLICY, hash: hash(n), state: "pending", attempts: 0, ...(old?.audit ? { audit: old.audit } : {}) };
+      this.data.jobs[n.id] = { policyVersion: NOTE_EVENT_POLICY, hash: hash(n), contentHash: contentHash(n), state: "pending", attempts: 0, ...(old?.audit ? { audit: old.audit } : {}) };
     }
     this.data.eventCategoryPolicy = NOTE_EVENT_POLICY;
   }
@@ -93,17 +140,47 @@ export class NoteCategories {
   setProjectNames(read: () => string[]) { this.projectNames = read; }
   stop() { if (this.timer) clearInterval(this.timer); this.port = undefined; }
   private save() { const tmp = `${this.file}.tmp`; writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 }); renameSync(tmp, this.file); }
+  /** 钉住的分类必须是目录里还在的二级；分类被删时自动解除钉住，交回正常流程。 */
+  private applyPin(job: Job): void {
+    if (!job.pin) return;
+    if (!this.data.categories.some(c => c.id === job.pin && c.parentId)) { delete job.pin; return; }
+    setJobIds(job, [job.pin]);
+    job.state = "classified"; job.source = "manual";
+    setJobSuggestions(job, []); delete job.error;
+  }
   sync() {
     let dirty = false;
     const notes = this.notes.list(), ids = new Set(notes.map(n => n.id));
     for (const id of Object.keys(this.data.jobs)) if (!ids.has(id)) { delete this.data.jobs[id]; dirty = true; }
     for (const n of notes) {
-      const old = this.data.jobs[n.id];
-      if (!old || old.hash !== hash(n)) {
-        // 记录换了一套分类（笔记 / 待办 / 日程）时，旧套的分类不能留在新套里。
-        const keptIds = jobIds(old).filter(id => catScope(this.data.categories.find(c => c.id === id), this.data.categories) === noteCategoryScope(n));
-        this.data.jobs[n.id] = { policyVersion: noteCategoryScope(n) === "event" ? NOTE_EVENT_POLICY : NOTE_CATEGORY_POLICY, hash: hash(n), state: "pending", attempts: 0, ...(old?.audit ? { audit: old.audit } : {}), ...(keptIds.length ? { categoryIds: keptIds, categoryId: keptIds[0] } : {}) }; dirty = true;
+      const old = this.data.jobs[n.id], scope = noteCategoryScope(n), content = contentHash(n), current = hash(n);
+      if (!old) {
+        this.data.jobs[n.id] = { policyVersion: policyForScope(scope), hash: current, contentHash: content, state: "pending", attempts: 0 };
+        dirty = true;
+        continue;
       }
+      // 钉住的分类：正文变了、策略升级了都只刷新哈希，不交回模型（哈希都对得上就不重写，避免每次 sync 都写盘）。
+      if (old.pin) {
+        if (old.hash === current && old.contentHash === content && old.policyVersion === policyForScope(scope)) continue;
+        const next = { ...old, hash: current, contentHash: content, policyVersion: policyForScope(scope) };
+        this.applyPin(next);
+        this.data.jobs[n.id] = next;
+        dirty = true;
+        continue;
+      }
+      // 没有内容身份（旧数据且对不上旧口径）当作内容变了：按老规矩重新排队。
+      if (old.hash === current) continue;
+      const contentSame = !!old.contentHash && old.contentHash === content;
+      // 正文/图片没变，只是换了策略或换了一套哈希口径：人工结果不覆盖，笔记不受待办策略影响。
+      if (contentSame && (old.source === "manual" || old.policyVersion === policyForScope(scope))) {
+        this.data.jobs[n.id] = { ...old, hash: current, contentHash: content, policyVersion: policyForScope(scope) };
+        dirty = true;
+        continue;
+      }
+      // 记录换了一套分类（笔记 / 待办 / 日程）时，旧套的分类不能留在新套里。
+      const keptIds = jobIds(old).filter(id => catScope(this.data.categories.find(c => c.id === id), this.data.categories) === scope);
+      this.data.jobs[n.id] = { policyVersion: policyForScope(scope), hash: current, contentHash: content, state: "pending", attempts: 0, ...(old.audit ? { audit: old.audit } : {}), ...(keptIds.length ? { categoryIds: keptIds, categoryId: keptIds[0] } : {}) };
+      dirty = true;
     }
     if (dirty) this.save();
   }
@@ -125,13 +202,33 @@ export class NoteCategories {
       if (!n) continue;
       const old = this.data.jobs[id];
       this.data.jobs[id] = {
-        policyVersion: noteCategoryScope(n) === "event" ? NOTE_EVENT_POLICY : NOTE_CATEGORY_POLICY,
-        hash: hash(n), state, attempts: 0,
+        policyVersion: policyForScope(noteCategoryScope(n)),
+        hash: hash(n), contentHash: contentHash(n), state, attempts: 0,
         ...(old?.audit ? { audit: old.audit } : {})
       };
       dirty = true;
     }
     if (dirty) this.save();
+  }
+  /**
+   * 钉住一条记录的二级分类（机器写的待办用，例如错误统计的「平台 / debug」）。
+   * 与 decide(assign) 的区别：钉住的结果不会被模型分类或分类策略升级覆盖，只有人手动改分类才解除。
+   */
+  pin(noteId: string, categoryId: string): Note {
+    this.sync();
+    const note = this.notes.get(String(noteId));
+    if (!note) throw new Error("记录不存在，可能已被删除");
+    const scope = noteCategoryScope(note);
+    const leaf = this.data.categories.find(c => c.id === categoryId && c.parentId);
+    if (!leaf) throw new Error("分类不存在，请刷新后再操作");
+    if (catScope(leaf, this.data.categories) !== scope) throw new Error("这个分类不属于这条记录的类型");
+    const job = this.data.jobs[note.id];
+    if (job?.pin === categoryId && job.state === "classified" && job.source === "manual" && jobIds(job).length === 1 && jobIds(job)[0] === categoryId) return this.decorate(note);
+    const next: Job = { policyVersion: policyForScope(scope), hash: hash(note), contentHash: contentHash(note), state: "classified", source: "manual", attempts: job?.attempts ?? 0, pin: categoryId, ...(job?.audit ? { audit: job.audit } : {}) };
+    setJobIds(next, [categoryId]);
+    this.data.jobs[note.id] = next;
+    this.save(); this.changed();
+    return this.decorate(note);
   }
   snapshot() {
     this.sync();
@@ -151,7 +248,7 @@ export class NoteCategories {
       for (const id of touched) categoryUsage[id] = (categoryUsage[id] ?? 0) + 1;
     }
     const failures = this.notes.list().filter(n => this.data.jobs[n.id]?.state === "failed").map(n => this.decorate(n));
-    return { categories: structuredClone(this.data.categories), counts, categoryUsage, enabled: !!this.port, confirmations, failures, version: this.version(), redirects: { ...this.data.redirects } };
+    return { categories: structuredClone(this.data.categories), counts, categoryUsage, enabled: !!this.port, confirmations, failures, learnedCorrections: this.data.corrections?.length ?? 0, version: this.version(), redirects: { ...this.data.redirects } };
   }
   private version() { return createHash("sha256").update(JSON.stringify(this.data.categories)).digest("hex"); }
   /** Resolve a primary/secondary path, creating missing entities without persisting. */
@@ -273,6 +370,8 @@ export class NoteCategories {
         if (leaf) suggestion.secondary = leaf.name;
       }
       if (suggestions.length) setJobSuggestions(job, suggestions);
+      // 合并 / 改名后钉住的分类跟着重定向，钉子不会指向已经不存在的节点。
+      if (job.pin) job.pin = redirects[job.pin] ?? job.pin;
       // Cloned jobs invalidate in-flight responses based on the previous directory.
       if (semanticChange && job.state === "running") { job.state = "pending"; job.attempts = 0; }
     }
@@ -309,10 +408,12 @@ export class NoteCategories {
     let unbound = 0;
     for (const [noteId, job] of Object.entries(next.jobs)) {
       const ids = jobIds(job), kept = ids.filter(ref => !removed.has(ref));
+      // 被删的正是钉住的分类：解除钉住，之后按正常流程重新分类。
+      if (job.pin && removed.has(job.pin)) delete job.pin;
       if (kept.length === ids.length) continue;
       if (kept.length) { setJobIds(job, kept); if (job.state === "running") { job.state = "pending"; job.attempts = 0; } continue; }
       unbound++;
-      next.jobs[noteId] = { policyVersion: NOTE_CATEGORY_POLICY, hash: job.hash, state: "pending", attempts: 0, ...(job.audit ? { audit: job.audit } : {}) };
+      next.jobs[noteId] = { policyVersion: policyForScope(this.scopeOfNote(noteId)), hash: job.hash, contentHash: job.contentHash, state: "pending", attempts: 0, ...(job.audit ? { audit: job.audit } : {}) };
     }
     // 指向被删分类的重定向 / 别名一起清掉，否则之后按旧名字或旧 ID 还会解析到一个不存在的分类。
     for (const [from, to] of Object.entries(next.redirects ?? {})) if (removed.has(to) || removed.has(from)) delete next.redirects![from];
@@ -386,6 +487,25 @@ export class NoteCategories {
       ...(j?.error ? { error: j.error } : {}), inputHash: j?.hash
     } };
   }
+  /**
+   * 记下「原话片段 → 人最终选的分类」：只当给模型看的同类判断样例，不改任何校验规则。
+   * 只收待办那套（笔记 / 日程有自己的目录，不能混用）最多 5 条，随快照下发条数方便核查。
+   */
+  private recordCorrection(id: string, scope: NoteCategoryScope) {
+    if (scope !== "todo") return;
+    const note = this.notes.get(id);
+    const paths = this.decoratedCategories(this.data.jobs[id]);
+    const excerpt = (note?.text ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const first = paths[0];
+    if (!first || !excerpt) return;
+    const correction: Correction = { primary: first.primary, secondary: first.secondary, excerpt, at: new Date().toISOString() };
+    const rest = (this.data.corrections ?? []).filter(c => !(c.excerpt === excerpt && c.primary === correction.primary && c.secondary === correction.secondary));
+    this.data.corrections = [correction, ...rest].slice(0, 40);
+  }
+  /** 只给模型当前能选的一级下的样例，避免把已删除或别的套的分类带进提示词。 */
+  private correctionExamples(allowedPrimary: readonly string[]): Correction[] {
+    return (this.data.corrections ?? []).filter(c => allowedPrimary.includes(c.primary)).slice(0, 5);
+  }
   decide(id: string, input: { action?: unknown; categoryId?: unknown; categoryIds?: unknown; categories?: unknown; primary?: unknown; secondary?: unknown; primaryId?: unknown; inputHash?: unknown; categoryVersion?: unknown }) {
     this.sync();
     const job = this.data.jobs[id];
@@ -395,10 +515,11 @@ export class NoteCategories {
     const scope = this.scopeOfNote(id);
     if (input.action === "retry" || input.action === "reject") {
       const keptIds = jobIds(job);
-      this.data.jobs[id] = { policyVersion: NOTE_CATEGORY_POLICY, hash: job.hash, ...(job.audit ? { audit: job.audit } : {}), state: input.action === "reject" ? "failed" : "pending", attempts: 0, ...(keptIds.length ? { categoryIds: keptIds, categoryId: keptIds[0] } : {}), ...(input.action === "reject" ? { error: "建议已拒绝，请选择已有二级分类或重新打标" } : {}) };
+      this.data.jobs[id] = { policyVersion: policyForScope(scope), hash: job.hash, contentHash: job.contentHash, ...(job.audit ? { audit: job.audit } : {}), state: input.action === "reject" ? "failed" : "pending", attempts: 0, ...(keptIds.length ? { categoryIds: keptIds, categoryId: keptIds[0] } : {}), ...(input.action === "reject" ? { error: "建议已拒绝，请选择已有二级分类或重新打标" } : {}) };
     } else if (input.action === "assign") {
       const ids = this.leafIds(rawIds, scope);
-      this.data.jobs[id] = { policyVersion: NOTE_CATEGORY_POLICY, hash: job.hash, state: "classified", source: "manual", attempts: job.attempts, categoryIds: ids, categoryId: ids[0], ...(job.audit ? { audit: job.audit } : {}) };
+      this.data.jobs[id] = { policyVersion: policyForScope(scope), hash: job.hash, contentHash: job.contentHash, state: "classified", source: "manual", attempts: job.attempts, categoryIds: ids, categoryId: ids[0], ...(job.audit ? { audit: job.audit } : {}) };
+      this.recordCorrection(id, scope);
     } else if (input.action === "create") {
       // 人工在分类选择器里新建路径并同时归档这条待办；同名路径直接复用，避免重复实体。
       if (input.categoryVersion !== undefined && input.categoryVersion !== this.version()) throw new Error("分类目录已变更，请刷新后再操作");
@@ -406,7 +527,8 @@ export class NoteCategories {
       // 编辑时可以同时保留已选的其他分类，只把新建路径追加进去。
       const extras = rawIds === undefined ? [] : this.leafIds(rawIds, scope);
       const ids = unique([category.id, ...extras]).slice(0, NOTE_MAX_CATEGORIES);
-      this.data.jobs[id] = { policyVersion: NOTE_CATEGORY_POLICY, hash: job.hash, state: "classified", source: "manual", attempts: job.attempts, categoryIds: ids, categoryId: ids[0], ...(job.audit ? { audit: job.audit } : {}) };
+      this.data.jobs[id] = { policyVersion: policyForScope(scope), hash: job.hash, contentHash: job.contentHash, state: "classified", source: "manual", attempts: job.attempts, categoryIds: ids, categoryId: ids[0], ...(job.audit ? { audit: job.audit } : {}) };
+      this.recordCorrection(id, scope);
     } else if (input.action === "confirm") {
       if (input.categoryVersion !== this.version()) throw new Error("分类目录已变更，请刷新后再确认建议");
       const rawPaths = Array.isArray(input.categories)
@@ -428,11 +550,13 @@ export class NoteCategories {
       const targets = uniquePaths ?? suggestions.map(s => ({ primary: s.primary, secondary: s.secondary }));
       const ids = targets.map(p => this.pathId(p.primary, p.secondary, scope));
       const originalKey = JSON.stringify(suggestions.map(s => [s.primary, s.secondary]));
+      const rewritten = JSON.stringify(targets.map(p => [p.primary, p.secondary])) !== originalKey;
       for (const [otherId, j] of Object.entries(this.data.jobs)) {
         if (j.state !== "confirmation" || this.scopeOfNote(otherId) !== scope) continue;
         const key = JSON.stringify(jobSuggestions(j).map(s => [s.primary, s.secondary]));
         if (key !== originalKey) continue;
-        setJobIds(j, ids); j.state = "classified"; j.source = "manual"; setJobSuggestions(j, []); delete j.error;
+        setJobIds(j, ids); j.state = "classified"; j.source = "manual"; setJobSuggestions(j, []); delete j.error; delete j.pin;
+        if (rewritten) this.recordCorrection(otherId, scope);
       }
     } else throw new Error("分类操作无效");
     this.save(); this.changed(); return this.decorate(this.notes.get(id)!);
@@ -443,8 +567,8 @@ export class NoteCategories {
     for (const n of this.notes.list()) {
       if (this.active.size >= 1) break;
       const j = this.data.jobs[n.id];
-      // 还在等 AI 判断是笔记还是待办：先不分类，否则会按错的那套分类。
-      if (j.state !== "pending" || this.active.has(n.id) || n.kindPending) continue;
+      // 钉住分类的待办（平台 / debug 等机器记录）不交给模型；还在等 AI 判断是笔记还是待办也先不分类。
+      if (j.pin || j.state !== "pending" || this.active.has(n.id) || n.kindPending) continue;
       this.active.add(n.id);
       void this.run(n, j).catch(() => { /* Durable running state recovers on restart. */ }).finally(() => this.active.delete(n.id));
     }
@@ -472,17 +596,24 @@ export class NoteCategories {
       } else {
         projectNames = this.projectNames().filter(n => typeof n === "string" && n.trim() && n.length <= 60);
         const tree = scoped();
-        allowedPrimary = allowedNotePrimary(tree, projectNames).filter(name => !tree.some(c => c.id === this.data.primaryAliases?.[name]) || tree.some(c => !c.parentId && c.name === name));
+        // 实体词表：已有的一级 + 产物里的小游戏（产品名来自 artifacts.ts）+ 真实项目。
+        const entities = noteCategoryEntities(tree.filter(c => !c.parentId).map(c => c.name), projectNames);
+        const entityModules = new Map(entities.map(e => [e.name, e.modules]));
+        allowedPrimary = unique([
+          ...allowedNotePrimary(tree, projectNames).filter(name => !tree.some(c => c.id === this.data.primaryAliases?.[name]) || tree.some(c => !c.parentId && c.name === name)),
+          ...entities.map(e => e.name)
+        ]);
         const pending = pendingPaths.filter(s => allowedPrimary.includes(s.primary));
         for (const primary of allowedPrimary) {
           const parent = tree.find(c => !c.parentId && c.name === primary);
           moduleCandidates[primary] = [...new Set([
             ...tree.filter(c => c.parentId && c.parentId === parent?.id).map(c => c.name),
             ...pending.filter(p => p.primary === primary).map(p => p.secondary),
-            ...(NOTE_CATEGORY_MODULES[primary] ?? []).map(m => reuseNoteModule(primary, m, tree))
+            ...(NOTE_CATEGORY_MODULES[primary] ?? []).map(m => reuseNoteModule(primary, m, tree)),
+            ...(entityModules.get(primary) ?? [])
           ])];
         }
-        request = { system: NOTE_CATEGORY_SYSTEM, prompt: JSON.stringify({ allowedPrimary, projectNames, moduleCandidates, categories: tree, pendingPaths: pending, text: n.text, imageCount: n.images?.length ?? 0 }) };
+        request = { system: NOTE_CATEGORY_SYSTEM, prompt: JSON.stringify({ allowedPrimary, projectNames, entities, groups: [noteEntityGroup(entities)], moduleCandidates, categories: tree, pendingPaths: pending, examples: this.correctionExamples(allowedPrimary), text: n.text, imageCount: n.images?.length ?? 0 }) };
       }
       const result = await invokeStructured<unknown>(this.port!, config, { ...request, images }, v => {
         const raw = v as Record<string, unknown> | null;
@@ -499,7 +630,7 @@ export class NoteCategories {
       });
       this.sync();
       if (this.data.jobs[n.id] !== job) return;
-      (job.audit ??= []).push({ attempts: result.attempts, usage: result.usage, config });
+      (job.audit ??= []).push({ attempts: result.attempts, usage: result.usage, config, ...(scope === "todo" ? { lexicon: NOTE_ENTITY_LEXICON } : {}) });
       if (!result.ok) throw new Error("AI 分类失败，请重试");
       const choices = choiceList(result.value).map(c => {
         const canonical = this.canonicalChoice(c, scope);
@@ -513,7 +644,8 @@ export class NoteCategories {
         setJobIds(job, ids); job.state = "classified"; job.source = "model"; setJobSuggestions(job, []);
       } else { setJobSuggestions(job, choices); job.state = "confirmation"; }
       delete job.error;
-    } catch {
+    } catch (e) {
+      if (process.env.NOTE_CATEGORY_DEBUG) console.error("[note-category-debug]", (e as Error)?.message, (e as Error)?.stack?.split("\n").slice(0,3).join(" | "));
       this.sync();
       if (this.data.jobs[n.id] !== job) return;
       job.state = job.attempts < 2 ? "pending" : "failed"; job.error = "分类失败（模型或图片读取异常），请重试";

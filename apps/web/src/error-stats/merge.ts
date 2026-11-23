@@ -35,7 +35,7 @@ export interface MergeInput { text: string; labels: Set<string>; kinds: Map<stri
 /** 组装输入：新指纹（没审阅过）+ 已有代表指纹（按次数取前几个）作对照。 */
 export function buildMergeInput(store: ErrorStatsStore, stats: Map<string, FingerprintStat>): MergeInput | null {
   const reviewed = store.state.reviewed;
-  const eligible = [...stats.values()].filter((s) => s.kind !== "memory");
+  const eligible = [...stats.values()].filter((s) => s.kind !== "memory" && s.kind !== "flaky");
   const fresh = eligible.flatMap((s) => s.members.map((m) => ({ fp: m, stat: s }))).filter((x) => !reviewed[x.fp]).slice(0, MAX_ITEMS);
   if (!fresh.length) return null;
   const freshSet = new Set(fresh.map((x) => x.fp));

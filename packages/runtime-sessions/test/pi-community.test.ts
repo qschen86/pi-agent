@@ -118,3 +118,10 @@ describe('community permission policy', () => {
     for (const rule of ['rm *', 'git push *', 'git reset *', 'sudo *']) expect(bash[rule]).toBe('ask');
   });
 });
+
+it("community permissions expose codemode but keep nested bash rules (dangerous commands still ask)", () => {
+  const { permission } = communityPermissionConfig([]);
+  expect(permission["*"]).toBe("deny");
+  expect(permission.codemode).toBe("allow");
+  expect((permission.bash as Record<string, string>)["rm *"]).toBe("ask");
+});

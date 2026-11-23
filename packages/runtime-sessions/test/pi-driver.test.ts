@@ -324,7 +324,7 @@ it("registers the read-only web tools for chat turns and drops them when a turn 
   const h = await t.driver.startTurn(t.args, t.sink);
   const flags = t.endpoints.at(-1)!.cfg.args;
   const tools = flags[flags.indexOf("--tools") + 1].split(",");
-  expect(tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "web_search", "web_open"]);
+  expect(tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "web_search", "web_open", "bash_output", "bash_kill", "codemode"]);
   const entries = flags.flatMap((arg, index) => (arg === "--extension" ? [flags[index + 1]] : []));
   expect(entries.some((entry) => /web-research\.ts$/.test(entry))).toBe(true);
   await h.interrupt(); await h.done;
@@ -333,7 +333,7 @@ it("a turn can opt out of web research (no extension, no tools, no socket)", asy
   const t = setup();
   const h = await t.driver.startTurn({ ...t.args, webResearch: false }, t.sink);
   const flags = t.endpoints.at(-1)!.cfg.args;
-  expect(flags[flags.indexOf("--tools") + 1].split(",")).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash"]);
+  expect(flags[flags.indexOf("--tools") + 1].split(",")).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "bash_output", "bash_kill", "codemode"]);
   expect(t.endpoints.at(-1)!.cfg.env["PI_WEB_RESEARCH_SOCKET"]).toBeUndefined();
   await h.interrupt(); await h.done;
 });

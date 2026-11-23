@@ -4,7 +4,8 @@
  * 2. DeepSeek（推理 high）把文案不同的同一根因归并成一个指纹；
  * 3. 触发待办（平台 / debug，由人决定修不修）：
  *    - 工具 / 部署：近 30 天内同一指纹出现在 ≥2 个 runtime，且每个 runtime 至少 2 次（过滤偶发）；不要求日期连续；
- *    - 记忆强约束：任意 runtime 重试用尽 1 次就建（规则本身可能有问题）。
+ *    - 记忆强约束：任意 runtime 重试用尽 1 次就建（规则本身可能有问题）；
+ *    - 门禁 flaky：同一个测试文件近 7 天「复跑才通过」≥3 次就建（规则触发，不调 AI；隔离由门禁自己自动做，这里只通知）。
  * 每个指纹只建一次；待办完成 / 删除视为人的决定，之后只有新证据才再提醒。
  * 时间一律按北京时间（UTC+8）：每晚 23:50 跑，待办里的时间也是北京时间。
  */
@@ -18,7 +19,8 @@ import { isPeak, nextOffPeak } from "../deepseek-peak.js";
 import { beijingDateKey, beijingStamp, nextBeijingRunAt } from "../platform-time.js";
 import { registerPlatformScheduledTask, dailyBeijingSchedule } from "../platform-scheduled-tasks.js";
 import { catchUpWait } from "../diagnostics/scheduler.js";
-import { collectDeploys, collectEnforcementExhausted, collectToolFailures, type CollectOptions } from "./collect.js";
+import { collectDeploys, collectEnforcementExhausted, collectFlaky, collectToolFailures, type CollectOptions } from "./collect.js";
+import { composeFlakyTodo, flakyKinds, GATE_FLAKY_MIN_7D, GATE_FLAKY_WINDOW_DAYS, readQuarantine } from "./flaky.js";
 import { runMerge } from "./merge.js";
 import { assess, needsAssessment, worthDoing } from "./assess.js";
 import { buildAssessmentContext } from "./context.js";
@@ -28,7 +30,7 @@ import { type Assessment, type ErrorStatsStore, WINDOW_DAYS, type FingerprintSta
 /** 每个 runtime 至少出现几次，才算「出现在这个 runtime」。 */
 export const MIN_PER_RUNTIME = 2;
 export const MIN_RUNTIMES = 2;
-export const ENTRY_HOST = "gui-backup-cn.harness.fund";
+export const ENTRY_HOST = "console.example.com";
 export const SCHEDULE_HOUR = 23, SCHEDULE_MINUTE = 50;
 /** 一晚最多新建几条待办（第一次回填可能一下冒出很多，分几晚出，按次数从多到少）。 */
 export const MAX_NEW_TODOS_PER_RUN = 8;
@@ -47,8 +49,10 @@ export interface ErrorStatsNotes {
   backfillCategories?(noteIds: Iterable<string>): { assigned: number; unchanged: number; missing: number; skipped: number; failed: number };
 }
 
-export type Trigger = "cross-runtime" | "memory-single";
-export function triggerOf(s: FingerprintStat): Trigger | null {
+export type Trigger = "cross-runtime" | "memory-single" | "gate-flaky";
+/** recent7：门禁 flaky 要看近 7 天的次数（统计窗口是 30 天），其余类型不用。 */
+export function triggerOf(s: FingerprintStat, recent7?: number): Trigger | null {
+  if (s.kind === "flaky") return (recent7 ?? 0) >= GATE_FLAKY_MIN_7D ? "gate-flaky" : null;
   if (s.kind === "memory") return s.total >= 1 ? "memory-single" : null;
   const qualifying = RUNTIMES.filter((r) => (s.runtimes[r]?.count ?? 0) >= MIN_PER_RUNTIME);
   return qualifying.length >= MIN_RUNTIMES ? "cross-runtime" : null;
@@ -138,11 +142,12 @@ export class ErrorStatsService {
     // 上次进程在跑到一半时退出：留着「运行中」的记录会让页面一直转圈，改记成「中断」
     let dirty = false;
     for (const r of this.store.state.runs) if (r.status === "running" || (!r.finishedAt && !r.status)) { r.status = "interrupted"; r.finishedAt = r.startedAt; dirty = true; }
-    // 一次性修正历史分类，之后保留用户手动调整的选择；失败时不打完成标记，下次启动重试。
-    if (!this.store.state.debugCategoriesBackfilledAt && options.notes.backfillCategories) {
+    // 每次启动都对账一次：这些待办必须钉在「平台 / debug」。历史上被模型分类覆盖的（策略升级、正文改写）在这里修回来；
+    // 钉住之后不会再被覆盖，对账是幂等的，失败不阻断启动，下次启动再来。
+    if (options.notes.backfillCategories) {
       const result = options.notes.backfillCategories(this.store.createdNoteIds());
-      options.log?.(`错误统计待办补归类：${JSON.stringify(result)}`);
-      if (!result.failed) { this.store.state.debugCategoriesBackfilledAt = this.now().toISOString(); dirty = true; }
+      options.log?.(`错误统计待办归类（钉住「平台 / debug」）：${JSON.stringify(result)}`);
+      if (!this.store.state.debugCategoriesBackfilledAt) { this.store.state.debugCategoriesBackfilledAt = this.now().toISOString(); dirty = true; }
     }
     if (dirty) try { this.store.save(); } catch { /* 下次再存 */ }
   }
@@ -167,7 +172,7 @@ export class ErrorStatsService {
     const now = this.now();
     const run: RunRecord = {
       id: randomUUID().slice(0, 8), trigger, status: "running", date: beijingDateKey(now), startedAt: now.toISOString(),
-      added: 0, byKind: { tool: 0, deploy: 0, memory: 0 }, merged: 0, costUsd: 0, created: [], createdTodos: [], deferred: 0
+      added: 0, byKind: { tool: 0, deploy: 0, memory: 0, flaky: 0 }, merged: 0, costUsd: 0, created: [], createdTodos: [], deferred: 0
     };
     this.store.state.runs.push(run);
     try { this.store.save(); } catch { /* 记录丢了不影响统计 */ }
@@ -193,7 +198,8 @@ export class ErrorStatsService {
     return {
       running: this.running !== null, windowDays: WINDOW_DAYS, minRuntimes: MIN_RUNTIMES, minPerRuntime: MIN_PER_RUNTIME, maxNewTodosPerRun: MAX_NEW_TODOS_PER_RUN,
       scheduleHour: SCHEDULE_HOUR, scheduleMinute: SCHEDULE_MINUTE, nextRunAt: nextBeijingRunAt(now, SCHEDULE_HOUR, SCHEDULE_MINUTE).toISOString(),
-      backfilledAt: this.store.state.backfilledAt ?? null, todos: Object.keys(this.store.state.todos).length, runs
+      backfilledAt: this.store.state.backfilledAt ?? null, todos: Object.keys(this.store.state.todos).length, runs,
+      flaky: { ...readQuarantine(this.options.guiRoot ?? process.env["PI_AGENT_GUI_ROOT"] ?? join(homedir(), ".pi-agent-gui"), now.getTime()), threshold: GATE_FLAKY_MIN_7D, windowDays: GATE_FLAKY_WINDOW_DAYS }
     };
   }
 
@@ -213,7 +219,8 @@ export class ErrorStatsService {
       run.byKind.tool = await collectToolFailures(co);
       run.byKind.deploy = await collectDeploys(co);
       run.byKind.memory = await collectEnforcementExhausted(co);
-      run.added = run.byKind.tool + run.byKind.deploy + run.byKind.memory;
+      run.byKind.flaky = await collectFlaky(co);
+      run.added = run.byKind.tool + run.byKind.deploy + run.byKind.memory + run.byKind.flaky;
       if (!store.state.backfilledAt) store.state.backfilledAt = now.toISOString();
       store.prune(); store.save();
       } catch (e) { collectionError = e; }
@@ -266,6 +273,7 @@ export class ErrorStatsService {
     // 先核对已有待办的状态：完成 / 删除 = 人的决定，记下时刻
     for (const rec of Object.values(todos)) if (!rec.closedAt && options.notes.state(rec.noteId) !== "open") rec.closedAt = now.toISOString();
     const stats = store.stats({ cutoff });
+    const recent = store.stats({ days: GATE_FLAKY_WINDOW_DAYS, cutoff });
     const guiRoot = options.guiRoot ?? process.env["PI_AGENT_GUI_ROOT"] ?? join(homedir(), ".pi-agent-gui");
     const budget = options.assessBudgetUsd ?? ASSESS_BUDGET_USD;
     let spent = 0;
@@ -289,7 +297,7 @@ export class ErrorStatsService {
 
     const pending: Array<{ s: FingerprintStat; trigger: Trigger }> = [];
     for (const s of stats.values()) {
-      const trigger = triggerOf(s);
+      const trigger = triggerOf(s, recent.get(s.fingerprint)?.total);
       if (!trigger) continue;
       const rec = todos[s.fingerprint];
       if (rec && !rec.closedAt) {
@@ -298,8 +306,9 @@ export class ErrorStatsService {
         const current = options.notes.text(rec.noteId);
         const untouched = current !== null && hash(current) === rec.textHash;
         if (grew && untouched && now.getTime() - Date.parse(rec.updatedAt) >= DAY_MS) {
-          const a = store.state.assessments[s.fingerprint];
-          const { text, analysis } = composeTodo(s, trigger, now, options.ruleTitle, a);
+          const { text, analysis } = trigger === "gate-flaky"
+            ? composeFlakyTodo({ s, recent7: recent.get(s.fingerprint)?.total ?? 0, quarantine: readQuarantine(guiRoot, now.getTime()), kinds: flakyKinds(guiRoot, s.fingerprint.slice(6), now.getTime() - GATE_FLAKY_WINDOW_DAYS * DAY_MS), now, windowDays: WINDOW_DAYS, entryHost: ENTRY_HOST })
+            : composeTodo(s, trigger, now, options.ruleTitle, store.state.assessments[s.fingerprint]);
           options.notes.rewrite(rec.noteId, text, analysis);
           Object.assign(rec, { updatedAt: now.toISOString(), runtimes: Object.keys(s.runtimes), total: s.total, textHash: hash(text) });
         }
@@ -312,6 +321,16 @@ export class ErrorStatsService {
     if (pending.length && !options.port) addNote("没有可用的模型，无法评估是否值得做，本轮没有建待办");
     for (const { s, trigger } of pending) {
       if (created.length >= MAX_NEW_TODOS_PER_RUN) { run.deferred++; continue; }
+      if (trigger === "gate-flaky") {
+        // 规则触发：证据（次数、错误类型）已经足够明确，不调 AI 评估（评估提示词会把「偶发」判成不做）；隔离由门禁自己做。
+        const { text, analysis } = composeFlakyTodo({ s, recent7: recent.get(s.fingerprint)?.total ?? 0, quarantine: readQuarantine(guiRoot, now.getTime()), kinds: flakyKinds(guiRoot, s.fingerprint.slice(6), now.getTime() - GATE_FLAKY_WINDOW_DAYS * DAY_MS), now, windowDays: WINDOW_DAYS, entryHost: ENTRY_HOST });
+        const noteId = options.notes.create(text, analysis);
+        todos[s.fingerprint] = { noteId, rule: trigger, createdAt: now.toISOString(), updatedAt: now.toISOString(), runtimes: Object.keys(s.runtimes), total: s.total, textHash: hash(text), assessed: true };
+        created.push({ noteId, title: analysis.title });
+        run.assessments!.push({ title: analysis.title, verdict: "do", confidence: "high", reason: "门禁自动检查不稳定（规则触发，没有调用 AI）", noteId });
+        store.save();
+        continue;
+      }
       const got = await evaluate(s, !!todos[s.fingerprint]?.closedAt && !store.state.assessments[s.fingerprint]?.at.startsWith(run.date));
       if (!got) { run.deferred++; continue; }
       const { a, fresh } = got;

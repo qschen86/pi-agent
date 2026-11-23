@@ -7,6 +7,8 @@ import {join, relative, resolve, isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium, type Browser, type Page} from 'playwright';
 import type {DriverEvent} from './driver.js';
+import {readChatGPTShare} from './chatgpt-share.js';
+import {readPublicLink} from './public-link-reader.js';
 export interface BrowserAccess {socketPath: string; bridgePath: string; hookPath: string}
 export const browserBridgePath=fileURLToPath(new URL('../../pi-runtime/src/platform-browser-mcp.mjs',import.meta.url));
 export const browserHookPath=fileURLToPath(new URL('../../pi-runtime/src/screenshot-policy-hook.mjs',import.meta.url));
@@ -15,8 +17,10 @@ export function verifyScreenshotReceipt(receipt:ScreenshotReceipt,sessionId:stri
  if(receipt.sessionId!==sessionId||!events.some(e=>e.source!=='platform'&&/platform_browser(?:__|\.)browser|^platform_browser$/.test(e.tool?.name??'')&&/completed|success/.test(e.tool?.status??'')&&/"action"\s*:\s*"screenshot"/.test(e.tool?.input??'')&&e.tool?.output?.includes(receipt.receiptId)))return false;
  try{return createHash('sha256').update(readFileSync(receipt.path)).digest('hex')===receipt.sha256;}catch{return false;}
 }
-export async function startPlatformBrowser(options:{sessionId:string;turnId:string;workspace:string;outputDir:string;event(e:DriverEvent):void;launch?:()=>Promise<Browser>}) {
- const dir=mkdtempSync(join(tmpdir(),'pb-')), socketPath=join(dir,'b.sock');
+export async function startPlatformBrowser(options:{sessionId:string;turnId:string;workspace:string;outputDir:string;event(e:DriverEvent):void;launch?:()=>Promise<Browser>;linkOnly?:boolean}) {
+ const tag=createHash('sha256').update(options.sessionId).digest('hex').slice(0,12);
+ const dir=mkdtempSync(join(tmpdir(),`pb-${tag}-`)), socketPath=join(dir,'b.sock'), pointer=join(tmpdir(),`pb-${tag}.sock`);
+ try{writeFileSync(pointer,socketPath,{mode:0o600});}catch{/* best-effort session socket pointer */}
  // Pin the guard bytes outside the agent workspace for this turn.
  for(const name of ['screenshot-policy-hook.mjs','screenshot-policy.mjs']){copyFileSync(fileURLToPath(new URL('../../pi-runtime/src/'+name,import.meta.url)),join(dir,name));chmodSync(join(dir,name),0o400);}
  let browser:Browser|undefined,page:Page|undefined,opening:Promise<Page>|undefined,closed=false,busy=false,theme='light';
@@ -27,9 +31,12 @@ export async function startPlatformBrowser(options:{sessionId:string;turnId:stri
   if(!page){theme='light';opening??=(async()=>{browser=await(options.launch?.()??chromium.launch({headless:true}));if(closed){await browser.close();throw new Error('Browser service closed');}const context=await browser.newContext({viewport:{width:390,height:844},colorScheme:'light',serviceWorkers:'block'});context.setDefaultTimeout(10000);return context.newPage();})();page=await opening;}
   return page;
  }
- function assertUrl(raw:string){const u=new URL(raw);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||!['127.0.0.1','localhost','[::1]','gui-backup-cn.harness.fund'].includes(u.hostname))throw new Error('验收地址仅允许本机页面及 gui-backup-cn.harness.fund');}
- async function execute(p:Record<string,unknown>){
+ function assertUrl(raw:string){const u=new URL(raw);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||!['127.0.0.1','localhost','[::1]','console.example.com'].includes(u.hostname))throw new Error('验收地址仅允许本机页面及 console.example.com');}
+ async function execute(p:Record<string,unknown>,signal:AbortSignal){
   if(typeof p.action!=='string')throw new Error('action required');
+  if(p.action==='read_chatgpt_share')return readChatGPTShare(p.url,signal);
+  if(p.action==='read_link')return readPublicLink(p.url,signal);
+  if(options.linkOnly)throw new Error('此工具仅用于补读公开链接');
   if(p.action==='close'){await closeBrowser();return {ok:true};}
   touch();
   const current=await getPage();
@@ -60,14 +67,15 @@ export async function startPlatformBrowser(options:{sessionId:string;turnId:stri
   }
   return {ok:true,url:current.url()};
  }
- const server=createServer(socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));socket.setTimeout(65000,()=>socket.destroy());let buffer='';socket.on('data',chunk=>{buffer+=chunk;if(buffer.length>128000){socket.destroy();return;}if(!buffer.includes('\n'))return;socket.removeAllListeners('data');if(busy||closed){socket.end(JSON.stringify({ok:false,error:'Browser busy or closed'})+'\n');return;}busy=true;let timer:NodeJS.Timeout;
+ const recordOutput=(line:string)=>{try{writeFileSync(`${socketPath}.log`,line+'\n',{flag:'a',mode:0o600});}catch{/* best-effort log for ACP runtimes */}};
+ const server=createServer(socket=>{const cancellation=new AbortController();sockets.add(socket);socket.once('close',()=>{sockets.delete(socket);cancellation.abort();});socket.setTimeout(65000,()=>socket.destroy());let buffer='';socket.on('data',chunk=>{buffer+=chunk;if(buffer.length>128000){socket.destroy();return;}if(!buffer.includes('\n'))return;socket.removeAllListeners('data');if(busy||closed){const line=JSON.stringify({ok:false,error:'Browser busy or closed'});recordOutput(line);socket.end(line+'\n');return;}busy=true;let timer:NodeJS.Timeout;
   const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>{void closeBrowser();reject(new Error('Browser action exceeded 60s'));},60000);});
-  void Promise.race([Promise.resolve().then(()=>execute(JSON.parse(buffer.split('\n')[0]))),timeout]).then(result=>socket.end(JSON.stringify(result)+'\n'),error=>socket.end(JSON.stringify({ok:false,error:String(error.message)})+'\n')).finally(()=>{clearTimeout(timer);busy=false;});
+  void Promise.race([Promise.resolve().then(()=>execute(JSON.parse(buffer.split('\n')[0]),cancellation.signal)),timeout]).then(result=>{const line=JSON.stringify(result);recordOutput(line);socket.end(line+'\n');},error=>{const line=JSON.stringify({ok:false,error:String(error.message)});recordOutput(line);socket.end(line+'\n');}).finally(()=>{clearTimeout(timer);busy=false;});
  });});
  try{await new Promise<void>((yes,no)=>{server.once('error',no);server.listen(socketPath,yes);});}catch(error){rmSync(dir,{recursive:true,force:true});throw error;}chmodSync(socketPath,0o600);
  let idle:NodeJS.Timeout|undefined;
  function touch(){clearTimeout(idle);idle=setTimeout(()=>{void closeBrowser();},180000);idle.unref();}
- async function dispose(){if(closed)return;closed=true;clearTimeout(idle);for(const s of sockets)s.destroy();server.close();await closeBrowser();rmSync(dir,{recursive:true,force:true});}
+ async function dispose(){if(closed)return;closed=true;clearTimeout(idle);for(const s of sockets)s.destroy();server.close();await closeBrowser();try{if(readFileSync(pointer,'utf8').trim()===socketPath)rmSync(pointer,{force:true});}catch{}rmSync(dir,{recursive:true,force:true});}
  return {access:{socketPath,bridgePath:browserBridgePath,hookPath:join(dir,'screenshot-policy-hook.mjs')} satisfies BrowserAccess,receipts,dispose};
 }
 

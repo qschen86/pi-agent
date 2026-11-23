@@ -1,7 +1,7 @@
 // Server-side gate. Evidence must come from configured probes, never request-body assertions.
 // A pass means the configured checks passed; it is not an account-safety guarantee.
 export const NETWORK_REPORT_TTL_MS = 5 * 60_000;
-const runtimes = new Set(['codex', 'claude-code']);
+const runtimes = new Set(['codex', 'claude-code', 'antigravity']);
 const stages = new Set(['install', 'login', 'first-task']);
 const checks = ['region', 'connectivity', 'networkType'];
 const allowedNetworkTypes = new Set(['residential', 'non-datacenter']);

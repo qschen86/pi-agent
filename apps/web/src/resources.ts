@@ -65,7 +65,7 @@ export class WebResearchProviderSettings {
 /** 调用日志的一条：只有元数据，没有请求或响应正文、没有凭据 */
 export interface ProviderCall {
   at: string;
-  /** model:<provider>、brave、firecrawl、deepseek-search、deepseek-fetch、voice:doubao */
+  /** model:<provider>、brave、firecrawl、deepseek-search、deepseek-fetch，以及资源扩展登记的服务（如 voice:doubao） */
   service: string;
   capability: "chat" | "search" | "read" | "speech";
   /** executor、planner、acceptanceJudge、contractCritic… */
@@ -122,6 +122,15 @@ export interface BalanceView {
   /** 缓存超过 1 小时：非实时 */
   stale?: boolean;
   consoleUrl?: string;
+}
+
+/**
+ * 资源扩展：可选或私有应用往「外部资源」里补充自己的服务行（例如配音服务），
+ * 基础代码不认识具体服务商。`balance` 登记这些服务的余额读取方式或「不支持」说明。
+ */
+export interface ResourceProvider {
+  services(ctx: { calls: ProviderCall[]; cached: Record<string, BalanceView>; now: number }): ServiceStatus[];
+  balance?: Record<string, BalanceAdapter | { unsupported: string; consoleUrl: string }>;
 }
 
 export interface BalanceAdapter {
@@ -199,8 +208,7 @@ export const BALANCE_ADAPTERS: Record<string, BalanceAdapter | { unsupported: st
   brave: { unsupported: "未确认受支持的只读余额接口（响应头里的限流剩余量不是余额）", consoleUrl: "https://api-dashboard.search.brave.com/" },
   "deepseek-search": { unsupported: "DeepSeek 搜索与模型共用同一个账户余额；请在「模型」中的 DeepSeek 行查看", consoleUrl: "https://platform.deepseek.com/usage" },
   "deepseek-fetch": { unsupported: "DeepSeek 抓取与模型共用同一个账户余额；请在「模型」中的 DeepSeek 行查看", consoleUrl: "https://platform.deepseek.com/usage" },
-  "model:zhipu": { unsupported: "未确认受支持的只读余额接口", consoleUrl: "https://open.bigmodel.cn/usercenter/finance" },
-  "voice:doubao": { unsupported: "火山引擎语音合成按字符计费，未确认受支持的只读余额接口；用量请到火山引擎语音控制台查看", consoleUrl: "https://console.volcengine.com/speech/new" }
+  "model:zhipu": { unsupported: "未确认受支持的只读余额接口", consoleUrl: "https://open.bigmodel.cn/usercenter/finance" }
 };
 
 /** 余额缓存：按服务保存上次读取的结果（失败时保留上次成功值并标出） */
@@ -227,8 +235,8 @@ export const BALANCE_MIN_REFRESH_MS = 60_000;
 export const BALANCE_AUTO_REFRESH_MS = 600_000;
 
 /** 页面上显示的余额：没登记接口、没配凭据、没读过、读取失败（回退到上次成功值并标非实时）各有说法 */
-export function balanceViewOf(service: string, configured: boolean, cached: (BalanceView & { lastOk?: BalanceView }) | undefined, now: number): BalanceView {
-  const adapter = BALANCE_ADAPTERS[service];
+export function balanceViewOf(service: string, configured: boolean, cached: (BalanceView & { lastOk?: BalanceView }) | undefined, now: number, extraAdapter?: BalanceAdapter | { unsupported: string; consoleUrl: string }): BalanceView {
+  const adapter = BALANCE_ADAPTERS[service] ?? extraAdapter;
   if (!adapter) return { status: "unavailable", reason: "没有登记这个服务的余额接口" };
   if ("unsupported" in adapter) return { status: "unavailable", reason: adapter.unsupported, consoleUrl: adapter.consoleUrl };
   if (!configured) return { status: "unavailable", reason: "本机没有配置凭据", consoleUrl: adapter.consoleUrl, source: adapter.source };
@@ -276,6 +284,8 @@ export const CALL_STALE_MS = 7 * 24 * 3_600_000;
 export function serviceStatus(input: {
   service: string; kind: ServiceKind; label: string; credential: CredentialView; calls: ProviderCall[];
   roles: ServiceStatus["roles"]; balance?: BalanceView & { lastOk?: BalanceView }; now: number;
+  /** 资源扩展登记的余额读取方式（基础表里没有的服务用） */
+  adapter?: BalanceAdapter | { unsupported: string; consoleUrl: string };
 }): ServiceStatus {
   const calls = input.calls.filter((c) => c.service === input.service).sort((a, b) => a.at.localeCompare(b.at));
   const last = calls.at(-1);
@@ -284,7 +294,7 @@ export function serviceStatus(input: {
     : !last ? "configured-unverified"
       : input.now - Date.parse(last.at) > CALL_STALE_MS ? "stale"
         : last.ok ? "last-ok" : "last-failed";
-  const balance = balanceViewOf(input.service, input.credential.configured, input.balance, input.now);
+  const balance = balanceViewOf(input.service, input.credential.configured, input.balance, input.now, input.adapter);
   return {
     service: input.service, kind: input.kind, label: input.label, credential: input.credential, state,
     ...(last ? { last: { at: last.at, ok: last.ok, capability: last.capability, role: last.role, ...(last.model ? { model: last.model } : {}), ...(last.errorClass ? { errorClass: last.errorClass } : {}) } } : {}),
@@ -304,7 +314,7 @@ export function serviceStatus(input: {
  * 也不冒充服务商账单；只给脱敏身份摘要，不含任何凭据。
  */
 /** 订阅账号在资源页上的名字；Pi 不在此列 */
-export const RUNTIME_QUOTA_LABEL: Record<string, string> = { "claude-code": "Claude（订阅）", codex: "OpenAI（ChatGPT 订阅）" };
+export const RUNTIME_QUOTA_LABEL: Record<string, string> = { "claude-code": "Claude（订阅）", codex: "OpenAI（ChatGPT 订阅）", antigravity: "Google（AI Pro 订阅）" };
 
 export function runtimeQuotaServices(
   profiles: Array<RuntimeProfile & { rateLimit?: RateLimitSnapshot & { stale: boolean } }>,

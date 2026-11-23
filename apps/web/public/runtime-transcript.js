@@ -41,13 +41,64 @@ function rtTurnEndRows(events) {
   }
   return out;
 }
-/** group：对话视图把过程折叠成块（工具页逐条）；对比页的通道列表也按对话视图 */
-function rtBlocks(events, group = ui.rt.tab === "chat") {
-  events = events.filter(e => !rtOnboardingTrigger(e));
+const RT_QUOTA_ERROR = /you.ve hit your .*limit|usage limit|quota|rate.?limit|额度.*(?:用尽|不足|耗尽)|限流/i;
+function rtStandaloneQuotaError(e) {
+  return e.kind === "message" && e.role === "assistant" && /^you.ve hit your [^\n]*limit[^\n]*$/i.test(rtErrorText(e.text));
+}
+/** 当前未完成的一轮：只认最后一轮，自动继续只认同轮后台计划。 */
+function rtRecoveryState(s = ui.rt.view?.session, events = ui.rt.events) {
+  if (!s || s.sourceMode !== "platform-managed" || !["failed", "interrupted", "unknown"].includes(s.status) || rtOutgoing()) return null;
+  const end = events.findLast(e => e.kind === "turn-status" && !e.subagent && !e.partial);
+  if (!end || !["failed", "interrupted", "unknown"].includes(end.status)) return null;
+  if (s.turns?.length && s.turns.at(-1).turnNo !== end.turnNo) return null;
+  const index = events.indexOf(end);
+  if (events.slice(index + 1).some(e => e.kind === "message" && e.role === "user" && !rtDeploymentNotice(e) && !rtEnforcementNotice(e))) return null;
+  const start = events.findLastIndex((e, i) => i < index && (e.kind === "turn-status" || (e.kind === "message" && e.role === "user")));
+  const rows = events.slice(start + 1, index + 1).filter(e => !e.subagent && (end.turnNo === undefined || e.turnNo === end.turnNo));
+  const raw = [...new Set([...rows.filter(e => e.kind === "error" || rtStandaloneQuotaError(e)).map(e => e.text), end.text, s.statusReason].filter(Boolean))].join("\n");
+  const plan = s.quotaResume?.turnNo === end.turnNo && Number.isFinite(Date.parse(s.quotaResume.scheduledFor)) ? s.quotaResume : null;
+  const quota = !!plan || RT_QUOTA_ERROR.test(raw);
+  const weekly = /weekly|周/.test(raw + (plan?.window || ""));
+  return { end, rows, raw, plan, quota, title: quota ? `本轮未完成 · ${weekly ? "周额度已用尽" : /session limit|5 小时/i.test(raw + (plan?.window || "")) ? "当前时段额度已用尽" : "额度暂时受限"}` : (RT_TURN_END_LABEL[end.status] || "本轮未完成") };
+}
+function rtRecoveryCanSend(s) {
+  return ui.rt.access?.control && !ui.rt.access?.draining && ui.rt.statusConfirmed !== false && !ui.rt.busy && !rtImageDraft(s.platformSessionId).pending && !s.archived && !s.conflict && !s.worktree?.removedAt && !!s.nativeSessionId;
+}
+function rtRecoveryRow(e, sid, time, flags) {
+  const state = sid === rtId() ? rtRecoveryState() : null;
+  if (!state || state.end.key !== e.key) return null;
+  const s = ui.rt.view.session, q = state.plan;
+  const when = q ? new Date(q.scheduledFor).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+  const capped = /不再自动继续|上限/.test(s.statusReason || "");
+  const note = q ? q.known ? `预计北京时间 ${when} 恢复后自动继续` : `北京时间 ${when} 左右自动再试一次` : capped ? "已达到自动重试上限，不会自动继续" : "不会自动继续，可手动继续或重试";
+  const canSend = rtRecoveryCanSend(s);
+  const action = (label, text) => rtQuickReplyButton({ type: "button", class: "chip", disabled: !canSend, onclick: () => {
+    const current = rtRecoveryState();
+    if (current?.end.key === e.key && rtRecoveryCanSend(ui.rt.view.session)) void rtComposer(ui.rt.view, text);
+  } }, label);
+  return h("div", { class: `rt-row rt-recovery ${e.status}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq) },
+    h("strong", {}, state.title), h("p", { class: "muted small", role: "status" }, note),
+    ui.rt.access?.control ? h("div", { class: "rt-recovery-actions" },
+      q ? rtQuickReplyButton({ type: "button", class: "chip", disabled: !!ui.rt.busy || ui.rt.statusConfirmed === false, onclick: () => void rtQuotaResumeCancel(sid) }, "取消自动继续")
+        : action("继续", "请从刚才中断的地方继续，已经完成的部分不用重做。"),
+      action(q ? "立即重试" : "重试本轮", "请重试刚才没有完成的这一步，已经完成的部分不用重做。")) : null,
+    rtLazyFold({ class: "rt-recovery-details" }, h("summary", {}, "查看详情"), () => h("pre", {}, state.raw), null, `${sid}:${e.key}:recovery`), flags, time);
+}
+/** 已有合并状态卡时，只有与详情重复的独立报错才收进详情。 */
+function rtRecoveryDuplicate(e, state) {
+  if (!state?.quota || !state.rows.some(row => row.key === e.key) || !e.text) return false;
+  if (e.kind === "error") return RT_QUOTA_ERROR.test(e.text);
+  const text = rtErrorText(e.text);
+  return rtStandaloneQuotaError(e) && state.raw.includes(text);
+}
+/** group：把过程折叠成块（工具调用在对话里就地分组）；对比页的通道列表也按对话视图 */
+function rtBlocks(events, group = true) {
   const out = [];
   const checks = new Map();
   const background = new Map();
+  const recovery = rtRecoveryState();
   for (const e of rtTurnEndRows(rtThinkingFirst(events))) {
+    if (rtRecoveryDuplicate(e, recovery)) continue;
     if (rtBackgroundTask(e)) {
       const key = `${e.turnNo ?? "legacy"}:${e.subagent || ""}`;
       const existing = background.get(key);
@@ -229,7 +280,7 @@ function rtBackgroundRow(e, sid) {
     canStop ? h("button", { type: "button", class: "rt-background-stop", title: "停止本轮及后台任务", disabled: !!ui.rt.busy || session.status === "stopping", onclick: () => rtInterruptSession(sid) }, ui.rt.busy === "stop" || session.status === "stopping" ? "停止中…" : "终止") : null);
 }
 
-/** Deployment results keep their title and truncated subject in one keyboard-accessible line. */
+/** Deployment results expose only their outcome and version; details stay folded. */
 function rtSystemNotice(e, notice, { sid, time, flags, deployment }) {
   const compact = deployment ? rtDeploymentCompact(notice) : { summary: notice.summary };
   const summary = () => h("span", { class: "rt-system-summary", title: compact.summary }, compact.summary);
@@ -237,9 +288,9 @@ function rtSystemNotice(e, notice, { sid, time, flags, deployment }) {
     rtLazyFold({ class: "rt-system-details" }, h("summary", { "aria-label": `${notice.title}，展开或收起详情` },
       h("span", { class: "rt-system-head" },
         h("span", { class: `rt-system-result ${notice.tone}` }, notice.title),
+        // 部署成功的结果行也带总耗时（流程存档里读一次），和状态行、结果弹窗同一口径
+        deployment && notice.tone === "ok" && compact.commit ? rtDeployNoticeTotal(compact.commit) : null,
         compact.commit ? h("span", { class: "rt-system-commit" }, `· ${compact.commit}`) : null,
-        deployment ? h("span", { class: "rt-system-separator", "aria-hidden": "true" }, "·") : null,
-        deployment ? summary() : null,
         h("span", { class: "rt-system-caret", "aria-hidden": "true" }, "›")),
       deployment ? null : summary()),
       () => h("div", {},
@@ -289,6 +340,8 @@ function rtEventRow(e, sid = rtId()) {
   const flags = flagList.length ? h("div", { class: "rt-row-flags" }, flagList.map((f) => h("span", {}, f))) : null;
   const attrs = { "data-ev-key": e.key, "data-ev-seq": String(e.seq) };
   const copy = (text) => rtCopyButton(text || "", "复制", { announce: "已复制消息" });
+  const recovery = e.kind === "turn-status" ? rtRecoveryRow(e, sid, time, flags) : null;
+  if (recovery) return e.enforcementGroups?.length ? h("div", { ...attrs, class: "rt-recovery-group" }, recovery, rtEnforcementEnd({ ...e, text: "强约束校验" }, sid, null, null)) : recovery;
   if (e.kind === "turn-status" && e.enforcementGroups?.length) return rtEnforcementEnd(e, sid, time, flags);
   const deployment = rtDeploymentNotice(e);
   if (deployment) return rtSystemNotice(e, deployment, { sid, time, flags, deployment: true });
@@ -609,7 +662,7 @@ function rtCollectFile(sid, f, trigger) {
 function rtOpenSessionImages(sid, initial, trigger) {
   const row = trigger?.closest?.('.rt-row[data-ev-key]');
   const box = trigger?.closest?.('.rt-transcript');
-  if (typeof openImageZoom !== 'function' || ui.view !== 'rt' || rtId() !== sid || !row || !box || !['chat', 'tools'].includes(ui.rt.tab)) return false;
+  if (typeof openImageZoom !== 'function' || ui.view !== 'rt' || rtId() !== sid || !row || !box) return false;
   const generation = ++rtImageGalleryGeneration, gen = ui.rt.gen;
   const current = () => rtImageGalleryGeneration === generation && ui.view === 'rt' && rtId() === sid && ui.rt.gen === gen && box.isConnected;
   const entry = { ...initial, key: row.dataset.evKey, seq: Number(row.dataset.evSeq) };
@@ -707,7 +760,6 @@ async function piRevealSessionEvent(sid, target = {}) {
     });
     if (!arrived) return false;
   }
-  if (ui.rt.tab !== "chat" && ui.rt.tab !== "tools" && typeof rtSwitchTab === "function") rtSwitchTab("chat");
   let box = null;
   for (let i = 0; i < 50 && !box; i++) {
     box = document.querySelector('.rt-transcript');

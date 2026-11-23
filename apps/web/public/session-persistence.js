@@ -450,7 +450,6 @@ function sessionDiskPanel(resource, display) {
       h('div',{class:'rt-title-row'},
         h('div',{class:'rt-title-main'},h('h1',{class:'rt-title'},h('span',{class:'rt-title-text'},display.summary?.title || resource.id))),
         h('div',{class:'rt-title-tags','aria-hidden':'true'},badge('本机',''))));
-  const tabs = resource.kind === 'rt' && typeof rtTabsCached === 'function' ? rtTabsCached() : null;
   // Verification is a quiet note that only appears if the check actually takes a moment;
   // it never takes the place of the content and never spins.
   const verify = state.syncError
@@ -458,7 +457,7 @@ function sessionDiskPanel(resource, display) {
     : h('p',{class:'rt-verify',role:'status',hidden:true});
   if(!state.syncError)setTimeout(()=>{if(verify.isConnected&&!state.syncError){verify.textContent='正在核对最新状态…';verify.hidden=false;}},600);
   queueMicrotask(()=>{if(box.isConnected)sessionReadingWatch(box,display.reading);});
-  return h('section',{class:'rt-center','aria-label':'上次保存的会话内容'},head,tabs,missing ? h('p',{role:'status',class:'muted'},'阅读位置未完全恢复，已定位到保留内容附近。') : null,box,verify,
+  return h('section',{class:'rt-center','aria-label':'上次保存的会话内容'},head,missing ? h('p',{role:'status',class:'muted'},'阅读位置未完全恢复，已定位到保留内容附近。') : null,box,verify,
     // 核对期间也先把输入区摆上：输入框先出现，最新状态随后接入
     resource.kind === 'rt' && typeof rtComposerLoading === 'function' ? rtComposerLoading() : null);
 }

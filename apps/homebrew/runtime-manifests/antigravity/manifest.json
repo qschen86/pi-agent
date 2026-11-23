@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "runtime": "antigravity",
+  "platform": "darwin_arm64",
+  "version": "1.5.14",
+  "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.14-5302690847260672/darwin-arm/cli_mac_arm64.tar.gz",
+  "sha512": "26830fd46bfb9200d073cf3e71bf94b707552557b4380ec01afd6e99f3a2b030e65422dab1867f77318078692defc859a7547d17ec4b0b1e9369f13c9c3caea6"
+}

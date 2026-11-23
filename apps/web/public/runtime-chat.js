@@ -29,6 +29,8 @@ function rtDeploymentNotice(event) {
   // The worker always appends the log as its final line. Do not consume similar text in diagnostics.
   const log = /(?:^|\n)部署日志：([^\n]+)$/.exec(body);
   return { title: result[0], tone: result[1], summary,
+    requestId: /^部署请求：([^\n]+)$/m.exec(body)?.[1],
+    requestSha: /^请求提交：([a-f0-9]{7,40})$/mi.exec(body)?.[1],
     detail: (log ? body.slice(0, log.index) : body).trim(), log: log?.[1].trim() || "" };
 }
 /**
@@ -36,14 +38,6 @@ function rtDeploymentNotice(event) {
  * 它是平台的旁白，不是用户的发言，和部署通知一样画成居中的系统消息；完整正文收进「详情」。
  * 只认整条用户消息；被引用的、助手转述的仍是普通对话。
  */
-/**
- * 首次使用引导会话的第一条「用户消息」：平台发给模型的启动说明，用户看不到，会话从助手的欢迎语开始。
- * 标记必须与 apps/homebrew/src/onboarding.mjs 的 ONBOARDING_MARK 一致（有测试核对）。
- */
-const RT_ONBOARDING_MARK = "\u3010pi-agent \u9996\u6b21\u4f7f\u7528\u5f15\u5bfc\u3011";
-function rtOnboardingTrigger(event) {
-  return event?.kind === "message" && event.role === "user" && !event.attachments?.length && String(event.text || "").startsWith(RT_ONBOARDING_MARK);
-}
 const RT_ENFORCEMENT_MARK = "\u3010\u5e73\u53f0\u5f3a\u7ea6\u675f\u68c0\u67e5\u672a\u901a\u8fc7\u3011";
 function rtEnforcementFeedback(event) {
   return event?.kind === "message" && event.role === "user" && !event.attachments?.length && String(event.text || "").startsWith(RT_ENFORCEMENT_MARK);
@@ -523,7 +517,7 @@ const RT_FAMILIES = [
   { id: "doubao", label: "豆包", test: /doubao|volc|bytedance/i }
 ];
 /** 没有模型信息时按运行时推断：Codex 一定是 OpenAI，Claude Code 一定是 Claude；Pi 不推断 */
-const RT_DEFAULT_FAMILY = { codex: "openai", "claude-code": "claude" };
+const RT_DEFAULT_FAMILY = { codex: "openai", "claude-code": "claude", antigravity: "gemini" };
 
 function rtFamily(model, kind) {
   const hit = model ? RT_FAMILIES.find((f) => f.test.test(model)) : null;
@@ -547,7 +541,7 @@ function rtAvatar(kind, model, size) {
     h("span", { class: `rt-runtime-badge ${kind}` },
       kind === "codex" ? h("img", { src: rtLogoSrc("codexmark"), alt: "", draggable: "false" })
         : kind === "claude-code" ? h("img", { src: rtLogoSrc("claudecode"), alt: "", draggable: "false" })
-          : "π"));
+          : kind === "antigravity" ? "A" : "π"));
 }
 
 /**
@@ -630,7 +624,7 @@ function rtMessageSessionReference(label, target, tail = "") {
 function rtMessageSessionChip(ref) {
   const name = ref.label.slice(1);
   const entry = ref.href.startsWith("#") ? ui.rt?.dir?.entries?.find(e => e.id === ref.sessionId) : null;
-  const recordedKind = /(?:^|[；;])\s*运行时[：:]\s*(codex|claude-code|pi)(?=\s*(?:[；;]|$))/.exec(ref.details)?.[1];
+  const recordedKind = /(?:^|[；;])\s*运行时[：:]\s*(codex|claude-code|pi|antigravity)(?=\s*(?:[；;]|$))/.exec(ref.details)?.[1];
   const kind = entry?.runtimeKind || recordedKind || "";
   const avatar = rtAvatar(kind, entry?.model, "sm");
   if (!kind) {
@@ -741,7 +735,9 @@ function rtInlineText(text) {
       const sessionRef = !m[0].startsWith("!") && rtMessageSessionReference(m[6], target, text.slice(re.lastIndex));
       if (sessionRef) { out.push(rtMessageSessionChip(sessionRef)); re.lastIndex += sessionRef.consumed; last = re.lastIndex; continue; }
       const ref = typeof fileReference === "function" ? fileReference(target, true, true) : null;
-      out.push(ref ? fileChip({...ref,label:m[6]}) : RT_SAFE_URL.test(target) ? h("a", { href: target, target: "_blank", rel: "noopener noreferrer" }, rtInline(m[6])) : `${m[6]} (${m[7]})`);
+      // 目录（末段没有扩展名）预览不了，就不做成可点胶囊：只显示作者写的文字
+      const directory = !ref && typeof fileHasExtension === "function" && /^(?:\/|~\/|file:\/\/|\.\.?\/)/.test(target) && !fileHasExtension(target);
+      out.push(ref ? fileChip({...ref,label:m[6]}) : directory ? h("span", { class: "rt-path-text", title: target }, rtInline(m[6])) : RT_SAFE_URL.test(target) ? h("a", { href: target, target: "_blank", rel: "noopener noreferrer" }, rtInline(m[6])) : `${m[6]} (${m[7]})`);
     }
     else if (m[8] || m[9]) out.push(h("em", {}, rtInline(m[8] || m[9])));
     else if (m[10]) out.push(h("a", { href: m[10], target: "_blank", rel: "noopener noreferrer" }, m[10]));

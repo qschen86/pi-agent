@@ -115,9 +115,10 @@ function roomListItem(e, a = ui.rt.access) {
         h("span", { class: "rt-item-sub" }, h("span", { class: "rt-item-model" }, `群聊 · ${e.members.length} 名成员`), e.members.some((m) => ["creating", "running", "stopping"].includes(m.status)) ? badge("回复中", "") : null, e.deploy ? rtDeployBadge(e.deploy) : null)));
   const act = a && a.control && !busy ? h("button", {
     type: "button", class: `rt-item-act ${e.archived ? "restore" : "archive"}`, title: e.archived ? "恢复到列表" : "归档群聊", "aria-label": `${e.archived ? "恢复" : "归档"}群聊：${e.title}`,
+    // 点左滑露出的入口直接归档
     onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); void roomArchive(e, !e.archived); }
   }, e.archived ? "恢复" : "归档") : null;
-  // 群聊里有人在运行：长按给一句提示，而不是没反应
+  // 群聊里有人在运行：左滑照样露出入口，点它给一句提示，而不是没反应
   const note = a && a.control && busy ? "群聊里有会话正在运行，停止后才能归档" : "";
   return rtSessionRow(e.id, item, act, note);
 }

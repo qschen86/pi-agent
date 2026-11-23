@@ -23,7 +23,7 @@ export function transitionDeployment(file, sha, phase) {
       return true; // An optional progress file for an unrelated manual run is not ours to update.
     }
     // A cancelled request cannot be revived by retry or cutover. Other covered requests may continue.
-    if (['preparing', 'waiting', 'switching'].includes(phase) && Array.isArray(p.requests) && p.requests.length &&
+    if (['preparing', 'idle', 'waiting', 'switching'].includes(phase) && Array.isArray(p.requests) && p.requests.length &&
         !p.requests.some(q => {
           try { const r = JSON.parse(readFileSync(join(dirname(file), 'requests', `${q.id}.json`), 'utf8')); return r.startedAt === q.startedAt; } catch { return false; }
         })) return false;

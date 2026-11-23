@@ -9,15 +9,15 @@ const T = (assistantText: string, commandInputs?: string[]): CaseEvidence => ({ 
 export const ACCEPTANCE: Record<string, RuleCase[]> = {
   "entry-domain": [
     ["没有任何网址", T("已改好，测试通过。"), false],
-    ["给出旧入口链接", T("已上线：[打开](https://gui.harness.fund/#/rt/abc)"), true],
-    ["给出国内入口链接", T("已上线：[打开](https://gui-backup-cn.harness.fund/#/rt/abc)"), false],
-    ["裸网址旧入口", T("入口：https://gui.harness.fund/#/memory 可以看。"), true],
-    ["代码块 / 行内代码 / 引用行 / 说明旧入口 / 本地地址都不算", T(["已上线：https://gui-backup-cn.harness.fund/", "```", "https://gui.harness.fund/log", "```", "日志里是 `https://gui.harness.fund/x`", "> 平台通知：https://gui.harness.fund 已上线", "不再用 https://gui.harness.fund 这个旧入口。", "本地 http://127.0.0.1:8780/ 已验证"].join("\n")), false],
-    ["curl 旧入口验收", T("验收完成。", ["curl -s https://gui.harness.fund/api/health"]), true],
-    ["curl 国内入口验收", T("验收完成。", ["curl -s https://gui-backup-cn.harness.fund/api/health"]), false],
-    ["浏览器工具打开旧入口", T("", ['{"url":"https://gui.harness.fund/#/memory"}']), true],
-    ["只提到域名文字、没有链接", T("主入口 gui.harness.fund 同步，国内入口是 gui-backup-cn.harness.fund。"), false],
-    ["旧域名当作子串出现的无关网址", T("参考 https://notgui.harness.fund.example.com/x"), false]
+    ["给出旧入口链接", T("已上线：[打开](https://primary.example.com/#/rt/abc)"), true],
+    ["给出国内入口链接", T("已上线：[打开](https://console.example.com/#/rt/abc)"), false],
+    ["裸网址旧入口", T("入口：https://primary.example.com/#/memory 可以看。"), true],
+    ["代码块 / 行内代码 / 引用行 / 说明旧入口 / 本地地址都不算", T(["已上线：https://console.example.com/", "```", "https://primary.example.com/log", "```", "日志里是 `https://primary.example.com/x`", "> 平台通知：https://primary.example.com 已上线", "不再用 https://primary.example.com 这个旧入口。", "本地 http://127.0.0.1:8780/ 已验证"].join("\n")), false],
+    ["curl 旧入口验收", T("验收完成。", ["curl -s https://primary.example.com/api/health"]), true],
+    ["curl 国内入口验收", T("验收完成。", ["curl -s https://console.example.com/api/health"]), false],
+    ["浏览器工具打开旧入口", T("", ['{"url":"https://primary.example.com/#/memory"}']), true],
+    ["只提到域名文字、没有链接", T("主入口 primary.example.com 同步，国内入口是 console.example.com。"), false],
+    ["旧域名当作子串出现的无关网址", T("参考 https://notprimary.example.com.example.com/x"), false]
   ],
   "beijing-time": [
     ["没有带时区的时刻", T("明天 14:30 开会。"), false],
@@ -35,17 +35,17 @@ export const ACCEPTANCE: Record<string, RuleCase[]> = {
 
 export const HOLDOUT: Record<string, RuleCase[]> = {
   "entry-domain": [
-    ["markdown 链接旧入口", T("[入口](https://gui.harness.fund)"), true],
-    ["curl 带参数访问旧入口", T("", ["curl -sS -o /dev/null -w '%{http_code}' https://gui.harness.fund/"]), true],
-    ["&& 串联：访问国内入口 + grep 旧域名", T("", ["cd x && curl -s https://gui-backup-cn.harness.fund/ && grep gui.harness.fund log.txt"]), false],
-    ["说明旧入口仍可访问但请用国内入口", T("旧入口 https://gui.harness.fund 仍可访问，但请用 https://gui-backup-cn.harness.fund"), false],
-    ["「访问 … 查看」给旧入口", T("访问 https://gui.harness.fund/#/rt/1 查看结果"), true],
-    ["引用行里的平台通知", T("> 已上线 https://gui.harness.fund/\n已核对，国内入口 https://gui-backup-cn.harness.fund/ 正常。"), false],
-    ["open 旧入口", T("", ["open https://gui.harness.fund"]), true],
+    ["markdown 链接旧入口", T("[入口](https://primary.example.com)"), true],
+    ["curl 带参数访问旧入口", T("", ["curl -sS -o /dev/null -w '%{http_code}' https://primary.example.com/"]), true],
+    ["&& 串联：访问国内入口 + grep 旧域名", T("", ["cd x && curl -s https://console.example.com/ && grep primary.example.com log.txt"]), false],
+    ["说明旧入口仍可访问但请用国内入口", T("旧入口 https://primary.example.com 仍可访问，但请用 https://console.example.com"), false],
+    ["「访问 … 查看」给旧入口", T("访问 https://primary.example.com/#/rt/1 查看结果"), true],
+    ["引用行里的平台通知", T("> 已上线 https://primary.example.com/\n已核对，国内入口 https://console.example.com/ 正常。"), false],
+    ["open 旧入口", T("", ["open https://primary.example.com"]), true],
     ["大写域名", T("入口 https://GUI.HARNESS.FUND/x"), true],
-    ["先给国内、再给旧入口（无说明）", T("入口：https://gui-backup-cn.harness.fund/a\n备用：https://gui.harness.fund/a"), true],
-    ["表格单元格里的旧入口", T("| 入口 | https://gui.harness.fund/ |\n| --- | --- |"), true],
-    ["波浪线围栏里的旧入口", T("~~~\ncurl https://gui.harness.fund\n~~~\n完成。"), false],
+    ["先给国内、再给旧入口（无说明）", T("入口：https://console.example.com/a\n备用：https://primary.example.com/a"), true],
+    ["表格单元格里的旧入口", T("| 入口 | https://primary.example.com/ |\n| --- | --- |"), true],
+    ["波浪线围栏里的旧入口", T("~~~\ncurl https://primary.example.com\n~~~\n完成。"), false],
     ["完全无关的网址", T("参考 https://example.com/docs"), false]
   ],
   "beijing-time": [

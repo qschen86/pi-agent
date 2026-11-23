@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CORE_COMPONENTS } from '../apps/homebrew/src/initialization.mjs';
 import { validatePayload } from '../apps/homebrew/src/payload.mjs';
+import { omittedAssetPattern, omittedSourcePattern } from '../apps/web/src/app-manifest.mjs';
+import { stubExports as stubSource, transformIndexHtml } from './lib/public-transform.mjs';
+// 匿名化（域名、本机用户名、家人称呼）只在维护者仓库里生效；公开源码包已经匿名，没有这个模块时按原样构建。
+const exporterPath = new URL('./lib/public-export.mjs', import.meta.url);
+const anonymize = existsSync(exporterPath) ? (await import(exporterPath.href)).anonymize : text => text;
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const value = name => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
@@ -23,17 +28,8 @@ for (const [kind, source] of [['pi', piSource], ['npm', npmSource]]) {
 }
 if (existsSync(output)) throw Error('载荷输出目录已经存在，请使用新的目录');
 const requireFromRepo = createRequire(join(repo, 'package.json'));
-const omitted = /[/\\]apps[/\\]web[/\\]src[/\\](?:communications[^/\\]*|stock-ledger[^/\\]*|ledger-chat|challenge[^/\\]*|wrong-book[^/\\]*|game-companion|share-routes|artifact-shares)\.ts$/;
-const stubExports = path => {
-  const ast = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
-  const names = [];
-  for (const statement of ast.statements) if (statement.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) {
-    if (ts.isClassDeclaration(statement) && statement.name) names.push(`export class ${statement.name.text} {}`);
-    else if (ts.isFunctionDeclaration(statement) && statement.name) names.push(`export function ${statement.name.text}(){return undefined}`);
-    else if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) if (ts.isIdentifier(declaration.name)) names.push(`export const ${declaration.name.text} = undefined;`);
-  }
-  return names.join('\n');
-};
+const omitted = omittedSourcePattern('homebrew');
+const stubExports = path => stubSource(readFileSync(path, 'utf8'), path);
 const plugin = { name: 'core-edition', setup(builder) {
   builder.onResolve({ filter: /^ajv\/dist\/2020$/ }, () => ({ path: 'ajv/dist/2020.js', external: true }));
   builder.onResolve({ filter: /^@anthropic-ai\/claude-agent-sdk$/ }, () => ({ path: 'optional-claude', namespace: 'core-optional' }));
@@ -46,7 +42,7 @@ const plugin = { name: 'core-edition', setup(builder) {
     // Preserve every resource's original directory without embedding the build machine's absolute path.
     const resource = '../layout/' + relative(repo, args.path).split(sep).join('/');
     source = source.replace(/import\.meta\.url/g, `new URL(${JSON.stringify(resource)}, import.meta.url).href`);
-    return { contents: source, loader: 'ts', resolveDir: dirname(args.path) };
+    return { contents: anonymize(source), loader: 'ts', resolveDir: dirname(args.path) };
   });
 } };
 
@@ -130,12 +126,16 @@ try {
   cpSync(join(repo, 'apps/homebrew/web'), join(output, 'apps/homebrew/web'), { recursive: true });
   cpSync(join(repo, 'apps/homebrew/runtime-manifests'), join(output, 'apps/homebrew/runtime-manifests'), { recursive: true });
   const pub = join(output, 'layout/apps/web/public'); mkdirSync(pub, { recursive: true });
-  const excludedAsset = /^(?:ledger|communications(?:-ai)?|web-x|android-shell|native-update|recent-photos)(?:\.|$)/;
+  const excludedAsset = omittedAssetPattern('homebrew');
   cpSync(join(repo, 'apps/web/public'), pub, { recursive: true, filter: path => { const rel = relative(join(repo, 'apps/web/public'), path); return !rel.split(sep).some(p => p.startsWith('.')) && !excludedAsset.test(rel) && !/\.map$/.test(rel) && (!/\.md$/.test(rel) || /(?:^|\/)(?:LICEN[CS]E|NOTICE|COPYING|README)/i.test(rel)); } });
   let index = readFileSync(join(pub, 'index.html'), 'utf8');
-  index = index.replace(/<button\b[^>]*data-view="(?:ledger|communications|web-x|resources)"[\s\S]*?<\/button>/g, '');
-  index = index.split('\n').filter(line => !/(?:src|href)="\/(?:communications[^"?]*|ledger|web-x|android-shell|native-update|recent-photos)\.(?:js|css)/.test(line)).join('\n');
+  index = transformIndexHtml(index);
   writeFileSync(join(pub, 'index.html'), index);
+  for (const name of readdirSync(pub)) {
+    const file = join(pub, name);
+    if (/\.(?:js|css|html|json|svg|webmanifest)$/.test(name) && lstatSync(file).isFile()) writeFileSync(file, anonymize(readFileSync(file, 'utf8')));
+  }
+  index = readFileSync(join(pub, 'index.html'), 'utf8');
   let runtimeJs = readFileSync(join(pub, 'runtime.js'), 'utf8');
   runtimeJs = runtimeJs.replace('lastKind : "codex"', 'lastKind : "pi"').replace('worktree: true };', 'worktree: false };').replace('ui.rt.workspace = saved.length <= 8192 ? saved : "";', 'ui.rt.workspace = saved && saved.length <= 8192 ? saved : (ui.rt.settings?.workspaceRoots?.[0] || "");');
   writeFileSync(join(pub, 'runtime.js'), runtimeJs);

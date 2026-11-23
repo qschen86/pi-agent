@@ -1,8 +1,8 @@
 {
-  "name": "pi-agent 控制台",
-  "short_name": "pi-agent",
+  "name": "合己 heji",
+  "short_name": "heji",
   "id": "/",
-  "description": "pi-agent 控制台：任务、项目、Agent 与多运行时对话",
+  "description": "合己 heji：本机 AI 工作台，多运行时对话、待办与产物",
   "lang": "zh-CN",
   "start_url": "/",
   "scope": "/",
@@ -12,25 +12,25 @@
   "theme_color": "#f1f1f9",
   "icons": [
     {
-      "src": "/icons/icon-192.png?v=b345149ead3c",
+      "src": "/icons/icon-192.png?v=cab46b70ba17",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512.png?v=e7050a0034aa",
+      "src": "/icons/icon-512.png?v=04d20c0f2402",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-maskable-512.png?v=2293c4e1d422",
+      "src": "/icons/icon-maskable-512.png?v=9fd3efed8b8c",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
     },
     {
-      "src": "/icons/app-icon.svg?v=b4676a9ca568",
+      "src": "/icons/app-icon.svg?v=ef2af46bdc5c",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"

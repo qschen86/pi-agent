@@ -521,4 +521,3 @@ export function validateTriage(v: unknown, ids: Set<string>): string[] {
   if (t.noiseReason !== undefined && typeof t.noiseReason !== "string") errors.push("noiseReason 必须是字符串");
   return errors;
 }
-

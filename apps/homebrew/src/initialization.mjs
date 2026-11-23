@@ -23,7 +23,7 @@ export function initializeInstallation({ root, password, passwordConfirmation, e
   if (existsSync(root)) throw Error('数据位置已经存在，请使用恢复流程，不能覆盖初始化');
   if (password !== passwordConfirmation) throw Error('两次密码不一致');
   // Model identity is chosen explicitly; never assume a personal models.json is present.
-  if (!['pi', 'codex', 'claude-code'].includes(runtimeKind)) throw Error('模型配置无效');
+  if (!['pi', 'codex', 'claude-code', 'antigravity'].includes(runtimeKind)) throw Error('模型配置无效');
   if (runtimeKind === 'pi' && (model?.provider !== 'deepseek' || typeof model.id !== 'string' || !/^[a-zA-Z0-9._:-]{1,120}$/.test(model.id) || typeof model.apiKey !== 'string' || !model.apiKey.trim() || model.apiKey.length > 4096 || /[\r\n\0]/.test(model.apiKey))) throw Error('模型配置无效');
   if (networkApiKey !== undefined && (typeof networkApiKey !== 'string' || !networkApiKey.trim() || networkApiKey.length > 4096 || /[\r\n\0]/.test(networkApiKey))) throw Error('网络检测 Key 无效');
   const admin = hashPassword(password);
@@ -36,12 +36,15 @@ export function initializeInstallation({ root, password, passwordConfirmation, e
     mkdirSync(join(stage, 'credentials/pi'), { mode: 0o700 });
     save('credentials/pi/auth.json', runtimeKind === 'pi' ? { deepseek: { type: 'api_key', key: model.apiKey.trim() } } : {});
     save('credentials/pi/settings.json', runtimeKind === 'pi' ? { defaultProvider: model.provider, defaultModel: model.id } : {});
-    for (const dir of ['credentials/codex', 'credentials/claude', 'runtime/home', 'runtime/tmp']) mkdirSync(join(stage, dir), { mode: 0o700 });
+    for (const dir of ['credentials/codex', 'credentials/claude', 'credentials/antigravity', 'runtime/home', 'runtime/tmp']) mkdirSync(join(stage, dir), { mode: 0o700 });
     if (networkApiKey) save('credentials/network.json', { ipapiKey: networkApiKey.trim() });
     // Optional runtimes have no purchased subscription in a new instance.
-    save('data/runtime-billing.json', { pi: { mode: 'api' }, codex: { mode: 'api' }, 'claude-code': { mode: 'api' } });
+    mkdirSync(join(stage, 'data/apps/shell'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(stage, 'data/.data-layout'), 'apps\n', { mode: 0o600, flag: 'wx' });
+    save('data/apps/shell/runtime-billing.json', { pi: { mode: 'api' }, codex: { mode: 'api' }, 'claude-code': { mode: 'api' }, antigravity: { mode: 'api' } });
     save('installation.json', {
       schema: 1, edition: 'mac-local-core', state: 'configured', components: CORE_COMPONENTS, runtimeKind,
+      enabledRuntimes: [runtimeKind],
       ...(runtimeKind !== 'pi' ? { onboarding: { component: 'pending', login: 'pending' } } : {}),
       // This does not assert that a model call or task has passed. Runtime onboarding records those separately.
       acceptance: { modelConnection: 'pending', firstTask: 'pending' },

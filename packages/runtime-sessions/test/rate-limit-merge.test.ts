@@ -14,6 +14,11 @@ const event = (usedPercent: number | null, resetsAt = "2026-10-13T04:20:00.000Z"
 });
 
 describe("mergeSampledRateLimit", () => {
+  it("同名窗口按模型组隔离，只更新对应模型组", () => {
+    const original={...usageApi,windows:[{group:"Gemini",label:"周窗口",usedPercent:10,resetsAt:null},{group:"Claude / GPT",label:"周窗口",usedPercent:50,resetsAt:null}]};
+    const next={...usageApi,windows:[{group:"Claude / GPT",label:"周窗口",usedPercent:75,resetsAt:null}]};
+    expect(mergeSampledRateLimit(original,next,NOW).windows).toEqual([original.windows[0],next.windows[0]]);
+  });
   it("keeps the known 5h percentage when a running sample carries no utilization", () => {
     const m = mergeSampledRateLimit(usageApi, event(null), NOW);
     expect(m.windows.map((w) => w.usedPercent)).toEqual([37, 5]);

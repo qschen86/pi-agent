@@ -25,7 +25,7 @@ for (const [label, table] of [["验收用例", ACCEPTANCE], ["留出用例（模
 
 describe("规则只挂给语义一致的记忆（fits）", () => {
   it("入口域名 / 北京时间 / 截图汇报互不串", () => {
-    const entry = "所有入口链接和验收核查都使用 gui-backup-cn.harness.fund，不再用 gui.harness.fund。";
+    const entry = "所有入口链接和验收核查都使用 console.example.com，不再用 primary.example.com。";
     const time = "时间表达默认按北京时间（UTC+8）：日历、定时任务、新建日程和与用户沟通的时间一律以北京时间为准。";
     const shot = "界面改动后先给真实渲染截图（浅色/夜间、多宽度，表格对照改前改后）。";
     const spacing = "各应用标题栏下方到子 tab 的这段间距要统一为 12px。";

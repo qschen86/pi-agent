@@ -13,6 +13,8 @@ type Block = { block: true; reason: string };
 const READ_TOOLS = new Set(["read", "grep", "find", "ls", "web_search", "web_open"]);
 const MEMORY_TOOLS = new Set(["memory_add", "memory_replace", "memory_remove", "memory_search"]);
 const MUTATION_TOOLS = new Set(["write", "edit", "bash"]);
+/** bash 后台任务的查看/终止：只能碰本进程自己启动的任务、不执行任何命令；启动本身是带 background 的 bash 调用，照常过上面的闸门。 */
+const JOB_TOOLS = new Set(["bash_output", "bash_kill"]);
 
 /** 会话在自己的 worktree 里改代码时的写入边界：repoRoot 之内、allow 之外的 write/edit 一律拒绝。 */
 export interface PiWorktreeWriteGuard { cwd: string; allow: string; repoRoot: string }
@@ -61,7 +63,10 @@ export function createPiToolGate(mode: string, community?: PiCommunityGate, nati
     if (scan) return deny(scan);
     const violation=process.env.PI_PLATFORM_BROWSER_SOCKET?screenshotViolation(event.toolName,event.input,worktreeGuard&&worktreeGuard!=="invalid"?worktreeGuard.cwd:process.cwd()):undefined;
     if(violation)return deny(violation);
+    if (JOB_TOOLS.has(event.toolName) && (mode === "pi-ask" || mode === "pi-native")) return;
     if (READ_TOOLS.has(event.toolName) || event.toolName === "platform_browser" && !!process.env.PI_PLATFORM_BROWSER_SOCKET) return;
+    // codemode 自己没有副作用：脚本里的 write/edit/bash 等嵌套调用会逐个再过这道闸门（读写限制、审批照常）。评测装配不挂它，仍按未知工具拒绝。
+    if (event.toolName === "codemode" && mode !== "pi-evaluation") return;
     // The host executor owns the separate, explicit permission decision for this tool.
     if (event.toolName === "bash_escalated" && mode === "pi-ask") {
       if (!event.toolCallId || seen.has(event.toolCallId) || !ctx.hasUI) return deny("Duplicate, missing or unavailable host execution request");

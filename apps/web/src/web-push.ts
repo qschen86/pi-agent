@@ -9,13 +9,13 @@ import webpush from "web-push";
 import { withHostMutex } from "@pi-agent/runtime-sessions";
 import type { ProjectedEvent, RuntimeSessionManager, SessionBinding } from "@pi-agent/runtime-sessions";
 
-export type NotificationKind = "reply" | "completed" | "failed" | "approval";
+export type NotificationKind = "reply" | "completed" | "failed" | "approval" | "reminder";
 export interface NotificationPreferences {
-  reply: boolean; completed: boolean; failed: boolean; approval: boolean;
+  reply: boolean; completed: boolean; failed: boolean; approval: boolean; reminder: boolean;
   currentSession: boolean; preview: boolean;
 }
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
-  reply: true, completed: true, failed: true, approval: true, currentSession: false, preview: false
+  reply: true, completed: true, failed: true, approval: true, reminder: true, currentSession: false, preview: false
 };
 export interface PushSubscription { endpoint: string; keys: { p256dh: string; auth: string } }
 interface Device {
@@ -28,6 +28,8 @@ interface Device {
 interface Notice {
   id: string; sessionId: string; turnNo?: number; kind: NotificationKind;
   title: string; text: string; at: number; expires: number; messageId?: string;
+  /** 日程提醒：“全端推送”的自定义标题 / 正文 / 深链；其它通知没有这个字段 */
+  reminder?: { title: string; body: string; url: string };
 }
 interface Job { id: string; deviceId: string; notice: Notice; due: number; attempts: number }
 interface State {
@@ -50,7 +52,7 @@ interface Options {
 }
 export type WebPushConfig = Pick<Options, "dir" | "subject" | "send" | "now" | "autoStart">;
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
-const labels: Record<NotificationKind, string> = { reply: "助手消息生成完成", completed: "本轮完成", failed: "本轮失败", approval: "需要审批" };
+const labels: Record<NotificationKind, string> = { reply: "助手消息生成完成", completed: "本轮完成", failed: "本轮失败", approval: "需要审批", reminder: "日程提醒" };
 const RETENTION = 24 * 3600_000;
 const TTL = 15 * 60_000;
 // 2 秒只是扫描节拍：恢复扫描与空闲 flush 按更低频率执行，少和页面读取争抢主机互斥锁。
@@ -232,6 +234,18 @@ export class WebPushService {
     const payload: PushPayload = { id: `test:${randomUUID()}`, binding: digest(`${d.owner}|${d.since}`), sessionId: "", kind: "reply", title: "测试通知", body: "本设备可以接收会话通知", url: "/#/rt", expiresAt: this.now() + TTL, currentSession: true, test: true };
     await this.deliver(d, payload);
   }
+  /**
+   * 日程提醒：发给所有已开启通知的设备（Web Push / 已安装的 PWA），与管理会话无关。
+   * 进持久队列，和设备上的任务通知同一套重试与去重；到点前由 NoteReminders 调用。
+   */
+  remind(input: { id: string; title: string; body: string; url: string; at: number; expires: number }): void {
+    if (!/^note-reminder:/.test(input.id) || input.id.length > 500) throw new Error("提醒标识无效");
+    if (!input.title.trim() || !input.body.trim()) throw new Error("提醒内容为空");
+    if (!/^\/#\/notes(?:\/widget\/\d{4}-\d{2}-\d{2}(?:\/[A-Za-z0-9_-]+)?)?$/.test(input.url)) throw new Error("提醒链接无效");
+    if (!Number.isFinite(input.at) || !Number.isFinite(input.expires) || input.expires <= this.now()) return;
+    this.enqueue({ id: input.id, sessionId: "", kind: "reminder", title: input.title, text: input.body, at: input.at, expires: input.expires,
+      reminder: { title: input.title.slice(0, 120), body: input.body.slice(0, 300), url: input.url } });
+  }
   private binding(id: string): SessionBinding | undefined {
     const b = this.opts.runtime.store.binding(id);
     return b && this.eligible(b) ? b : undefined;
@@ -328,7 +342,7 @@ export class WebPushService {
         }
         const replyKey = notice.messageId ? digest(`${d.id}|${d.since}|${notice.messageId}`) : undefined;
         const merge = notice.kind === "completed" && !!replyKey;
-        const allowed = d.preferences[notice.kind] || merge && d.preferences.reply;
+        const allowed = notice.kind === "reminder" ? d.preferences.reminder !== false : d.preferences[notice.kind] || merge && d.preferences.reply;
         s.seen[key] = this.now();
         if (!allowed) continue;
         // Suppress at the server: a userVisibleOnly push must display a notification.
@@ -366,20 +380,24 @@ export class WebPushService {
         if (!next) break;
         const { job, device } = next;
         const b = job.notice.sessionId ? this.binding(job.notice.sessionId) : undefined;
+        const reminder = job.notice.reminder;
         const approvalValid = job.notice.kind !== "approval" || (job.notice.id.startsWith("input:")
           ? b?.status === "waiting-input" && !this.opts.runtime.pendingApprovals().some(a => a.platformSessionId === b.platformSessionId)
           : this.opts.runtime.pendingApprovals().some(a => `approval:${a.approvalId}` === job.notice.id));
-        const kindEnabled = device && (device.preferences[job.notice.kind] || job.notice.kind === "completed" && job.notice.messageId && device.preferences.reply);
+        const kindEnabled = device && (job.notice.kind === "reminder" ? device.preferences.reminder !== false
+          : device.preferences[job.notice.kind] || job.notice.kind === "completed" && job.notice.messageId && device.preferences.reply);
         // Only a reading acknowledgement after this event suppresses it. A stale
         // heartbeat from a page just closed must not hide a new background message.
-        const reading = device && !device.preferences.currentSession && Object.values(device.presence ?? {}).some(p => p.sessionId === job.notice.sessionId && p.at >= job.notice.at && p.at + 45_000 > this.now());
-        if (!device || !b || !approvalValid || !kindEnabled || reading || !this.opts.authorized(device.owner, device.public)) {
+        const reading = device && job.notice.sessionId && !device.preferences.currentSession
+          && Object.values(device.presence ?? {}).some(p => p.sessionId === job.notice.sessionId && p.at >= job.notice.at && p.at + 45_000 > this.now());
+        if (!device || (!reminder && !b) || !approvalValid || !kindEnabled || reading || !this.opts.authorized(device.owner, device.public)) {
           this.transaction(s => { delete s.jobs[job.id]; }); continue;
         }
         try {
           await this.deliver(device, { id: job.notice.id, binding: digest(`${device.owner}|${device.since}`), sessionId: job.notice.sessionId, kind: job.notice.kind,
-            title: job.notice.id.startsWith("input:") ? "需要你的处理" : labels[job.notice.kind], body: `${b.title || "会话"}${device.preferences.preview && job.notice.text ? `：${job.notice.text.slice(0, 160)}` : ""}`,
-            url: `/#/rt/${encodeURIComponent(job.notice.sessionId)}`, expiresAt: job.notice.expires, currentSession: device.preferences.currentSession });
+            title: reminder ? reminder.title : job.notice.id.startsWith("input:") ? "需要你的处理" : labels[job.notice.kind],
+            body: reminder ? reminder.body : `${b!.title || "会话"}${device.preferences.preview && job.notice.text ? `：${job.notice.text.slice(0, 160)}` : ""}`,
+            url: reminder ? reminder.url : `/#/rt/${encodeURIComponent(job.notice.sessionId)}`, expiresAt: job.notice.expires, currentSession: reminder ? false : device.preferences.currentSession });
           this.transaction(s => { delete s.jobs[job.id]; (s.sent ??= {})[job.id] = this.now(); const d = s.devices[device.id]; if (d) { d.lastSuccess = this.now(); delete d.lastError; } });
         } catch (error) {
           const status = (error as { statusCode?: number }).statusCode;

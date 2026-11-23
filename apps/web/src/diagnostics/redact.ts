@@ -62,7 +62,7 @@ function frameLocation(raw: string): string | null {
   if (/^https?:\/\//.test(path)) {
     try {
       const url = new URL(path);
-      if (!/^(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(url.host) && !url.host.endsWith(".harness.fund") && !/^[\w.-]+\.(?:test|local)(?::\d+)?$/.test(url.host)) return "[external]";
+      if (!/^(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(url.host) && !url.host.endsWith(".example.com") && !/^[\w.-]+\.(?:test|local)(?::\d+)?$/.test(url.host)) return "[external]";
       path = url.pathname;
     } catch { return null; }
   }

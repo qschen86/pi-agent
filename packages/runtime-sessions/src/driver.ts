@@ -103,9 +103,27 @@ export interface NativeFingerprint {
   lastClientMessageId?: string;
   /** True only for an authoritative terminal record, never inferred from process disappearance. */
   terminalObserved?: boolean;
+  /** 读不到原生记录、沿用上次指纹时的说明：只记审计，不参与比对 */
+  note?: string;
+  /** 本次值与上次记录的语式不同（指纹格式升级）：不可比，只重建基线，不判外部写入 */
+  migrated?: boolean;
+}
+
+/** 全部新增记录均已由原生结构化来源核对为本轮后台续写；undefined 表示无法证明，不能放行。 */
+export interface NativeContinuation {
+  /** Native event keys already delivered through the live sink; persisted for recovery deduplication. */
+  streamedKeys?: string[];
+  /** Structured native tool IDs used to check live-stream persistence, never text-based ownership. */
+  toolCallIds?: string[];
+  fingerprint: string;
+  events: DriverEvent[];
+  active: boolean;
+  pending: boolean;
 }
 
 export interface TurnHandle {
+  /** The original sink and tool resources remain in use after the foreground result. */
+  continuationDone?: Promise<void>;
   done: Promise<TurnResult>;
   interrupt(): Promise<void>;
   /**
@@ -166,6 +184,8 @@ export interface RuntimeDriver {
   /** Complete host-owned evaluation policy; absent while any effective tool channel is unknown. */
   evaluationPolicy?(): { version: string; channels: string[] } | undefined;
   probe(): Promise<ProbeOutcome>;
+  /** 当前可执行文件的指纹（每次现查，不走缓存）；管理器据此发现 CLI 升级并自动重新检测。没有独立二进制的 runtime 不实现 */
+  binaryStamp?(): { path: string; mtimeMs: number } | undefined;
   /** Runtime owns grants and persistence. Frontends pass native identity plus opaque grant IDs only. */
   permissionGrants?(nativeSessionId:string,options:{workspace:string;revoke?:{id?:string}}):Promise<import('../../pi-runtime/src/permission-control.js').PermissionGrantList>;
   /** 返回时原生会话已创建/恢复且本轮输入已送出；任何一步失败抛 DriverStageError */
@@ -175,7 +195,9 @@ export interface RuntimeDriver {
   /** Lightweight metadata read after a turn; never loads transcripts just to name a session. */
   readTitle?(nativeSessionId: string, opts: { workspace?: string }): Promise<Pick<HistoryRead, "title" | "titleKind"> | undefined>;
   /** 外部写入检测与重启核对：原生记录的指纹 */
-  fingerprint(nativeSessionId: string, opts: { workspace?: string }): Promise<NativeFingerprint | undefined>;
+  fingerprint(nativeSessionId: string, opts: { workspace?: string; /** 绑定里上次记录的指纹：读不到原生记录时按需沿用，只有运行时自己决定用不用 */ previous?: string }): Promise<NativeFingerprint | undefined>;
+  continuationState?(nativeSessionId: string): { clientMessageId: string; revision: number; active: boolean } | undefined;
+  readContinuation?(nativeSessionId: string, opts: { previous: string; toolCallIds: string[]; endedAt: string }): Promise<NativeContinuation | undefined>;
   /** 首轮/续聊核对：带该客户端消息 ID 的用户消息是否已在原生记录中 */
   findClientMessage(nativeSessionId: string, clientMessageId: string, opts: { workspace?: string }): Promise<boolean | undefined>;
   rateLimits(): Promise<Omit<RateLimitSnapshot, "identityScopeId" | "runtimeKind"> | undefined>;

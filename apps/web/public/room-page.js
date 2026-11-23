@@ -197,7 +197,7 @@ function roomMemberEditor(member, index, onRemove) {
   const choice = (label, value, options, change) => { const el = select(label, value, options, change); el.value = value; return el; };
   return h("fieldset", { class: "room-member-editor" }, h("legend", {}, rtAvatar(member.runtimeKind, member.model || model?.id, "sm"), ` 成员 ${index + 1}`),
     field("别名（群里 @ 它用）", h("input", { value: member.alias, "aria-label": `成员 ${index + 1} 别名`, "data-key": `room-alias-${index}`, maxlength: 32, oninput: (e) => { member.alias = e.target.value; ui.room.createKey = null; } })),
-    field("运行时", choice(`成员 ${index + 1} 运行时`, member.runtimeKind, [["codex", "Codex"], ["claude-code", "Claude Code"], ["pi", "Pi"]], (v) => { member.runtimeKind = v; member.model = ""; member.effort = ""; member.permissionMode = ""; ui.room.createKey = null; })),
+    field("运行时", choice(`成员 ${index + 1} 运行时`, member.runtimeKind, RT_KINDS.map((k) => [k, RT_KIND[k]]), (v) => { member.runtimeKind = v; member.model = ""; member.effort = ""; member.permissionMode = ""; ui.room.createKey = null; })),
     field("模型", choice(`成员 ${index + 1} 模型`, member.model || "", [["", "运行时默认"], ...(p?.models || []).map((m) => [m.id, m.label])], (v) => { member.model = v; member.effort = ""; ui.room.createKey = null; })),
     field("推理强度", choice(`成员 ${index + 1} 推理强度`, member.effort || "", [["", "默认"], ...(model?.efforts || []).map((v) => [v, v])], (v) => { member.effort = v; ui.room.createKey = null; })),
     ui.room.view?.room?.worktree && !ui.room.view.room.worktree.cleanedAt ? field("权限", roomPermSelect(member, `成员 ${index + 1} 权限`, (v) => { member.permissionMode = v; renderMain(); })) : null,
@@ -206,7 +206,7 @@ function roomMemberEditor(member, index, onRemove) {
 }
 function roomMemberPayload(m) { const p = (ui.rt.profiles || []).find((p) => p.runtimeKind === m.runtimeKind); return { alias: m.alias, runtimeKind: m.runtimeKind, ...(m.model ? { model: m.model } : {}), ...(m.effort ? { effort: m.effort } : {}), ...(m.permissionMode ? { permissionMode: m.permissionMode } : {}), confirmedProfileVersion: p?.checkedAt }; }
 /** 可写成员可选的权限（不越出工作区，和对比组 worktree 的规则一致）；空串 = 只读 */
-const ROOM_WRITE_MODES = { codex: ["ask", "auto-review"], "claude-code": ["default", "acceptEdits"], pi: ["pi-ask"] };
+const ROOM_WRITE_MODES = { codex: ["ask", "auto-review"], "claude-code": ["default", "acceptEdits"], pi: ["pi-ask"], antigravity: ["default", "acceptEdits", "auto"] };
 function roomPermLabel(kind, mode) {
   if (!mode) return "只读";
   const p = (ui.rt.profiles || []).find((x) => x.runtimeKind === kind), opt = p && p.permissionOptions ? p.permissionOptions.find((x) => x.id === mode) : null;
@@ -218,7 +218,7 @@ function roomPermSelect(m, label, onChange) {
   el.value = m.permissionMode || ""; return el;
 }
 function roomListToggle() { return h("button", { type: "button", class: "btn small rt-list-toggle", "aria-expanded": String(ui.rt.listOpen), onclick: () => { ui.rt.listOpen = !ui.rt.listOpen; renderMain(); } }, "会话列表"); }
-const ROOM_KIND_ALIAS = { codex: "codex", "claude-code": "claude", pi: "pi" };
+const ROOM_KIND_ALIAS = { codex: "codex", "claude-code": "claude", pi: "pi", antigravity: "agy" };
 function roomNewSave() {
   const f = ui.room.new;
   try { localStorage.setItem(ROOM_NEW_KEY, JSON.stringify({ version: 1, members: f.members.map(({ alias, aliasAuto, runtimeKind, model, effort, permissionMode }) => ({ alias, aliasAuto, runtimeKind, model, effort, permissionMode })), settings: f.settings })); } catch { /* 存储不可用时只保留页面内的草稿 */ }

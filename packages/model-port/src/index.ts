@@ -21,7 +21,7 @@ import { runPiCompletion, THINKING_LEVELS } from "@pi-agent/adapter-pi";
 import type { PiCompletion, PiTextOptions, ThinkingLevel } from "@pi-agent/adapter-pi";
 
 /** visualReviewer（v2.6）：看渲染截图、提出可定位的视觉问题；不改计划、不签发通过 */
-export type ModelRole = "planner" | "contractCritic" | "acceptanceJudge" | "benchmarkJudge" | "probe" | "visualReviewer" | "sessionTitle" | "memoryTitle" | "memoryCategory" | "memoryCandidate" | "quickReply" | "noteCategory" | "noteKind" | "noteDevelopment" | "noteIteration" | "noteRanking" | "gameCompanion" | "ledgerChat" | "challengePoem" | "challengeIcon" | "diagnosticTriage" | "errorStatsMerge" | "errorStatsAssess" | "wrongBookRead" | "wrongBookQuiz" | "wrongBookVerify" | "wrongBookExplain" | "artifactCategory";
+export type ModelRole = "planner" | "contractCritic" | "acceptanceJudge" | "benchmarkJudge" | "probe" | "visualReviewer" | "sessionTitle" | "memoryTitle" | "memoryCategory" | "memoryCandidate" | "quickReply" | "noteCategory" | "noteKind" | "noteDevelopment" | "noteIteration" | "noteRanking" | "gameCompanion" | "ledgerChat" | "challengePoem" | "challengeIcon" | "diagnosticTriage" | "errorStatsMerge" | "errorStatsAssess" | "runtimeUpdateAnalysis" | "wrongBookRead" | "wrongBookQuiz" | "wrongBookVerify" | "wrongBookExplain" | "artifactCategory";
 
 /** 平台登记的角色配置：模型输出不能改它，也不能指定服务地址或凭据。 */
 export interface RoleModelConfig {

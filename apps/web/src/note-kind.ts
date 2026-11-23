@@ -13,6 +13,7 @@ import { NOTE_MAX_LENGTH, NOTE_REPEAT_WEEKDAYS, NOTE_SCHEDULE_MAX_REPEATS, isNot
 import { noteModelImages } from "./note-categories.js";
 import { PLATFORM_TIME_ZONE, beijingDateKey } from "./platform-time.js";
 import { alignLunarStart } from "./lunar.js";
+import { withNoteRemind } from "./note-reminder.js";
 
 export const NOTE_KIND_POLICY = "note-kind@v6-lunar";
 export const NOTE_KIND_CONFIG: RoleModelConfig = {
@@ -36,7 +37,7 @@ export const NOTE_KIND_SYSTEM = `你是 pi-agent 记录的大类判断器。用�
 - 连续的一段（“11 号到 13 号”“周五到周日”）：用 start / end 表示起止，不要用 starts。
 - 周期性安排（“每周五晚上 8 点半”“每天 7 点”“每月 1 号”“每年 10 月 1 日”）：start / end 给第一次（或最近的下一次）发生的时间，另外给 repeat；不要用 starts 把周期展开成很多次。repeat 只写频率与可选的间隔、星期、结束条件：{"freq":"daily|weekly|monthly|yearly","interval":1,"byDay":["MO","WE","FR"],"until":"…"或"count":N}。每周默认按 start（没有 start 时按 end）的星期几重复，每月按它的日，每年按它的月日；until 与 count 最多给一个，都不给表示一直重复。
 - 每周落在好几天（“工作日”“每周一三五”“周末”“周二周四”）：freq 用 weekly，byDay 列出星期（MO TU WE TH FR SA SU 之一，不重复）：工作日 = ["MO","TU","WE","TH","FR"]，周末 = ["SA","SU"]。byDay 只能配 weekly；“每天”不用 byDay。start（或 end）给第一次真正发生的那天，它的星期必须在 byDay 里：今天是工作日且时间还没过就从今天起，否则从下一个匹配的日子起。每 N 周的“双周一三五”再加 interval。“法定工作日”“排除节假日”做不到，按普通工作日处理。
-- 周期性且只说了截止（“每周五晚上 8 点半之前去接孩子”）：只给 end（第一次截止时间）和 repeat，不给 start。
+- 周期性且只说了截止（“每周五晚上 8 点半之前去接小明”）：只给 end（第一次截止时间）和 repeat，不给 start。
 - 农历周期（“冬月十五老妈过生日”“每年正月初一”“农历八月十五”“每月初一十五上香”“腊月三十”）：只写农历月日，不要自己换算成公历：repeat 里加 lunar。每年某个农历月日：{"freq":"yearly","lunar":{"month":11,"days":[15]}}；每个农历月的某几天：{"freq":"monthly","lunar":{"days":[1,15]}}。农历月份：正月 = 1、二月 = 2 … 十月 = 10、冬月 = 11、腊月 = 12；只有明说“闰某月”才加 "leap":true；农历日：初一 = 1、初十 = 10、十五 = 15、二十 = 20、廿三 = 23、三十 = 30，days 最多 4 个。生日、忌日、节日这类农历日子没说具体几点就是全天（allDay 为 true）；有 lunar 时 start 给今天的日期即可（宿主会改成第一次真正发生的公历日），不要给 byDay。
 内容整理（宿主 writing=true 时）：
 - 若宿主给了 fixedKind，说明这是人工指定的类型，必须按该类型输出与整理；不要因为出现日期就把人工指定的笔记当作日程。
@@ -230,7 +231,7 @@ export class NoteKinds {
     if (n.kindPending && current.kindPending && current.kindSource !== "user") {
       patch.kindPending = false;
       if (outcome && !Array.isArray(outcome)) Object.assign(patch, {
-        kind: outcome.kind, kindSource: "ai", schedule: outcome.schedule,
+        kind: outcome.kind, kindSource: "ai", schedule: withNoteRemind(outcome.schedule, n.text),
         ...(outcome.kind === "note" && current.done ? { done: false } : {})
       });
     }

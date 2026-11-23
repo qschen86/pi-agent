@@ -7,9 +7,9 @@ import type { PermissionMode, PermissionOption } from "./permissions.js";
  * 不写 TaskSession.aggregateVersion，不冒充合约门禁。所有原生 ID 都来自 runtime 的返回或原生记录。
  */
 
-export type RuntimeKind = "codex" | "claude-code" | "pi";
-export const RUNTIME_KINDS: readonly RuntimeKind[] = ["codex", "claude-code", "pi"];
-export const RUNTIME_LABEL: Record<RuntimeKind, string> = { codex: "Codex Desktop", "claude-code": "Claude Code CLI", pi: "Pi" };
+export type RuntimeKind = "codex" | "claude-code" | "pi" | "antigravity";
+export const RUNTIME_KINDS: readonly RuntimeKind[] = ["codex", "claude-code", "pi", "antigravity"];
+export const RUNTIME_LABEL: Record<RuntimeKind, string> = { codex: "Codex Desktop", "claude-code": "Claude Code CLI", pi: "Pi", antigravity: "Antigravity CLI" };
 
 /** F01：每项能力单独判定，不把"发现 CLI"等同于"可执行" */
 export type CapabilityName = "create" | "read" | "stream" | "resume" | "interrupt" | "approval" | "usage" | "rateLimits" | "roleInstructions" | "imageInput";
@@ -46,7 +46,7 @@ export interface RuntimeProfile {
   binaryPath?: string;
   binaryVersion?: string;
   sdkVersion?: string;
-  transport: "app-server-stdio" | "agent-sdk" | "pi-rpc";
+  transport: "app-server-stdio" | "agent-sdk" | "pi-rpc" | "acp-stdio";
   state: ProfileState;
   stateReason: string;
   capabilities: Record<CapabilityName, Capability>;
@@ -193,7 +193,7 @@ export interface SessionBinding {
   /** 外部写入冲突（§4.3）：存在时平台暂停写入，只读观察 */
   conflict?: { detectedAt: string; reason: string; evidence: string };
   /** 最后一次与原生记录核对的指纹（Codex updatedAt/turn 数；Claude 文件大小/末条 uuid） */
-  nativeFingerprint?: { value: string; checkedAt: string };
+  nativeFingerprint?: { value: string; checkedAt: string; streamedKeys?: string[] };
   archived?: boolean;
   /** 归档时刻（恢复时清掉）：当天会话统计据此区分「今天归档」 */
   archivedAt?: string;
@@ -245,7 +245,7 @@ export interface RoleBinding {
   templateVersion: string;
   instructionsHash: string;
   /** 注入位置：codex developerInstructions / claude systemPrompt.append */
-  injection: "codex.developerInstructions" | "claude.systemPrompt.append" | "pi.appendSystemPrompt";
+  injection: "codex.developerInstructions" | "claude.systemPrompt.append" | "pi.appendSystemPrompt" | "antigravity.systemPrompt.append";
   /** 新建、每次续聊与重启恢复后的发送都重新注入同一份角色正文 */
   evidence: { requested: true; runtimeConfirmed: "not_collected" | RoleRuntimeCheck; behaviorVerified?: { at: string; ref: string } };
 }
@@ -391,7 +391,7 @@ export interface UsageSummary {
 export interface RateLimitSnapshot {
   identityScopeId: string;
   runtimeKind: RuntimeKind;
-  windows: Array<{ label: string; usedPercent: number | null; resetsAt: string | null; windowMinutes?: number | null }>;
+  windows: Array<{ label: string; usedPercent: number | null; resetsAt: string | null; windowMinutes?: number | null; group?: string }>;
   plan?: string;
   source: string;
   experimental?: boolean;
@@ -517,6 +517,8 @@ export interface DirectoryEntry {
   roomRef?: { roomId: string; memberId: string };
   /** 最近一次快捷回复的第一条本身是 action（部署 / 归档）；会话列表据此显示标签 */
   quickAction?: QuickActionBadge;
+  /** 排队里最早的一条预约发送时间（UTC ISO）；会话列表据此显示「预约」标签 */
+  scheduledNext?: string;
   archived?: boolean;
 }
 

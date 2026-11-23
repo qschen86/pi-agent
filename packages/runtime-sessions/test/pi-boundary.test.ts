@@ -49,7 +49,7 @@ it.each(["pi-ask", "pi-read-only"])("real %s boundary enforces workspace and sen
   expect((await execute('cat "$TARGET"', { TARGET: join(args.workspace, ".env") })).status).not.toBe(0);
   if (mode === "pi-read-only") {
     const tools = b.argsPrefix[b.argsPrefix.indexOf("--tools") + 1].split(",");
-    expect(tools).toEqual(["read", "grep", "find", "ls"]);
+    expect(tools).toEqual(["read", "grep", "find", "ls", "codemode"]);
   }
 });
 

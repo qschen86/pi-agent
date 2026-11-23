@@ -17,7 +17,7 @@ const DAY_MS = 86_400_000;
 
 export interface Bucket { n: number; sessions: string[]; last: number; sample: string; kind: ErrorKind }
 export interface TodoRecord {
-  noteId: string; rule: "cross-runtime" | "memory-single"; createdAt: string; updatedAt: string;
+  noteId: string; rule: "cross-runtime" | "memory-single" | "gate-flaky"; createdAt: string; updatedAt: string;
   runtimes: string[]; total: number; textHash: string;
   /** 这条待办的正文里已经带了 AI 评估 */
   assessed?: boolean;
@@ -53,7 +53,7 @@ export interface RunRecord {
 }
 export interface State {
   version: 1;
-  cursors: { events: Record<string, { offset: number; size: number }>; deploy: { offset: number }; audit: { offset: number } };
+  cursors: { events: Record<string, { offset: number; size: number }>; deploy: { offset: number }; audit: { offset: number }; flaky?: { offset: number } };
   buckets: Record<string, Record<string, Bucket>>;
   seen: Record<string, number>;
   merges: Record<string, string>;
@@ -73,7 +73,7 @@ export function normalizeRun(r: Partial<RunRecord> & { startedAt: string; date: 
     id: r.id ?? `old${Date.parse(r.startedAt).toString(16).slice(-5)}`,
     trigger: r.trigger ?? "catch-up",
     status: r.status ?? (!r.finishedAt ? "interrupted" : String(r.note ?? "").startsWith("失败") ? "failed" : "ok"),
-    added: r.added ?? 0, byKind: r.byKind ?? { tool: 0, deploy: 0, memory: 0 }, merged: r.merged ?? 0, costUsd: r.costUsd ?? 0,
+    added: r.added ?? 0, byKind: { tool: 0, deploy: 0, memory: 0, flaky: 0, ...r.byKind }, merged: r.merged ?? 0, costUsd: r.costUsd ?? 0,
     created, createdTodos: r.createdTodos ?? created.map((noteId) => ({ noteId, title: "（旧记录，没有标题）" })), deferred: r.deferred ?? 0
   };
 }

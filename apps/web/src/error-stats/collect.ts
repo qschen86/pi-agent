@@ -2,7 +2,8 @@
  * 增量读取三类报错来源（只读，不改源文件）：
  * - 会话事件 <dataDir>/runtime/events/<会话>.jsonl：`kind=tool` 且 `status=failed` 的事件；
  * - 部署日志 <guiRoot>/when-idle/history.log：失败的部署；
- * - 审计 <dataDir>/runtime/audit.jsonl：`memory-enforcement-exhausted`（强约束重试用尽）。
+ * - 审计 <dataDir>/runtime/audit.jsonl：`memory-enforcement-exhausted`（强约束重试用尽）；
+ * - 门禁 <guiRoot>/test-gates/flaky-tests.jsonl：复跑才通过的测试文件。
  * 每个文件只读游标之后追加的部分；第一次（没有游标）只回填 sinceMs 之后有改动的文件。
  * 整份事件目录有几百 MB，所以按块读、行级先用字符串过滤再解析 JSON，并且每个文件之间让出事件循环。
  */
@@ -11,7 +12,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseLocalStamp } from "../diagnostics/triage.js";
-import { deployOccurrences, isNoiseTool, memoryFingerprint, runtimeOfParser, sampleOfTool, toolFingerprint, type Occurrence, type StatsRuntime } from "./normalize.js";
+import { deployOccurrences, flakyOccurrences, isNoiseTool, memoryFingerprint, runtimeOfParser, sampleOfTool, toolFingerprint, type Occurrence, type StatsRuntime } from "./normalize.js";
 import type { ErrorStatsStore } from "./store.js";
 
 const CHUNK = 1 << 20;
@@ -126,6 +127,24 @@ export async function collectEnforcementExhausted(o: CollectOptions): Promise<nu
     const problem = exhaustedProblem(o.runtimeDir, e.platformSessionId, e.turnNo ?? 0);
     for (const rule of e.rules ?? []) {
       const occ: Occurrence = { kind: "memory", runtime, fingerprint: memoryFingerprint(rule), at, sessionId: e.platformSessionId, sample: problem || `规则 ${rule}｜第 ${e.turnNo ?? "?"} 回合`, key: `memory:${e.at}|${e.platformSessionId}|${rule}` };
+      if (o.store.add(occ)) added++;
+    }
+  });
+  cur.offset = next;
+  return added;
+}
+
+export async function collectFlaky(o: CollectOptions): Promise<number> {
+  const file = join(o.guiRoot, "test-gates", "flaky-tests.jsonl");
+  if (!existsSync(file)) return 0;
+  const st = statSync(file);
+  const cur = (o.store.state.cursors.flaky ??= { offset: 0 });
+  const from = st.size >= cur.offset ? cur.offset : 0;
+  if (from === st.size) return 0;
+  let added = 0;
+  const next = await readLines(file, from, st.size, (line) => {
+    for (const occ of flakyOccurrences(line)) {
+      if (occ.at < o.sinceMs) continue;
       if (o.store.add(occ)) added++;
     }
   });
