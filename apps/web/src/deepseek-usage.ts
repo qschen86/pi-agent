@@ -6,6 +6,7 @@
  * - 金额是按 Pi 模型表单价反算的估算，不是服务商账单；未知模型只计 token，不假装金额为 0。
  * - 平台功能调用从本版本起实时写账；升级前已有的审计记录在首次启动时导入一次，避免重复计算。
  */
+import { appData } from "./app-data.js";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ModelInvocationPort, RoleModelConfig } from "@pi-agent/model-port";
@@ -48,7 +49,8 @@ const ROLE_CHANNELS: Record<string, DeepSeekChannel> = {
   visualReviewer: { app: "平台", feature: "视觉评审" },
   diagnosticTriage: { app: "平台", feature: "故障分诊" },
   errorStatsMerge: { app: "平台", feature: "错误归并" },
-  errorStatsAssess: { app: "平台", feature: "错误评估" }
+  errorStatsAssess: { app: "平台", feature: "错误评估" },
+  runtimeUpdateAnalysis: { app: "平台", feature: "运行时更新分析" }
 };
 
 /** 角色到应用-功能的映射；同一角色有审查/记忆等变体时按提示词版本再细分。 */
@@ -973,7 +975,7 @@ function mtimeOf(file: string): string {
  */
 export function readLegacyDeepSeekUsage(dataDir: string): DeepSeekUsageEntry[] {
   const out: DeepSeekUsageEntry[] = [];
-  const runtimeAudit = join(dataDir, "runtime", "audit.jsonl");
+  const runtimeAudit = appData(dataDir, "resources").foreign("runtime-sessions", "runtime", "audit.jsonl");
   if (existsSync(runtimeAudit)) {
     for (const line of readFileSync(runtimeAudit, "utf8").split("\n")) {
       if (!line.trim()) continue;
@@ -996,7 +998,7 @@ export function readLegacyDeepSeekUsage(dataDir: string): DeepSeekUsageEntry[] {
     }
   }
 
-  const categoriesFile = join(dataDir, "note-categories.json");
+  const categoriesFile = appData(dataDir, "resources").foreign("notes", "note-categories.json");
   const categories = readJson(categoriesFile) as { jobs?: Record<string, { audit?: Array<Record<string, unknown>> }> } | undefined;
   for (const job of Object.values(categories?.jobs ?? {})) {
     for (const audit of Array.isArray(job.audit) ? job.audit : []) {
@@ -1014,7 +1016,7 @@ export function readLegacyDeepSeekUsage(dataDir: string): DeepSeekUsageEntry[] {
     }
   }
 
-  const iterationsFile = join(dataDir, "note-iterations.json");
+  const iterationsFile = appData(dataDir, "resources").foreign("notes", "note-iterations.json");
   const iterations = readJson(iterationsFile) as { audit?: Array<Record<string, unknown>> } | undefined;
   for (const audit of Array.isArray(iterations?.audit) ? iterations.audit : []) {
     const config = (audit["config"] ?? {}) as Partial<RoleModelConfig>;

@@ -1,0 +1,653 @@
+{
+  "id": "v005",
+  "seq": 5,
+  "date": "2026-11-16",
+  "title": "回合结束时核验平台浏览器截图来源",
+  "notes": [
+    "补记已合入的截图来源核验规则：截图路径、所属会话、真实 screenshot 工具调用及 SHA-256 必须一致。",
+    "截图来源问题作为回合证据传入强约束校验；平台来源规则自动检查，并从供用户绑定的规则目录中隐藏。"
+  ],
+  "sourceHash": "e6226e896d55ac0f",
+  "layers": [
+    {
+      "id": "source",
+      "no": 1,
+      "title": "来源",
+      "sub": "只有人亲手发的话才算依据",
+      "blocks": [
+        {
+          "layout": "grid",
+          "items": [
+            {
+              "id": "src-ledger",
+              "title": "平台事件账本",
+              "body": "runtime/events + bindings.json + audit.jsonl。三个 runtime（Pi / Codex / Claude）的会话都落在同一份账本里。",
+              "tone": "blue"
+            },
+            {
+              "id": "src-human",
+              "title": "“是不是人发的”",
+              "bullets": [
+                "actor = local / ls-… / public 才算人",
+                "system:*、部署通知、额度续聊、模型回复：不入库，只作理解上下文"
+              ]
+            },
+            {
+              "id": "src-manual",
+              "title": "手动入口",
+              "bullets": [
+                "消息上点「加入记忆」→ 当作明确记忆指令",
+                "「问询」某条记忆时的引用块：先整块剥掉，免得越问越强化"
+              ]
+            },
+            {
+              "id": "src-imported",
+              "title": "导入条目",
+              "body": "origin:'imported'，线上数据，无成员观察，原样保留。",
+              "tone": "dash"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pipeline",
+      "no": 2,
+      "arrow": "三种触发　即时（本轮用户说了“记住/以后都…”，只提炼这个会话，不看开关）｜ 每日 03:30 北京时间（需 pipelineEnabled）｜ 手动「立即运行」",
+      "title": "提炼流水线",
+      "sub": "apps/web/src/memory/public/pipeline/ · 增量：只处理指纹变了的会话",
+      "blocks": [
+        {
+          "layout": "chain",
+          "items": [
+            {
+              "id": "pl-capture",
+              "title": "采集",
+              "body": "读账本，只留人发的消息；剔敏感、评测/验收临时目录",
+              "tag": "确定性"
+            },
+            {
+              "id": "pl-distill",
+              "title": "提炼",
+              "body": "deepseek-flash。准入：明说“记住/以后遵守”，或跨会话反复同一原则；原话须逐字出自用户",
+              "tag": "模型"
+            },
+            {
+              "id": "pl-scope",
+              "title": "归属二判",
+              "body": "个人偏好 / 项目拿不准时再判；仍不确定则冻结，等人判（90 天后丢）",
+              "tag": "模型"
+            },
+            {
+              "id": "pl-attach",
+              "title": "归属分组",
+              "body": "先确定性高相似度合并，其余交模型分组；出现矛盾 → 待裁决",
+              "tag": "模型"
+            },
+            {
+              "id": "pl-statement",
+              "title": "陈述重写",
+              "body": "成员变了才重写一句话规则；statement 与 runtime 无关",
+              "tag": "模型"
+            },
+            {
+              "id": "pl-constraint",
+              "title": "约束判定",
+              "body": "强制措辞默认强约束；其余 hard / soft / uncertain。判成强约束后 DeepSeek 开推理写规则四要素（校验节点 / 对象范围 / 校验规则 / 结果反馈），写成才确认并绑定；恰好是某条代码规则检查的内容就直接挂 ruleId。写不成（要求没法事后检查）→ “待补规则”（按软约束处理，不标强约束、不登记检查）。人手动切强约束：先生成规则、看过再确认，确认后才标成强约束",
+              "tag": "模型"
+            },
+            {
+              "id": "pl-score",
+              "title": "评分与分层",
+              "body": "算重要度 → A / B / 素材；上限与过期；素材层过期连成员一起清",
+              "tag": "确定性"
+            }
+          ]
+        },
+        {
+          "layout": "strip",
+          "items": [
+            {
+              "id": "pl-formula",
+              "title": "重要度",
+              "body": "= 明确指令 3 ＋ 红线 2 ＋ 跨功能 1 ＋ 多会话重复（最多 3）。A 常驻 ≥ 6 ｜ B 按需 ≥ 4 ｜ 素材层 < 4（不注入、不进索引）。「记住」至少 B（下限 4）；“背景”类被明说记住直接 A（6）；项目「目标」模块恒为 A。进展不入库，以 git 为准。"
+            }
+          ]
+        },
+        {
+          "layout": "grid",
+          "items": [
+            {
+              "id": "pl-personal",
+              "title": "个人偏好",
+              "body": "按性质分：目标 / 沟通 / 验收 / 审美 / 流程 / 红线 / 背景。换到别的项目仍成立才算。",
+              "tone": "green"
+            },
+            {
+              "id": "pl-project",
+              "title": "项目记忆",
+              "body": "按功能模块分（与一级导航应用名对齐），最前面是「目标」；没归类的叫“跨模块 / 待归类”。",
+              "tone": "green"
+            },
+            {
+              "id": "pl-human",
+              "title": "需要人的两处",
+              "body": "① 归属 uncertain 被冻结的观察　② 新旧矛盾的“待裁决”条目。两边都在素材层的冲突不用裁决。",
+              "tone": "amber"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "no": 3,
+      "arrow": "写入　每次落盘 → 150ms 去抖 → 重生成索引",
+      "title": "存储与索引",
+      "sub": "~/.pi-agent-gui/data/memory-public/",
+      "blocks": [
+        {
+          "layout": "grid",
+          "items": [
+            {
+              "id": "st-pipeline",
+              "title": "pipeline.json",
+              "body": "条目（topics）、观察、变更记录 changes、运行记录；人工改动写 trigger=human。"
+            },
+            {
+              "id": "st-settings",
+              "title": "settings.json · enforcement.json",
+              "body": "开关（含 pipelineEnabled）；强约束每条的通过 / 未通过计数。"
+            },
+            {
+              "id": "st-hits",
+              "title": "hits.json",
+              "body": "使用率：每个 runtime 收到几次首轮指针（分母），几个会话真的查过（分子）；条目级命中。"
+            },
+            {
+              "id": "st-index",
+              "title": "index/ 三件套（每个项目 + global）",
+              "tone": "blue",
+              "bullets": [
+                "<项目>.md 目录（很短）",
+                ".catalog.md 一行一条 [常驻/按需] #模块",
+                ".details.md ### 编号 详情"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "consume",
+      "no": 4,
+      "arrow": "消费　三条通路，三个 runtime 走同一条路径",
+      "title": "消费",
+      "sub": "Pi · Codex · Claude",
+      "blocks": [
+        {
+          "layout": "grid",
+          "items": [
+            {
+              "id": "cs-inject",
+              "title": "① 首轮注入（常驻）",
+              "body": "manager.ts 在新会话第 1 轮调 buildInjection，拼到用户提示词前。聊天里只显示用户原文，另发一条“已载入平台公共记忆”通知。",
+              "tone": "blue",
+              "bullets": [
+                "字数桶互不挤占：个人偏好 700 ／ 项目目标 300 ／ 项目约定 1250",
+                "桶内按重要度排序，放不下的 A 退到按需",
+                "强约束（有规则的）不占预算，一律常驻",
+                "素材层、进展从不注入"
+              ]
+            },
+            {
+              "id": "cs-lookup",
+              "title": "② 按需查阅（模型自己决定去不去）",
+              "body": "注入文末固定带指针：读目录 → grep #模块 查 catalog → grep -A8 ### 编号 看详情。",
+              "tone": "green",
+              "bullets": [
+                "读不到家目录（Pi 沙盒）→ curl /api/memory/public/index?project=&q=",
+                "平台观察工具事件，累计到使用率"
+              ]
+            },
+            {
+              "id": "cs-enforce",
+              "title": "③ 强约束校验（回合结束）",
+              "body": "memory-enforcement.ts：规则有两种——代码里的确定性函数（条目引用 ruleId），或 DeepSeek 写好、随记忆绑定的四要素（回合结束由判定模型核对，拿不准放行，判定失败只留「未检查」）。首轮注入时把规则登记到会话；代码规则非人工判定的条目语义须一致才登记。",
+              "tone": "red",
+              "bullets": [
+                "强约束必须绑定规则才成立；每轮正常结束后检查最终回复 + 改文件工具事件",
+                "被额度 / 失败 / 停止中断的前几轮没检查过，它们改的文件并进接续那一轮的证据；规则本轮没触发时（改过界面的会话里没改界面）留一条「未检查」记录",
+                "不通过 → 自动续发「哪里不对、怎么改」（同样问题与改法的多条记忆合并成一段），最多 2 次，仍不过则停下并通知用户",
+                "第一版只有 turn-end 一个节点",
+                "平台截图来源自动核验：截图路径、所属会话、真实 screenshot 调用和 SHA-256 一致；问题写入 screenshotProblems，并触发补救反馈。该内部规则不出现在用户绑定规则目录。"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "observe",
+      "no": 5,
+      "arrow": "回流　人的判断与使用数据反过来修正记忆",
+      "title": "人与观测",
+      "sub": "记忆页 · /api/memory/public/*",
+      "blocks": [
+        {
+          "layout": "grid",
+          "items": [
+            {
+              "id": "ob-human",
+              "title": "人工操作",
+              "body": "浏览 / 变更动态 / 整理建议（合并·精简·登记冲突）/ 裁决冲突 / 判定归属 / 改层级与作用域 / 改约束类型 / 删除 / 问询 / 加入记忆。人定的（by=human、固定的）永远不被流水线自动覆盖。",
+              "tone": "violet"
+            },
+            {
+              "id": "ob-usage",
+              "title": "使用率",
+              "body": "/usage：自 10-29 起首轮注入后查过索引的会话占比，Codex 67% ／ Pi 26% ／ Claude 9%（11-10 取数，已知 Claude 受“读目录外文件要审批”影响，未复验）。"
+            },
+            {
+              "id": "ob-enforce",
+              "title": "强约束成效",
+              "body": "/enforcement：每条强约束通过 / 未通过次数与最近时间，用来判断规则是否真的拦得住。"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "aside": {
+    "id": "aside-private",
+    "title": "不在这条链路里：runtime 私有记忆",
+    "body": "Pi / Codex / Claude 各自原生的记忆由它们自己记录与消费，平台不介入；公共记忆与之冲突时，注入文字里写明以平台公共记忆为准。公共记忆也不读取它们——来源只有平台账本里的用户原话。",
+    "tone": "dash"
+  },
+  "sequences": [
+    {
+      "id": "ingest",
+      "title": "时序 · 入库",
+      "lead": "入库：一句话怎么变成一条记忆。即时通道只提炼“刚说了记住”的那个会话；每日 / 手动运行会扫所有变化了的会话。",
+      "actors": [
+        {
+          "id": "u",
+          "name": "用户",
+          "sub": "人发的消息"
+        },
+        {
+          "id": "m",
+          "name": "会话运行时",
+          "sub": "RuntimeSessionManager",
+          "c": "g"
+        },
+        {
+          "id": "l",
+          "name": "事件账本",
+          "sub": "events · audit",
+          "c": "a"
+        },
+        {
+          "id": "p",
+          "name": "提炼流水线",
+          "sub": "PipelineService"
+        },
+        {
+          "id": "a",
+          "name": "模型",
+          "sub": "deepseek-flash",
+          "c": "v"
+        },
+        {
+          "id": "s",
+          "name": "存储",
+          "sub": "pipeline.json",
+          "c": "a"
+        },
+        {
+          "id": "i",
+          "name": "索引文件",
+          "sub": "index/*.md",
+          "c": "a"
+        }
+      ],
+      "steps": [
+        {
+          "id": "in-pA",
+          "type": "phase",
+          "text": "A　即时通道：这一轮说了“记住 / 以后都 / 别忘了”"
+        },
+        {
+          "id": "in-1",
+          "type": "msg",
+          "from": "u",
+          "to": "m",
+          "text": "发消息：「记住 我是互联网产品经理，需要第一性原理…」"
+        },
+        {
+          "id": "in-2",
+          "type": "msg",
+          "from": "m",
+          "to": "l",
+          "text": "写事件，并在 audit 里记发送者 actor（local / ls-… / public 才算人）"
+        },
+        {
+          "id": "in-3",
+          "type": "self",
+          "from": "m",
+          "to": "m",
+          "text": "一轮结束 finishTurn → turnEnded 通知（观察者抛错不影响会话）"
+        },
+        {
+          "id": "in-4",
+          "type": "msg",
+          "from": "m",
+          "to": "p",
+          "text": "needsInstantIntake：只认人发的消息里有记住类措辞 → instant(会话 id)。不看 pipelineEnabled"
+        },
+        {
+          "id": "in-4n",
+          "type": "note",
+          "over": [
+            "p"
+          ],
+          "text": "已有运行在跑：排到它后面，同一会话连续触发合并为一次；别的进程占着运行锁：60 秒后重试，最多 3 次。"
+        },
+        {
+          "id": "in-pB",
+          "type": "phase",
+          "text": "B　定时 / 手动：扫所有变化了的会话"
+        },
+        {
+          "id": "in-5",
+          "type": "self",
+          "from": "p",
+          "to": "p",
+          "text": "每日 03:30（北京时间，需 pipelineEnabled 开着）；或记忆页「立即运行」"
+        },
+        {
+          "id": "in-pC",
+          "type": "phase",
+          "text": "C　一次运行（增量）"
+        },
+        {
+          "id": "in-6",
+          "type": "msg",
+          "from": "p",
+          "to": "l",
+          "text": "① 采集：读全部会话，只留人发的消息；剔除自动消息、敏感内容、评测/验收临时目录"
+        },
+        {
+          "id": "in-7",
+          "type": "msg",
+          "from": "l",
+          "to": "p",
+          "text": "用户原话 + 上下文（模型回复结尾、系统消息开头，仅作理解指代）",
+          "ret": true
+        },
+        {
+          "id": "in-8",
+          "type": "msg",
+          "from": "p",
+          "to": "a",
+          "text": "② 提炼：只处理指纹变了的会话（输入文本+提示词版本+项目清单）"
+        },
+        {
+          "id": "in-9",
+          "type": "msg",
+          "from": "a",
+          "to": "p",
+          "text": "观察 observations：原话、domain、module / sub、是否明确指令、红线、跨功能",
+          "ret": true
+        },
+        {
+          "id": "in-10",
+          "type": "self",
+          "from": "p",
+          "to": "p",
+          "text": "原话必须逐字出自用户消息；讨论“记忆机制本身”的话、时间点、runtime 指向的措辞被丢弃"
+        },
+        {
+          "id": "in-11",
+          "type": "msg",
+          "from": "p",
+          "to": "a",
+          "text": "③ 归属二判 → ④ 归属分组 → ⑤ 陈述重写 → ⑥ 约束判定（hard/soft/uncertain + ruleId）"
+        },
+        {
+          "id": "in-12",
+          "type": "msg",
+          "from": "a",
+          "to": "p",
+          "text": "归属、一句话规则、约束类型；拿不准的返回 uncertain",
+          "ret": true
+        },
+        {
+          "id": "in-12n",
+          "type": "note",
+          "over": [
+            "p",
+            "a"
+          ],
+          "text": "人判区：归属 uncertain 的观察冻结（不进主题 / 注入 / 索引），90 天无人处理丢弃；新旧矛盾 → 待裁决。强制措辞（必须 / 务必 / 严禁…）不问模型，默认强约束。"
+        },
+        {
+          "id": "in-13",
+          "type": "self",
+          "from": "p",
+          "to": "p",
+          "text": "⑦ 评分 = 明确指令3+红线2+跨功能1+多会话≤3 → A≥6 常驻 / B≥4 按需 / <4 素材层；记住下限4；上限与过期清理"
+        },
+        {
+          "id": "in-14",
+          "type": "msg",
+          "from": "p",
+          "to": "s",
+          "text": "落盘：topics、observations、changes（trigger=instant / schedule / manual），人定条目不覆盖"
+        },
+        {
+          "id": "in-15",
+          "type": "msg",
+          "from": "s",
+          "to": "i",
+          "text": "onChange → 150ms 去抖 → ensureIndex：重写 <项目>.md / .catalog.md / .details.md（内容没变不重写）"
+        },
+        {
+          "id": "in-15n",
+          "type": "note",
+          "over": [
+            "i"
+          ],
+          "text": "此后新开的会话，第 1 轮注入才会带上它（A 层）或在按需索引里查到它（B 层）；素材层不会出现。"
+        }
+      ]
+    },
+    {
+      "id": "session",
+      "title": "时序 · 会话中",
+      "lead": "会话中：注入 → 查阅 → 回合结束校验。三个 runtime 同一路径；是否去查索引由模型自己决定。",
+      "actors": [
+        {
+          "id": "u",
+          "name": "用户"
+        },
+        {
+          "id": "m",
+          "name": "会话运行时",
+          "sub": "manager.ts",
+          "c": "g"
+        },
+        {
+          "id": "s",
+          "name": "公共记忆服务",
+          "sub": "PublicMemoryService"
+        },
+        {
+          "id": "g",
+          "name": "Agent",
+          "sub": "Pi / Codex / Claude",
+          "c": "v"
+        },
+        {
+          "id": "f",
+          "name": "索引 / 接口",
+          "sub": "目录 · 接口",
+          "c": "a"
+        },
+        {
+          "id": "r",
+          "name": "强约束规则",
+          "sub": "memory-enforcement",
+          "c": "a"
+        },
+        {
+          "id": "h",
+          "name": "使用率统计",
+          "sub": "使用率 · 强约束计数",
+          "c": "a"
+        }
+      ],
+      "steps": [
+        {
+          "id": "se-pA",
+          "type": "phase",
+          "text": "A　新会话第 1 轮：常驻注入"
+        },
+        {
+          "id": "se-1",
+          "type": "msg",
+          "from": "u",
+          "to": "m",
+          "text": "发出第一条消息"
+        },
+        {
+          "id": "se-2",
+          "type": "msg",
+          "from": "m",
+          "to": "s",
+          "text": "publicMemoryProvider(runtime, 工作目录 → 项目别名)"
+        },
+        {
+          "id": "se-3",
+          "type": "self",
+          "from": "s",
+          "to": "s",
+          "text": "buildInjection：强约束（有规则，不占预算）→ 个人偏好 700 → 项目目标 300 → 项目约定 1250；放不下的 A 退到按需；素材层不进"
+        },
+        {
+          "id": "se-4",
+          "type": "msg",
+          "from": "s",
+          "to": "m",
+          "text": "注入文本 + 末尾“按需查阅”指针 + rules[]（强约束登记）",
+          "ret": true
+        },
+        {
+          "id": "se-5",
+          "type": "self",
+          "from": "m",
+          "to": "m",
+          "text": "prependPlatformPreamble：前言 + 用户原文；聊天只显示原文，另发「已载入平台公共记忆」通知；rules 登记到本会话"
+        },
+        {
+          "id": "se-6",
+          "type": "msg",
+          "from": "m",
+          "to": "h",
+          "text": "observeInjection：该 runtime 首轮指针 +1（使用率分母）"
+        },
+        {
+          "id": "se-7",
+          "type": "msg",
+          "from": "m",
+          "to": "g",
+          "text": "派发：公共记忆前言 + 用户原文（三个 runtime 同一路径）"
+        },
+        {
+          "id": "se-pB",
+          "type": "phase",
+          "text": "B　执行中：按需查阅（由模型自己决定去不去）"
+        },
+        {
+          "id": "se-8",
+          "type": "msg",
+          "from": "g",
+          "to": "f",
+          "text": "读 <项目>.md 目录 → grep -n \"#模块\" catalog → grep -n -A8 \"### 编号\" details；读不到家目录（Pi 沙盒）则 curl /api/memory/public/index?project=&q="
+        },
+        {
+          "id": "se-9",
+          "type": "msg",
+          "from": "f",
+          "to": "g",
+          "text": "命中的条目与详情（含原话依据）",
+          "ret": true
+        },
+        {
+          "id": "se-10",
+          "type": "msg",
+          "from": "m",
+          "to": "h",
+          "text": "observeToolEvent：识别到查阅 → 记 map / catalog / details / api 与条目命中（识别不出算“没查”，所以是下限）"
+        },
+        {
+          "id": "se-pC",
+          "type": "phase",
+          "text": "C　回合正常结束：强约束校验（目前只有 turn-end 一个节点）"
+        },
+        {
+          "id": "se-11",
+          "type": "msg",
+          "from": "g",
+          "to": "m",
+          "text": "回合结束：最终回复 + 工具事件"
+        },
+        {
+          "id": "se-12",
+          "type": "msg",
+          "from": "m",
+          "to": "r",
+          "text": "runRules（代码规则）+ runModelRules（四要素规则，判定模型看取证项事实 / 最终回复 / 带输出的工具调用清单）：取本轮及之前被中断回合的证据；规则不相关则放行，需要留痕的记「未检查」；截图来源问题由 platform-screenshot-provenance 规则核验并反馈补救。"
+        },
+        {
+          "id": "se-13",
+          "type": "msg",
+          "from": "r",
+          "to": "m",
+          "text": "pass，或 {problem 哪里不对, fix 怎么改}",
+          "ret": true
+        },
+        {
+          "id": "se-14",
+          "type": "msg",
+          "from": "m",
+          "to": "h",
+          "text": "recordEnforcement：每条强约束的通过 / 未通过计数"
+        },
+        {
+          "id": "se-15",
+          "type": "msg",
+          "from": "m",
+          "to": "g",
+          "text": "未通过：自动续发「【平台强约束检查未通过】…」（actor = system:memory-enforcement），最多 2 次；仍不过：时间线留通知并停下，告知用户"
+        },
+        {
+          "id": "se-15n",
+          "type": "note",
+          "over": [
+            "m",
+            "r"
+          ],
+          "text": "补救回合的证据要带上起始回合改过的文件，否则规则判“不相关”放行。通过则这一轮正常收尾。"
+        },
+        {
+          "id": "se-16",
+          "type": "msg",
+          "from": "m",
+          "to": "s",
+          "text": "turnEnded → 若这一轮用户说了“记住…”，触发入库时序的即时通道"
+        }
+      ]
+    }
+  ]
+}

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { CORE_COMPONENTS } from './initialization.mjs';
 
 const digest = file => createHash('sha256').update(readFileSync(file)).digest('hex');
-const excluded = /(^|\/)(?:\.git|\.env(?:\.[^/]*)?|auth\.json|service-account\.json|google-services\.json|\.DS_Store|\.diagnostics|\.platform-browser|test|tests|evidence|challenge-island|wrong-book|pet-math-game|word-detective|android)(\/|$)|(^|\/)(?:ledger|communications|web-x)\.(?:js|css)$/i;
+const excluded = /(^|\/)(?:\.git|\.env(?:\.[^/]*)?|auth\.json|service-account\.json|google-services\.json|\.DS_Store|\.diagnostics|\.platform-browser|test|tests|evidence|challenge-island|wrong-book|pet-math-game|word-detective|ring-toss|android)(\/|$)|(^|\/)(?:ledger|communications|web-x)\.(?:js|css)$/i;
 
 /** The packager consumes an explicitly prepared core payload, never the operator's HOME or whole checkout. */
 export function validatePayload(payloadDir) {
@@ -34,4 +34,3 @@ export function validatePayload(payloadDir) {
   if (actual.size) throw Error(`载荷存在未登记文件：${[...actual].slice(0, 3).join(', ')}`);
   return manifest;
 }
-

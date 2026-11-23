@@ -15,6 +15,7 @@
     "@pi-agent/adapter-pi": "*",
     "@pi-agent/runtime-contracts": "*",
     "sharp": "^0.34.5",
-    "@pi-agent/pi-runtime": "*"
+    "@pi-agent/pi-runtime": "*",
+    "parse5": "^8.1.1"
   }
 }

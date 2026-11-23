@@ -32,7 +32,7 @@ window.sessionNotifications = (() => {
   const native = window.piAndroidShell;
   let nativeState = { registered: false, permission: false };
   const storage = "pi-agent.notifications.v2";
-  const defaults = { reply: true, completed: true, failed: true, approval: true, currentSession: false, preview: false };
+  const defaults = { reply: true, completed: true, failed: true, approval: true, reminder: true, currentSession: false, preview: false };
   let settings = { enabled: false, mode: "push", preferences: { ...defaults } };
   const storedSettings = localStorage.getItem(storage);
   try { const saved = JSON.parse(storedSettings || "null"); if (saved) settings = { ...settings, ...saved, preferences: { ...defaults, ...saved.preferences } }; } catch { /* fresh device */ }
@@ -301,7 +301,7 @@ window.sessionNotifications = (() => {
     updatePanel(container, notificationHeading(container, closable),
       notificationStatus(closable),
       closable ? h("button", { type: "button", class: "btn primary", disabled: busy, onclick: () => enabled() ? disable() : enable() }, enabled() ? "关闭本设备通知" : "开启本设备通知") : null,
-      ...Object.entries({ reply: "助手消息生成完成", completed: "本轮完成", failed: "本轮失败", approval: "需要审批或人工处理", currentSession: "正在阅读的会话也提醒", preview: "在系统通知中显示消息摘要" }).map(([key, label]) =>
+      ...Object.entries({ reply: "助手消息生成完成", completed: "本轮完成", failed: "本轮失败", approval: "需要审批或人工处理", reminder: "日程提醒（提前多久见日程）", currentSession: "正在阅读的会话也提醒", preview: "在系统通知中显示消息摘要" }).map(([key, label]) =>
         h("label", { class: "notification-setting" }, h("span", {}, label), h("input", { type: "checkbox", checked: settings.preferences[key], disabled: busy, "data-notification-setting": key, onchange: e => void change(key, e.target.checked) }))),
       h("p", { class: "muted" }, "助手消息生成完成指一条面向你的消息生成结束；本轮完成或失败指一次执行结束。默认只显示会话标题，最后一条消息与紧接着的本轮完成会合并提醒。退出登录后停止推送。"),
       recoveryNeeded ? h("button", { type: "button", class: "btn", disabled: busy, onclick: () => void restore() }, "重试恢复通知") : null,

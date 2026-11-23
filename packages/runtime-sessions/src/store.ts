@@ -19,7 +19,7 @@ import type { ApprovalRequest, ComparisonGroup, OperationRecord, ProjectedEvent,
 
 export const DEFAULT_SETTINGS: RuntimeSettings = {
   workspaceRoots: [],
-  history: { codex: { enabled: false, roots: [] }, "claude-code": { enabled: false, roots: [] }, pi: { enabled: false, roots: [] } },
+  history: { codex: { enabled: false, roots: [] }, "claude-code": { enabled: false, roots: [] }, pi: { enabled: false, roots: [] }, antigravity: { enabled: false, roots: [] } },
   publicControl: false,
   publicHistory: false,
   maxRunningPerProfile: 2

@@ -17,6 +17,7 @@ import { NoteStore, NOTE_MAX_LENGTH, NOTE_SCHEDULE_MAX_REPEATS, NoteImageError, 
 import type { Note, NoteImage, NoteImportEntry, NoteKind, NoteRepeat, NoteSchedule, NoteWriting } from "./notes.js";
 import { noteDisplayKind, isNoteAutomation } from "./notes.js";
 import { noteScheduleExpired } from "./calendar.js";
+import { withNoteRemind } from "./note-reminder.js";
 import { EventEmitter } from "node:events";
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,9 +29,9 @@ import type { WebResearchKeys, WebResearchProvider, WebResearchProviderPreferenc
 import { piModelPort } from "@pi-agent/model-port";
 import type { ModelInvocationPort } from "@pi-agent/model-port";
 import { BALANCE_ADAPTERS, BALANCE_AUTO_REFRESH_MS, BALANCE_MIN_REFRESH_MS, BalanceCache, ProviderCallLog, WebResearchProviderSettings, balanceViewOf, credentialView, isWebResearchProviderPreference, serviceStatus } from "./resources.js";
-import type { BalanceView, ServiceStatus, WebResearchProviderOption, WebResearchResource } from "./resources.js";
+import type { BalanceView, ResourceProvider, ServiceStatus, WebResearchProviderOption, WebResearchResource } from "./resources.js";
 import { pickFolderNative } from "./pick-folder.js";
-import { DOUBAO_TTS_DEFAULT_SPEAKER, DOUBAO_TTS_LABEL, DOUBAO_TTS_RESOURCE_ID, DOUBAO_TTS_SERVICE, resolveDoubaoTtsKey } from "./doubao-tts.js";
+import { appData } from "./app-data.js";
 import { DeepSeekUsageLedger, DeepSeekUsageTracker, readLegacyDeepSeekUsage, recordDeepSeekPort } from "./deepseek-usage.js";
 import type { DeepSeekDailyRow, DeepSeekDeviceOf, DeepSeekRuntimeSession, DeepSeekUsageView } from "./deepseek-usage.js";
 import { PLATFORM_TIME_ZONE } from "./platform-time.js";
@@ -53,8 +54,8 @@ export interface ConsoleOptions {
   fetch?: typeof fetch;
   /** 联网检索凭据查找（测试注入；默认按环境变量、本机文件与 Pi 配置） */
   webKeys?: () => WebResearchKeys;
-  /** 配音服务（豆包语音合成）的凭据；缺省按环境变量／本机文件解析 */
-  voiceKeys?: () => { doubao?: { key: string; source: string } };
+  /** 资源扩展：可选或私有应用往「外部资源」补充的服务行与余额读取方式（如配音服务）；基础版默认没有 */
+  resourceProviders?: ResourceProvider[];
   /** 拉起本机文件夹选择器（测试注入替身；默认弹系统对话框） */
   pickFolder?: FolderPicker;
   /** 运行时配置资源：测试指定三个用户级配置目录；默认按环境变量或家目录 */
@@ -214,11 +215,11 @@ export class ConsoleService extends EventEmitter {
 
   constructor(private readonly options: ConsoleOptions) {
     super();
-    this.callLog = new ProviderCallLog(join(options.dataDir, "provider-calls.jsonl"));
-    this.deepseekUsage = new DeepSeekUsageLedger(join(options.dataDir, "deepseek-usage.jsonl"));
+    this.callLog = new ProviderCallLog(appData(options.dataDir, "runtime-sessions").path("provider-calls.jsonl"));
+    this.deepseekUsage = new DeepSeekUsageLedger(appData(options.dataDir, "resources").path("deepseek-usage.jsonl"));
     this.deepseekUsage.bootstrap(readLegacyDeepSeekUsage(options.dataDir));
-    this.deepseekTracker = new DeepSeekUsageTracker(join(options.dataDir, "deepseek-usage.jsonl"));
-    this.notes = new NoteStore(join(options.dataDir, "notes.json"));
+    this.deepseekTracker = new DeepSeekUsageTracker(appData(options.dataDir, "resources").path("deepseek-usage.jsonl"));
+    this.notes = new NoteStore(appData(options.dataDir, "notes").path("notes.json"));
     this.noteRelations = new NoteRelationService(this.notes, (input, applyRelations, relationContext) => this.addNote(input.text, input.images, input.schedule, {kind:input.kind,timeZone:input.timeZone,pinned:input.pinned,automation:input.automation,applyRelations,relationContext}), () => this.emit("update", {sessionId:"",kind:"notes"}));
     const pi = options.pi;
     const rawClassificationPort = options.noteClassification?.enabled === false ? undefined : options.noteClassification?.port ?? (pi ? piModelPort({
@@ -226,13 +227,13 @@ export class ConsoleService extends EventEmitter {
       ...(pi.passEnv ? { passEnv: pi.passEnv } : {}), ...(pi.configDir ? { piConfigDir: pi.configDir } : {})
     }) : undefined);
     const classificationPort = rawClassificationPort ? recordDeepSeekPort(rawClassificationPort, this.deepseekUsage) : undefined;
-    this.noteCategories = new NoteCategories(join(options.dataDir, "note-categories.json"), this.notes, classificationPort, () => this.emit("update", { sessionId: "", kind: "notes" }));
+    this.noteCategories = new NoteCategories(appData(options.dataDir, "notes").path("note-categories.json"), this.notes, classificationPort, () => this.emit("update", { sessionId: "", kind: "notes" }));
     const kindPort = options.noteClassification?.kindPort === false ? undefined
       : options.noteClassification?.kindPort ? recordDeepSeekPort(options.noteClassification.kindPort, this.deepseekUsage) : classificationPort;
     this.noteKinds = new NoteKinds(this.notes, kindPort, () => this.emit("update", { sessionId: "", kind: "notes" }));
-    this.noteIterations = new NoteIterations(join(options.dataDir, "note-iterations.json"), this.notes, classificationPort, () => this.emit("update", { sessionId: "", kind: "notes" }), { ...(options.noteClassification?.iterationDebounceMs !== undefined ? { debounceMs: options.noteClassification.iterationDebounceMs } : {}) });
-    this.balances = new BalanceCache(join(options.dataDir, "resource-balances.json"));
-    this.webProviderSettings = new WebResearchProviderSettings(join(options.dataDir, "web-research-provider.json"));
+    this.noteIterations = new NoteIterations(appData(options.dataDir, "notes").path("note-iterations.json"), this.notes, classificationPort, () => this.emit("update", { sessionId: "", kind: "notes" }), { ...(options.noteClassification?.iterationDebounceMs !== undefined ? { debounceMs: options.noteClassification.iterationDebounceMs } : {}) });
+    this.balances = new BalanceCache(appData(options.dataDir, "resources").path("resource-balances.json"));
+    this.webProviderSettings = new WebResearchProviderSettings(appData(options.dataDir, "resources").path("web-research-provider.json"));
   }
 
   /* ------------------------------- 待办记录 ------------------------------- */
@@ -402,17 +403,18 @@ export class ConsoleService extends EventEmitter {
     if (!body && !images.length) throw new ConsoleError("写点什么或加张图片再保存");
     if (body.length > NOTE_MAX_LENGTH) throw new ConsoleError(`一条记录最多 ${NOTE_MAX_LENGTH} 个字符`);
     const parsedSchedule = noteScheduleInput(schedule);
+    const plannedSchedule = withNoteRemind(parsedSchedule, body);
     const kind = noteKindInput(options.kind);
-    if (kind === "note" && parsedSchedule) throw new ConsoleError("笔记不能带日程时间");
+    if (kind === "note" && plannedSchedule) throw new ConsoleError("笔记不能带日程时间");
     if (options.pinned !== undefined && typeof options.pinned !== "boolean") throw new ConsoleError("pinned 必须是布尔值");
     if (options.automation !== undefined && !isNoteAutomation(options.automation)) throw new ConsoleError("automation 必须包含有效的 taskId 和布尔值 needsHuman");
     const meta = {
       ...(isNoteAutomation(options.automation) ? { automation: options.automation } : {}),
-      ...(kind || parsedSchedule ? { kind: kind ?? "todo", kindSource: "user" as const } : this.noteKinds.enabled ? { kindPending: true } : {}),
+      ...(kind || plannedSchedule ? { kind: kind ?? "todo", kindSource: "user" as const } : this.noteKinds.enabled ? { kindPending: true } : {}),
       ...(options.pinned ? { pinned: true } : {}),
-      ...(this.noteKinds.enabled && body && !parsedSchedule && !options.skipWriting ? { writing: { state: "pending" as const } } : {})
+      ...(this.noteKinds.enabled && body && !plannedSchedule && !options.skipWriting ? { writing: { state: "pending" as const } } : {})
     };
-    const note = this.notes.add(body, undefined, images, parsedSchedule ?? undefined, meta, options.applyRelations, options.relationContext);
+    const note = this.notes.add(body, undefined, images, plannedSchedule ?? undefined, meta, options.applyRelations, options.relationContext);
     if (note.kindPending || note.writing?.state === "pending") this.noteKinds.enqueue(note.id, options.timeZone);
     this.emit("update", { sessionId: "", kind: "notes" });
     this.noteCategories.sync();
@@ -520,6 +522,11 @@ export class ConsoleService extends EventEmitter {
     }
     if (patch.images !== undefined) next.images = this.resolveNoteImages(patch.images);
     if (patch.schedule !== undefined) next.schedule = noteScheduleInput(patch.schedule);
+    // 正文或时间改了就重算提醒：删掉「提前 1 小时提醒」这句话后，旧提醒不会留着。
+    if (patch.schedule !== undefined || patch.text !== undefined) {
+      const schedule = next.schedule !== undefined ? next.schedule : existing.schedule;
+      if (schedule) next.schedule = withNoteRemind(schedule, next.text !== undefined ? next.text : existing.text);
+    }
     if (patch.done !== undefined) {
       if (typeof patch.done !== "boolean") throw new ConsoleError("done 必须是布尔值");
       next.done = patch.done;
@@ -748,7 +755,7 @@ export class ConsoleService extends EventEmitter {
   }
 
   /**
-   * 外部资源：模型服务、联网检索（小马伙伴用）与配音。凭据只给来源类别与指纹；最近结果来自平台调用日志；
+   * 外部资源：模型服务、联网检索（小马伙伴用），以及资源扩展补充的服务（如配音）。凭据只给来源类别与指纹；最近结果来自平台调用日志；
    * 余额只读缓存（刷新另由你触发）。
    */
   resources(): { generatedAt: string; timezone: string; scope: string; services: ServiceStatus[]; webResearch: WebResearchResource; runtimeConfigs: RuntimeConfigsView } {
@@ -774,12 +781,7 @@ export class ConsoleService extends EventEmitter {
       serviceStatus({ service: "deepseek-search", kind: "search", label: "DeepSeek Search", credential: credentialView(keys.deepseek), calls, roles: role("deepseek", "联网检索"), ...(cached["deepseek-search"] ? { balance: cached["deepseek-search"] } : {}), now }),
       serviceStatus({ service: "deepseek-fetch", kind: "fetch", label: "DeepSeek Fetch", credential: credentialView(keys.deepseek), calls, roles: role("deepseek", "网页阅读"), ...(cached["deepseek-fetch"] ? { balance: cached["deepseek-fetch"] } : {}), now })
     ];
-    const voiceKeys = this.options.voiceKeys ? this.options.voiceKeys() : { doubao: resolveDoubaoTtsKey() };
-    const voice = [
-      serviceStatus({ service: DOUBAO_TTS_SERVICE, kind: "voice", label: DOUBAO_TTS_LABEL, credential: credentialView(voiceKeys.doubao), calls,
-        roles: [{ role: "视频配音（宣传片旁白）", model: DOUBAO_TTS_RESOURCE_ID, note: `默认音色 ${DOUBAO_TTS_DEFAULT_SPEAKER}` }],
-        ...(cached[DOUBAO_TTS_SERVICE] ? { balance: cached[DOUBAO_TTS_SERVICE] } : {}), now })
-    ];
+    const extra = (this.options.resourceProviders ?? []).flatMap((provider) => provider.services({ calls, cached, now }));
     const webResearch: WebResearchResource = { preference, ...(selected ? { selected } : {}), ...(selectionError ? { error: selectionError } : {}), options: this.webResearchOptions() };
     const dirs: Partial<Record<RuntimeKind, string>> = {
       ...this.options.runtimeConfigs?.dirs,
@@ -790,7 +792,7 @@ export class ConsoleService extends EventEmitter {
       ...(this.options.runtimeConfigs?.home ? { home: this.options.runtimeConfigs.home } : {}),
       now
     });
-    return { generatedAt: new Date(now).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, scope: "本机记录（本控制台数据目录）", services: [...models, ...web, ...voice], webResearch, runtimeConfigs };
+    return { generatedAt: new Date(now).toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, scope: "本机记录（本控制台数据目录）", services: [...models, ...web, ...extra], webResearch, runtimeConfigs };
   }
 
   /**
@@ -838,7 +840,7 @@ export class ConsoleService extends EventEmitter {
    * 限时 8 秒、同一服务 60 秒内不重复请求；失败保留上次成功值并标为非实时。
    */
   async refreshBalance(service: string): Promise<BalanceView> {
-    const adapter = BALANCE_ADAPTERS[service];
+    const adapter = BALANCE_ADAPTERS[service] ?? this.options.resourceProviders?.map((provider) => provider.balance?.[service]).find(Boolean);
     if (!adapter) throw new ConsoleError(`没有这个服务：${service}`);
     if ("unsupported" in adapter) return { status: "unavailable", reason: adapter.unsupported, consoleUrl: adapter.consoleUrl };
     const prev = this.balances.all()[service];

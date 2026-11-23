@@ -1,0 +1,5 @@
+// 公开版空桩：该应用不在公开版里（见 apps/web/src/app-manifest.mjs）。
+export function whitespaceProblems(){return undefined}
+export const VENDORED_LICENSE = undefined;
+export function blockingWhitespaceProblems(){return undefined}
+export class OpenSourceRelease {}

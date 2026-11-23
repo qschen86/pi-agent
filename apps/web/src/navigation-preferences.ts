@@ -20,9 +20,19 @@ export interface NavigationItem {
   position: NavigationPosition;
 }
 
+/** 从产物里置顶到产物区的应用（小游戏等）；内置应用的置顶仍记在 items 的 position 里。 */
+export interface PinnedArtifact {
+  id: string;
+  category: string;
+  name: string;
+  emoji: string;
+}
+
 export interface NavigationPreferencesView {
   version: 1;
   items: NavigationItem[];
+  /** 置顶的产物应用，按产物区里的顺序 */
+  pinned: PinnedArtifact[];
   /** 每次保存 +1；多端据此判断是否已有更新 */
   revision: number;
   /** 服务端最近一次保存时间；从未保存过为 null */
@@ -42,11 +52,14 @@ const VERSION = 1;
 const MAX_ITEMS = 50;
 const MAX_LABEL = 12;
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MAX_PINNED = 12;
+const MAX_PINNED_NAME = 40;
 
 const emptyState = (): StoredNavigationPreferences => ({
   schema: 1,
   version: VERSION,
   items: [],
+  pinned: [],
   revision: 0,
   updatedAt: null
 });
@@ -54,9 +67,28 @@ const emptyState = (): StoredNavigationPreferences => ({
 const viewOf = (state: StoredNavigationPreferences): NavigationPreferencesView => ({
   version: VERSION,
   items: state.items.map((item) => ({ id: item.id, label: item.label, position: item.position })),
+  pinned: state.pinned.map((p) => ({ id: p.id, category: p.category, name: p.name, emoji: p.emoji })),
   revision: state.revision,
   updatedAt: state.updatedAt
 });
+
+/** 宽松读取：丢弃不合规的条目，不抛错（用于读盘）。 */
+function sanitizePinned(list: unknown[]): PinnedArtifact[] {
+  const out: PinnedArtifact[] = [];
+  const seen = new Set<string>();
+  for (const value of list) {
+    if (out.length >= MAX_PINNED) break;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const p = value as Record<string, unknown>;
+    const id = p["id"], category = p["category"], name = p["name"], emoji = p["emoji"];
+    if (typeof id !== "string" || !ID_PATTERN.test(id) || typeof category !== "string" || !ID_PATTERN.test(category) || seen.has(id)) continue;
+    const cleanName = typeof name === "string" ? name.replace(/[\r\n]/g, " ").trim() : "";
+    if (!cleanName || [...cleanName].length > MAX_PINNED_NAME) continue;
+    seen.add(id);
+    out.push({ id, category, name: cleanName, emoji: typeof emoji === "string" && [...emoji].length <= 4 && !/[\r\n]/.test(emoji) ? emoji : "" });
+  }
+  return out;
+}
 
 function readState(file: string): StoredNavigationPreferences {
   if (!existsSync(file)) return emptyState();
@@ -76,6 +108,7 @@ function readState(file: string): StoredNavigationPreferences {
       schema: 1,
       version: VERSION,
       items,
+      pinned: Array.isArray(raw.pinned) ? sanitizePinned(raw.pinned) : [],
       revision: Number.isInteger(raw.revision) && (raw.revision ?? -1) >= 0 ? raw.revision! : 0,
       updatedAt: typeof raw.updatedAt === "string" && Number.isFinite(Date.parse(raw.updatedAt)) ? raw.updatedAt : null
     };
@@ -84,7 +117,7 @@ function readState(file: string): StoredNavigationPreferences {
   }
 }
 
-function parseInput(input: unknown): NavigationItem[] {
+function parseInput(input: unknown): { items: NavigationItem[]; pinned: PinnedArtifact[] | null } {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new NavigationPreferencesError("导航配置格式不对");
   const raw = input as Record<string, unknown>;
   if (raw["version"] !== VERSION) throw new NavigationPreferencesError("不支持的导航配置版本");
@@ -107,7 +140,12 @@ function parseInput(input: unknown): NavigationItem[] {
     if (/[\r\n]/.test(label) || [...label].length > MAX_LABEL) throw new NavigationPreferencesError(`导航名称最多 ${MAX_LABEL} 个字符，且不能换行`);
     items.push({ id, label, position });
   }
-  return items;
+  // 旧客户端不带 pinned：保持服务端现有的置顶，不当成「清空」。
+  const rawPinned = raw["pinned"];
+  if (rawPinned === undefined) return { items, pinned: null };
+  if (!Array.isArray(rawPinned)) throw new NavigationPreferencesError("置顶的产物应用格式不对");
+  if (rawPinned.length > MAX_PINNED) throw new NavigationPreferencesError(`最多置顶 ${MAX_PINNED} 个产物应用`);
+  return { items, pinned: sanitizePinned(rawPinned) };
 }
 
 export class NavigationPreferences {
@@ -123,11 +161,12 @@ export class NavigationPreferences {
 
   /** 整份替换并落盘；返回保存后的视图（含新的 revision / updatedAt）。 */
   save(input: unknown): NavigationPreferencesView {
-    const items = parseInput(input);
+    const { items, pinned } = parseInput(input);
     const next: StoredNavigationPreferences = {
       schema: 1,
       version: VERSION,
       items,
+      pinned: pinned ?? this.state.pinned,
       revision: this.state.revision + 1,
       updatedAt: new Date().toISOString()
     };

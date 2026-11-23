@@ -1,4 +1,6 @@
+import type { OpenSourceRelease } from './open-source-release.js';
 import { CommunicationsStore } from './communications-store.js';
+import { LocalCliInventory } from './local-cli-resources.js';
 import { mountLinkPreviewRoutes } from './link-preview.js';
 import { mountCommunicationsRoutes } from './communications-routes.js';
 import { readOnlyPermissionMode } from '../../../packages/runtime-sessions/src/permissions.js';
@@ -6,7 +8,7 @@ import type { CalendarEvent } from "./calendar.js";
 import { RuntimeRecordAuth } from "./runtime-record-auth.js";
 import { resolveRecordSources, relationSources } from "./note-relation-service.js";
 import { homedir, tmpdir } from "node:os";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { entryKey, parseEntryKey } from "./note-relations.js";
 import { RelationError, type RelationContext } from "./note-relation-types.js";
 import {RuntimeMemoryPort} from './memory/port.js';
@@ -56,8 +58,8 @@ import { agentCalendarEvents, scanAgentScheduledTasks, type AgentCalendarScanOpt
 import { GoogleCalendarService } from "./google-calendar.js";
 import { noteRefLookup } from "./note-ref-backfill.js";
 import { AuthSessions, type AuthFailureReason } from "./auth-sessions.js";
-import type { RuntimeSessionManager, UsageRecord } from "@pi-agent/runtime-sessions";
-import { mountRuntimeRoutes } from "./runtime-routes.js";
+import { RuntimeAuthFlowManager, allowlistedEnv, type RuntimeKind, type RuntimeSessionManager, type UsageRecord } from "@pi-agent/runtime-sessions";
+import { mountRuntimeRoutes, type RuntimeAuthCapability, type RuntimeAuthService } from "./runtime-routes.js";
 import { mountUploadRequestDiagnostics } from "./upload-diagnostics.js";
 import { launchTimingLine, mountDocumentLog, mountSlowRequestLog } from "./slow-diagnostics.js";
 import type { DeployQueue } from "./deploy-queue.js";
@@ -66,6 +68,8 @@ import {RuntimeSyncSources} from './runtime-sync-source.js';
 import {announceHandoff, streamLifetime} from './stream-lifetime.js';
 import {RoomSyncSources} from './room-sync-source.js';
 import { WebPushService, type WebPushConfig } from "./web-push.js";
+import { NoteReminders, scanNoteReminders } from "./note-reminders.js";
+import type { NativeNotifications } from "./native-notifications.js";
 import { mountNativeNotificationRoutes } from "./native-notification-routes.js";
 import { fcmFromServiceAccount } from "./native-fcm.js";
 import { mountAndroidReleaseRoutes } from "./android-release-routes.js";
@@ -74,6 +78,8 @@ import { loadProbeKey, mountLanNetworkRoute, probePort } from "./lan-probe.js";
 import { mountHostStatsRoute } from "./host-stats.js";
 import type { CodexResetService } from "./codex-reset/service.js";
 import { mountCodexResetRoutes } from "./codex-reset/routes.js";
+import type { RuntimeUpdatesService } from "./runtime-updates/service.js";
+import { mountRuntimeUpdatesRoutes } from "./runtime-updates/routes.js";
 import { lanAppPort } from "./lan-gateway.js";
 import { mountNotificationRoutes } from "./notification-routes.js";
 import { runtimeQuotaServices } from "./resources.js";
@@ -95,6 +101,10 @@ import { LedgerChatService } from './ledger-chat.js';
 import type { ModelInvocationPort } from '@pi-agent/model-port';
 import { ArtifactShares } from './artifact-shares.js';
 import { isSharePath, mountShareRoutes } from './share-routes.js';
+import { challengeShareExtension } from './challenge-share.js';
+import { appData } from './app-data.js';
+import { AppSwitchError, AppSwitches } from './app-switches.js';
+import { appOfArtifact, isPathOfApps } from './app-manifest.mjs';
 import { ChallengeStore } from './challenge-store.js';
 import { mountChallengeRoutes } from './challenge-routes.js';
 import { ChallengeIconService } from './challenge-icon.js';
@@ -166,9 +176,9 @@ function devicePairReturn(c: Context): string {
 }
 function loginPage(error?: string, session = "", shareId = "", pairId = ""): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 · pi-agent 控制台</title><meta name="theme-color" content="#f1f1f9"><link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=${assetVersion("favicon.svg")}"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=${assetVersion("apple-touch-icon.png")}"><link rel="manifest" href="/manifest.webmanifest?v=${assetVersion("manifest.webmanifest")}" crossorigin="use-credentials"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="pi-agent"><link rel="stylesheet" href="/styles.css"></head>
+<title>登录 · 合己 heji</title><meta name="theme-color" content="#f1f1f9"><link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=${assetVersion("favicon.svg")}"><link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=${assetVersion("apple-touch-icon.png")}"><link rel="manifest" href="/manifest.webmanifest?v=${assetVersion("manifest.webmanifest")}" crossorigin="use-credentials"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="heji"><link rel="stylesheet" href="/styles.css"></head>
 <body><main class="login-page"><form method="post" action="/login${pairId ? `?device-pair=${pairId}` : shareId ? `?shareId=${shareId}` : session ? `?notification-session=${session}` : ""}" class="login-card">
-<h1>pi-agent 控制台</h1>${error ? `<p class="login-error">${error}</p>` : ""}
+<h1>合己 heji</h1>${error ? `<p class="login-error">${error}</p>` : ""}
 <label>密码 <input type="password" name="password" autocomplete="current-password" autofocus required></label>
 <button type="submit">登录</button></form></main></body></html>`;
 }
@@ -206,7 +216,7 @@ export function reconcileSessionNoteRefs(svc: ConsoleService, runtime: RuntimeSe
   } catch (e) { console.error("会话关联待办对账失败：", e); return 0; }
 }
 
-export function createWebApp(svc: ConsoleService, options: { port?: number; dataDir?: string; googleCalendar?: GoogleCalendarService; publicHosts?: string[]; login?: LoginOptions; runtime?: RuntimeSessionManager; rooms?: RoomService; revealFile?: (absPath: string) => Promise<void>; deployQueue?: DeployQueue;sessionSyncEnabled?:boolean;sessionSyncJournal?:SessionSyncJournal;shutdownSignal?:AbortSignal;submissionsServing?:()=>Promise<boolean>;proxyPort?:number;codexReset?:CodexResetService; webPush?: WebPushConfig; staticCompression?:boolean;staticEncodingDir?:string;staticReleaseDir?:string; shareFile?: string; evalDir?: string; gameCompanion?: GameCompanionService; plantUml?: PlantUmlRenderer;
+export function createWebApp(svc: ConsoleService, options: { port?: number; dataDir?: string; googleCalendar?: GoogleCalendarService; publicHosts?: string[]; login?: LoginOptions; runtime?: RuntimeSessionManager; runtimeAuth?: RuntimeAuthService; rooms?: RoomService; revealFile?: (absPath: string) => Promise<void>; deployQueue?: DeployQueue;sessionSyncEnabled?:boolean;sessionSyncJournal?:SessionSyncJournal;shutdownSignal?:AbortSignal;submissionsServing?:()=>Promise<boolean>;proxyPort?:number;codexReset?:CodexResetService;runtimeUpdates?:RuntimeUpdatesService; webPush?: WebPushConfig; staticCompression?:boolean;staticEncodingDir?:string;staticReleaseDir?:string; shareFile?: string; evalDir?: string; gameCompanion?: GameCompanionService; plantUml?: PlantUmlRenderer;
   /** 股票页左侧记账助手用的模型端口（默认 DeepSeek Flash + 高推理；不传则页面提示暂时不可用） */
   ledgerChatPort?: ModelInvocationPort;
   /** 心愿挑战岛打卡纪念卡小诗（默认 DeepSeek Flash，关闭推理）。 */
@@ -215,6 +225,9 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   challengeIconPort?: ModelInvocationPort;
   /** 错题本：识图、出题、验题、讲解共用的模型端口；不传就只能浏览已有数据。 */
   wrongBookPort?: ModelInvocationPort;
+  /** 可选应用开关（设置里启用 / 关闭）：edition 'full' 是完整实例（默认全开，保持现状）；'homebrew' 是公开版（默认只开基础）。不传按完整实例。 */
+  openSourceRelease?: OpenSourceRelease;
+  appSwitches?: { edition: 'full' | 'homebrew' };
   /** 产物智能打标：点「加入产物」时按内容选标签；不传则接口返回 503。 */
   artifactTagPort?: ModelInvocationPort;
   /** 异步生成人类阅读标题，记忆原文及检索不依赖此端口。 */
@@ -223,7 +236,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   /** Agent 日历：Codex automations / Pi launchd 定时任务的扫描目录（测试注入） */
   agentCalendar?: AgentCalendarScanOptions;
   /** V1.4 故障诊断：请求 ID、服务端事件、前端事件与证据包（main.ts 创建；不传则只有请求 ID） */
-  memorySyncEnabled?: boolean; diagnostics?: ServerDiagnostics } = {}): Hono {
+  memorySyncEnabled?: boolean; diagnostics?: ServerDiagnostics } = {}): Hono & { appSwitches: AppSwitches | null } {
   const app = new Hono();
   // 日历服务按需创建：通知等测试替身没有 dataDir，不应因为无关接口而报错。
   let googleCalendar: GoogleCalendarService | undefined = options.googleCalendar;
@@ -245,10 +258,10 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   // 只实现了部分方法的测试替身可能没有 dataDir；那种装配不挂记账接口，不影响生产。
   const ledgerDir = options.dataDir ?? svc.dataDir;
   // 产物里的「我的」内容：图片 / 视频 / md / html 打标签收进来，条目只记来源。
-  const artifactCollections = ledgerDir ? new ArtifactCollections(join(ledgerDir, 'artifact-collections.json')) : null;
+  const artifactCollections = ledgerDir ? new ArtifactCollections(appData(ledgerDir, 'artifacts').path('artifact-collections.json')) : null;
   const artifactTagger = options.artifactTagPort ? new ArtifactTagger(options.artifactTagPort) : null;
-  const stockLedger = ledgerDir
-    ? new StockLedger(join(ledgerDir, 'stock-ledger.json'), () => svc.emit('update', { sessionId: '', kind: 'ledger' }))
+  const stockLedger = ledgerDir && options.appSwitches?.edition !== 'homebrew'
+    ? new StockLedger(appData(ledgerDir, 'ledger').path('stock-ledger.json'), () => svc.emit('update', { sessionId: '', kind: 'ledger' }))
     : null;
   // 心愿挑战岛：打卡记录、照片、积分都落在 Mac Mini 的数据目录，换设备不会丢。
   const challenge = ledgerDir ? new ChallengeStore(ledgerDir) : null;
@@ -257,7 +270,10 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   // 图标：同上，只把名字和类别发给模型。
   const challengeIcon = challenge ? new ChallengeIconService({ port: options.challengeIconPort }) : null;
   // 一级导航偏好是账号级配置：保存到服务端数据目录，登录的其它设备读取同一份。
-  const navigationPreferences = ledgerDir ? new NavigationPreferences(join(ledgerDir, 'navigation.json')) : null;
+  // 可选应用开关：同样是实例级配置，关闭只隐藏入口、拒绝请求、停后台任务，不删数据。
+  const appSwitchEdition = options.appSwitches?.edition ?? 'full';
+  const appSwitches = ledgerDir ? new AppSwitches(appData(ledgerDir, 'shell').path('app-switches.json'), { edition: appSwitchEdition, defaultOn: appSwitchEdition === 'full' ? 'all' : 'core' }) : null;
+  const navigationPreferences = ledgerDir ? new NavigationPreferences(appData(ledgerDir, 'shell').path('navigation.json')) : null;
   const diagnostics = options.diagnostics;
   diagnostics?.attachRelease(() => staticRelease.manifest);
   // 诊断待办不进推荐整理器的合并池，直接成为单条推荐（V1.4 §7.2）
@@ -394,9 +410,26 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     return c.redirect(devicePairReturn(c) ? `/login?device-pair=${devicePairReturn(c)}` : shareId ? `/login?shareId=${shareId}` : target ? `/login?notification-session=${target}` : "/login", 302);
   });
 
+  // 已关闭的可选应用：它的接口与页面一律 404（入口在客户端同步隐藏，这里是服务端的兜底）。
+  if (appSwitches) app.use('*', async (c, next) => {
+    const off = appSwitches.disabledIds();
+    if (off.size && isPathOfApps(new URL(c.req.url).pathname, off)) return c.json({ error: '这个应用没有启用，可以在设置 → 应用里打开', code: 'APP_DISABLED' }, 404);
+    await next();
+    // 把「已关闭清单」放进一个小 Cookie（只含应用 / 入口 / 路由模块的标识，不是凭据）：页面脚本同步读到，
+    // 首次进入新设备时首帧就按它隐藏入口，不用先加载再刷新。清单变了才重写。
+    const wanted = appSwitches.get().disabled;
+    const value = JSON.stringify(wanted);
+    const current = getCookie(c, 'pi_apps_off');
+    const quiet = JSON.stringify({ apps: [], views: [], routeModules: [] });
+    // setCookie / getCookie 自己做 URL 编解码，这里直接用原文
+    if (current === undefined ? value !== quiet : current !== value) {
+      setCookie(c, 'pi_apps_off', value, { path: '/', sameSite: 'Lax', maxAge: 31_536_000, httpOnly: false, secure: c.req.header('origin')?.startsWith('https://') ?? new URL(c.req.url).protocol === 'https:' });
+    }
+  });
+
   // V2.8：登录会话管理——退出、单独吊销、退出其他登录（服务端立即生效）
   const authId = (c: Context): string | undefined => c.get("authSession" as never) as string | undefined;
-  const pairFile = options.login?.sessionFile ? `${options.login.sessionFile}.pairs.json` : ledgerDir ? join(ledgerDir, 'device-pairs.json') : undefined;
+  const pairFile = options.login?.sessionFile ? `${options.login.sessionFile}.pairs.json` : ledgerDir ? appData(ledgerDir, 'auth').path('device-pairs.json') : undefined;
   if (auth && pairFile) mountDevicePairRoutes(app, auth, pairFile);
   const localIntakeBinding = randomBytes(32).toString('hex');
   mountLinkPreviewRoutes(app);
@@ -488,6 +521,53 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     });
   }
 
+  // 可选应用开关：设置 → 应用。客户端据 disabled 隐藏入口、不加载对应的路由模块。
+  if (appSwitches) {
+    app.get('/api/apps', (c) => { c.header('Cache-Control', 'private, no-store'); return c.json(appSwitches.get()); });
+    app.put('/api/apps/:id', async (c) => {
+      c.header('Cache-Control', 'private, no-store');
+      let body: { enabled?: unknown } = {};
+      try { body = await c.req.json(); } catch { return c.json({ error: '请求不是合法的 JSON', code: 'APP_SWITCH_INVALID' }, 400); }
+      try {
+        const saved = appSwitches.set(c.req.param('id'), body.enabled);
+        svc.emit('update', { sessionId: '', kind: 'apps' });
+        return c.json(saved);
+      } catch (e) {
+        if (e instanceof AppSwitchError) return c.json({ error: e.message, code: e.code }, e.code === 'APP_SWITCH_UNKNOWN' ? 404 : 400);
+        throw e;
+      }
+    });
+  }
+
+  const openSourceRelease = options.openSourceRelease;
+  if (appSwitchEdition === 'full' && openSourceRelease) {
+    // 管理员 = 浏览器密码登录，或经浏览器登录批准配对的设备（device-pair-routes 要求浏览器会话才能配对），
+    // 以及不对外暴露的本地控制台。只认浏览器 cookie 会让手机上的原生 App 只能看到 403。
+    const authorizeRelease = (c: Context) => {
+      c.header('Cache-Control', 'private, no-store');
+      return !!auth?.inspect(getCookie(c, SESSION_COOKIE)).ok || c.get('authSource' as never) === 'bearer' || !isPublic(c);
+    };
+    const releaseRequest = async (c: Context, action: () => Promise<unknown>) => {
+      if (!authorizeRelease(c)) return c.json({ error: '请使用管理员登录访问开源发布' }, 403);
+      try { return c.json(await action() as object); }
+      catch (error) { return c.json({ error: String((error as Error).message).split('\n')[0]?.slice(0, 400) }, 409); }
+    };
+    app.get('/api/open-source-release', c => releaseRequest(c, () => openSourceRelease.inspect()));
+    app.post('/api/open-source-release/analyze', c => releaseRequest(c, () => openSourceRelease.inspect(true)));
+    app.post('/api/open-source-release/publish', c => releaseRequest(c, async () => {
+      const body = await c.req.json<{ id?: string; selected?: unknown }>();
+      return openSourceRelease.approve(body.id, body.selected);
+    }));
+    app.post('/api/open-source-release/dismiss', c => releaseRequest(c, async () => {
+      const body = await c.req.json<{ id?: string }>();
+      return openSourceRelease.dismiss(body.id);
+    }));
+    app.post('/api/open-source-release/retry', c => releaseRequest(c, async () => {
+      const body = await c.req.json<{ id?: string }>();
+      return openSourceRelease.retry(body.id);
+    }));
+  }
+
   // 小游戏里的「小马伙伴」：固定 DeepSeek Flash、关闭推理；人设与儿童安全边界都在服务端。
   const gameCompanion = options.gameCompanion ?? new GameCompanionService({ webProvider: () => svc.webResearchProvider() });
   app.post("/api/game-companion/chat", async (c) => {
@@ -508,9 +588,9 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   });
 
   // Communications never inherit anonymous local or public-history access.
-  if (ledgerDir) {
+  if (ledgerDir && appSwitchEdition === 'full') {
     const commAuth = (c: Context) => auth ? authenticateApiRequest(auth, c.req.header('authorization') ?? (getCookie(c, DEVICE_SESSION_COOKIE) ? `Bearer ${getCookie(c, DEVICE_SESSION_COOKIE)}` : undefined), getCookie(c, SESSION_COOKIE)) : undefined;
-    mountCommunicationsRoutes(app, new CommunicationsStore(join(ledgerDir, 'communications')), {
+    mountCommunicationsRoutes(app, new CommunicationsStore(appData(ledgerDir, 'communications').path('communications')), {
       // Local console access follows the same trust boundary as other local APIs.
       reader: c => !isPublic(c) || commAuth(c)?.ok === true,
       device: c => { const result = auth && authenticateApiRequest(auth, c.req.header('authorization'), undefined); return result && result.ok && result.source === 'bearer' && result.record.kind === 'device' ? result.record.id : undefined; }
@@ -523,6 +603,9 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   // 连接状态弹层里的 Mac Mini 资源占比与网速；与局域网探测同一读取权限。
   mountHostStatsRoute(app, { canRead: c => !!authId(c) && (!isPublic(c) || !!(options.runtime?.settings().publicHistory || options.runtime?.settings().publicControl)) });
   if (options.runtime) {
+    // 原生 FCM 队列在下面创建；日程提醒两个通道都要入队，任一失败不影响另一个。
+    let nativeReminders: NativeNotifications | undefined;
+    let noteReminderService: NoteReminders | undefined;
     if (options.webPush) {
       const runtime = options.runtime;
       const push = new WebPushService({ ...options.webPush, runtime, authorized: (owner, publicDevice) => {
@@ -534,14 +617,39 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
         owner: c => authId(c) ?? (!isPublic(c) ? "local" : undefined), isPublic,
         canRead: c => !isPublic(c) || !!(runtime.settings().publicHistory || runtime.settings().publicControl)
       });
+      // 日程提醒：记录里的提醒时间由 note-reminder 在新建 / 编辑时算好，这里只负责到点全端推送。
+      // 测试里的轻量 svc 桩没有记录存储与事件总线，跳过（不影响通知路由本身）。
+      const reminderPush = svc.notes && typeof svc.on === "function" ? new NoteReminders({
+        notes: svc.notes,
+        dir: join(options.webPush.dir, "note-reminders"),
+        autoStart: false,
+        send: (notice) => {
+          let failure: unknown;
+          try {
+            push.remind({ id: notice.id, title: notice.title, body: notice.body, url: notice.url, at: notice.at, expires: notice.at + 15 * 60_000 });
+          } catch (error) { failure = error; }
+          try {
+            nativeReminders?.enqueueReminder({ eventId: notice.id, title: notice.title, body: notice.body,
+              route: notice.url.replace(/^\//, ""), at: notice.at, expiresAt: notice.at + 15 * 60_000 });
+          } catch (error) { failure ??= error; }
+          if (failure) throw failure;
+        }
+      }) : undefined;
+      if (reminderPush) {
+        noteReminderService = reminderPush;
+        svc.on("update", (u: { kind?: string }) => { if (u.kind === "notes") reminderPush.wake(); });
+        options.shutdownSignal?.addEventListener("abort", () => reminderPush.stop(), { once: true });
+      }
     }
     let nativeSend: ReturnType<typeof fcmFromServiceAccount> | undefined;
     const nativeAccount=androidConfig.fcmServiceAccount;
-    if(nativeAccount)try{nativeSend=fcmFromServiceAccount(nativeAccount);}catch{console.error('原生推送配置无效，服务未启用');}
-    mountNativeNotificationRoutes(app, { runtime: options.runtime,
-      ...(nativeSend && ledgerDir ? {config:{dir:join(ledgerDir,'native-notifications'),send:nativeSend}}:{}),
+    if(nativeAccount)try{const send=fcmFromServiceAccount(nativeAccount);nativeSend=appSwitches?(async(token,data,authorized)=>{if(!appSwitches.enabled('android'))throw new Error('Android 客户端已在设置里关闭');await send(token,data,authorized);}):send;}catch{console.error('原生推送配置无效，服务未启用');}
+    nativeReminders = mountNativeNotificationRoutes(app, { runtime: options.runtime,
+      ...(nativeSend && ledgerDir ? {config:{dir:appData(ledgerDir,'android').path('native-notifications'),send:nativeSend}}:{}),
       owner:c=>{if(!auth)return undefined;const result=authenticateApiRequest(auth,c.req.header('authorization'),undefined);return result.ok && result.record.kind==='device'?result.record.id:undefined;},
       authorized:owner=>!!auth?.isActive(owner),canRead:()=>!!(options.runtime?.settings().publicHistory || options.runtime?.settings().publicControl),shutdown:options.shutdownSignal });
+    // 两个推送通道都就绪后再开始扫描。
+    noteReminderService?.start();
     const rooms = options.rooms ?? new RoomService(options.runtime);
     const enabled=options.sessionSyncEnabled??process.env['PI_SESSION_SYNC']!=='0',journal=options.sessionSyncJournal??new SessionSyncJournal();
     const stillAuthenticated=(c:Context)=>{
@@ -559,14 +667,78 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     app.get('/api/session-sync/capabilities', (c) => { c.header('Cache-Control', 'private, no-store'); return c.json({ protocolVersion: 1, persistence: { supported: true, schema: 1 }, incremental: { supported: enabled,protocolVersion:1 }, restore:{supported:true,schema:1} }); });
     mountRoomRoutes(app, rooms, { isPublic, actor: (c) => authId(c) ?? (isPublic(c) ? "public" : "local"), authPartition: (c) => authId(c) ?? null,stillAuthenticated,sync:{enabled,journal,sources:new RoomSyncSources(rooms)} });
     const sessionMemoryPort=new RuntimeMemoryPort();
+    const resolveLocalRuntimeBin = (kind: Exclude<RuntimeKind, "pi">): string | undefined => {
+      const home = homedir();
+      const pathDirs = (process.env["PATH"] ?? "").split(":").filter(Boolean);
+      if (kind === "codex") {
+        const list = [
+          process.env["PI_AGENT_CODEX_BIN"],
+          "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+          "/Applications/Codex.app/Contents/Resources/codex",
+          join(home, ".local/bin/codex"), "/opt/homebrew/bin/codex", "/usr/local/bin/codex",
+          ...pathDirs.map((d) => join(d, "codex")),
+        ];
+        return list.find((p): p is string => !!p && existsSync(p));
+      }
+      if (kind === "antigravity") {
+        const list = [
+          process.env["PI_AGENT_AGY_BIN"],
+          join(home, ".local/bin/agy"), "/opt/homebrew/bin/agy", "/usr/local/bin/agy",
+          ...pathDirs.map((d) => join(d, "agy")),
+        ];
+        return list.find((p): p is string => !!p && existsSync(p));
+      }
+      const list = [
+        process.env["PI_AGENT_CLAUDE_BIN"],
+        join(home, ".local/bin/claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+        ...pathDirs.map((d) => join(d, "claude")),
+      ];
+      return list.find((p): p is string => !!p && existsSync(p));
+    };
+    const defaultRuntimeAuth: RuntimeAuthService | undefined = options.runtimeAuth ?? (typeof options.runtime.probe === "function" ? (() => {
+      const flows = new RuntimeAuthFlowManager({
+        cwd: homedir(),
+        resolveBinary: resolveLocalRuntimeBin,
+        envFor: () => allowlistedEnv(),
+        verifyProfile: (kind) => options.runtime!.probe(kind, { reloggedIn: true }),
+      });
+      options.shutdownSignal?.addEventListener("abort", () => flows.shutdown(), { once: true });
+      const capOf = (kind: RuntimeKind): RuntimeAuthCapability => ({
+        managedInstall: false,
+        requiresNetworkGate: false,
+        installed: kind === "pi" ? true : Boolean(resolveLocalRuntimeBin(kind)),
+        enabled: true,
+        isolatedCredentials: false,
+        supportsApiKey: kind === "pi" || kind === "codex",
+        loginMode: kind === "pi" ? "api-key" : kind === "codex" ? "callback" : kind === "antigravity" ? "code-paste" : "hybrid",
+      });
+      return {
+        capabilities: () => ({
+          isolatedCredentials: false,
+          runtimes: {
+            codex: capOf("codex"),
+            "claude-code": capOf("claude-code"),
+            pi: capOf("pi"),
+            antigravity: capOf("antigravity"),
+          },
+        }),
+        startLogin: (kind) => flows.start(kind),
+        loginStatus: (kind, flowId) => flows.status(kind, flowId),
+        submitLogin: (kind, flowId, input) => flows.submit(kind, flowId, input),
+        verifyLogin: (kind, flowId) => flows.verify(kind, flowId),
+        cancelLogin: (kind, flowId) => flows.cancel(kind, flowId),
+        shutdown: () => flows.shutdown(),
+      };
+    })() : undefined);
     mountRuntimeRoutes(app, options.runtime, {
+      ...(defaultRuntimeAuth ? { runtimeAuth: defaultRuntimeAuth } : {}),
       ...(options.codexReset ? { codexReset: options.codexReset } : {}),
       factAudit:(...args)=>sessionMemoryPort.factAudit(...args),
       publicMemoryEntry:prefix=>publicMemoryService?.entryByPrefix(prefix),
       iterations: svc.noteIterations,
       validateRecordSources: refs=>svc.noteRelations.verifySources(refs),
       rooms, isPublic, actor: (c) => authId(c) ?? (isPublic(c) ? "public" : "local"), authPartition: (c) => authId(c) ?? null,
-      ...(ledgerDir ? { readStateFile: join(ledgerDir, 'read-state.json') } : {}),
+      ...(ledgerDir ? { readStateFile: appData(ledgerDir, 'notifications').path('read-state.json') } : {}),
       stillAuthenticated,sync:{enabled,journal,sources:new RuntimeSyncSources(options.runtime)},
       ...(options.shutdownSignal ? { shutdown: options.shutdownSignal } : {}),
       ...(options.submissionsServing ? { submissionsServing: options.submissionsServing } : {}),
@@ -599,7 +771,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   }
 
   let publicMemoryService: PublicMemoryService | undefined;
-  const memorySync = options.runtime && ledgerDir ? new MemorySyncService({root:join(ledgerDir,'memory'),runtime:options.runtime,...(options.memorySyncEnabled === undefined ? {} : {enabled:options.memorySyncEnabled})}) : undefined;
+  const memorySync = options.runtime && ledgerDir ? new MemorySyncService({root:appData(ledgerDir,'memory').path('memory'),runtime:options.runtime,...(options.memorySyncEnabled === undefined ? {} : {enabled:options.memorySyncEnabled})}) : undefined;
   if(memorySync && options.runtime) {
     const runtime=options.runtime;
     // 平台公共记忆：条目由 v2 流水线从平台会话里提炼（见下方 PipelineService），这里是设置 / 新会话注入 / 按需索引 / 使用率。
@@ -607,7 +779,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     const catalog=()=>buildCatalog([...runtime.store.allBindings()].reverse().map(b=>({workspace:b.workspace,repoRoot:b.worktree?.repoRoot})));
     const pipelineStore=new PipelineStore(pipelineRoot(ledgerDir!));
     publicMemoryService=new PublicMemoryService({
-      store:new PublicMemoryStore(join(ledgerDir!,'memory-public')),
+      store:new PublicMemoryStore(appData(ledgerDir!,'memory').path('memory-public')),
       topicsSource:()=>pipelineStore.topics(),
       projects:catalog,
       baseUrl:`http://127.0.0.1:${options.proxyPort??options.port??8788}`
@@ -631,7 +803,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     };
     // 强约束里 DeepSeek 写的规则（没有对应代码的）每轮结束由判定模型按四要素核对
     if(options.memoryTitlePort&&typeof runtime.setModelRuleJudge==='function')runtime.setModelRuleJudge(createRuleJudge(options.memoryTitlePort));
-    if(typeof runtime.setEvidenceReaders==='function')runtime.setEvidenceReaders(evidenceReaders({releaseDir:androidConfig.releaseDir??(ledgerDir?join(ledgerDir,'android-release'):undefined)}));
+    if(typeof runtime.setEvidenceReaders==='function')runtime.setEvidenceReaders(evidenceReaders({releaseDir:androidConfig.releaseDir??(ledgerDir?appData(ledgerDir,'memory').foreign('android','android-release'):undefined)}));
     if(typeof runtime.setPublicMemoryObserver==='function')runtime.setPublicMemoryObserver({turnEnded:onTurnEnded,injected:c=>injecting.observeInjection({runtime:c.runtimeKind,sessionId:c.platformSessionId}),enforced:c=>injecting.recordEnforcement(c.topicId,c.pass),tool:c=>injecting.observeToolEvent({runtime:c.runtimeKind,sessionId:c.platformSessionId,key:c.key,...(c.name?{name:c.name}:{}),...(c.input?{input:c.input}:{})})});
     injecting.startMaintenance();
     const stopPublicMemory=()=>injecting.stop();
@@ -707,7 +879,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
       dataDir,
       signature: () => [
         stamp(join(runtime.store.dir, "usage.json")), stamp(join(runtime.store.dir, "bindings.json")), stamp(join(runtime.store.dir, "turn-origins.jsonl")),
-        stamp(join(dataDir, "deepseek-usage.jsonl")), stamp(join(dataDir, "runtime-billing.json")),
+        stamp(appData(dataDir, "resources").path("deepseek-usage.jsonl")), stamp(appData(dataDir, "resources").foreign("shell", "runtime-billing.json")),
         stamp(join(process.env["PI_AGENT_GUI_ROOT"] ?? join(homedir(), ".pi-agent-gui"), "when-idle", "history.log"))
       ].join("|")
     });
@@ -726,6 +898,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   // v2.5 F11：外部资源（只读）；余额只在你点刷新时向服务商的只读接口请求
   // 订阅额度（Claude / OpenAI）也是模型账号的额度，作为 model 行并入同一张表（与「新建会话」同源）；
   // 账户级信息：对外入口只在开了查看或控制授权时才随资源一起显示，本机入口照常显示。
+  const localCliInventory = new LocalCliInventory();
   app.get("/api/resources", (c) => handle(c, async () => {
     const base = svc.resources();
     const runtime = options.runtime;
@@ -739,9 +912,10 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
       const { runtimeConfigs: _runtimeConfigs, ...rest } = withUsage;
       return rest;
     }
-    if (!runtime || !settings) return withUsage;
+    const withLocalClis = { ...withUsage, localClis: await localCliInventory.read() };
+    if (!runtime || !settings) return withLocalClis;
     const runtimes = runtimeQuotaServices(runtime.profiles(), { canRefresh: !isPublic(c) || settings.publicControl });
-    return runtimes.length ? { ...withUsage, services: [...base.services, ...runtimes] } : withUsage;
+    return runtimes.length ? { ...withLocalClis, services: [...base.services, ...runtimes] } : withLocalClis;
   }));
   app.post("/api/resources/:service/refresh", (c) => handle(c, async () => svc.refreshBalance(c.req.param("service"))));
   // 平台默认联网供应商：手动切换（auto/brave/deepseek）。对外入口沿用 runtime 控制授权。
@@ -984,6 +1158,16 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     return svc.listNotes().filter(note => ids.has(note.id))
       .map(note => links?.[note.id]?.length ? { ...note, sessions: links[note.id] } : note);
   };
+  // 日程提醒：未来 N 天内到点的提醒（人自己的日程）；页面「即将提醒」与调试都用它。
+  app.get("/api/notes/reminders", (c) => handle(c, async () => {
+    const days = Math.max(1, Math.min(30, Number(c.req.query("days")) || 8));
+    const limit = Math.max(1, Math.min(20, Number(c.req.query("limit")) || 5));
+    const now = Date.now();
+    const reminders = scanNoteReminders(svc.notes.list(), now, now + days * 86_400_000, now).slice(0, limit)
+      .map(({ key: _key, ...rest }) => rest);
+    c.header("cache-control", "private, no-store");
+    return { days, reminders };
+  }));
   app.get("/api/notes/upcoming", (c) => handle(c, async () => {
     const limit = Math.max(1, Math.min(50, Number(c.req.query("limit")) || 10));
     const now = Date.now();
@@ -1073,7 +1257,13 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
 
   // V3.9 产物：小游戏直接在控制台里加载。版本号是运行时文件的内容哈希，
   // 页面拿它跟本地记录比对，决定要不要提示「有更新」（与顶栏前端更新同一套做法）。
-  app.get("/api/artifacts", (c) => { c.header("Cache-Control", "private, no-store"); return c.json(artifacts.catalog()); });
+  app.get("/api/artifacts", (c) => {
+    c.header("Cache-Control", "private, no-store");
+    const catalog = artifacts.catalog();
+    const off = appSwitches?.disabledIds();
+    // 关闭的应用（小游戏、心愿挑战岛、错题本）不再出现在产物目录里；数据与文件原样保留。
+    return c.json(off?.size ? { ...catalog, items: catalog.items.filter((item) => { const owner = appOfArtifact(item.id); return !owner || !off.has(owner.id); }) } : catalog);
+  });
   if (artifactCollections) mountArtifactCollectionRoutes(app, artifactCollections, {
     ...(options.runtime ? { readImage: async (source: import('./artifact-collections.js').ArtifactSource) => {
       if (source.type !== 'file') return null;
@@ -1093,17 +1283,22 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   if (stockLedger) mountStockLedgerRoutes(app, stockLedger, { chat: new LedgerChatService(stockLedger, options.ledgerChatPort) });
   // Codex reset 卡：每晚扫描一次（service 由 main.ts 创建并挂调度器），这里只挂读取与手动扫描。
   mountCodexResetRoutes(app, options.codexReset);
+  // runtime 版本更新：每天检测 Pi / Claude Code / Codex 的新稳定版（只检测与提示，升级由人手动做）。
+  mountRuntimeUpdatesRoutes(app, options.runtimeUpdates);
   if (challenge) mountChallengeRoutes(app, challenge, { ...(challengePoem ? { poem: challengePoem } : {}), ...(challengeIcon ? { icon: challengeIcon } : {}) });
   // 错题本：拍照识题、知识点掌握度、每周测验；数据在数据目录的 wrong-book/，每周按设置的时间自动出题。
   if (ledgerDir) {
-    const wrongBook = new WrongBookService(new WrongBookStore(ledgerDir), { ...(options.wrongBookPort ? { port: options.wrongBookPort } : {}) });
+    const wrongBook = new WrongBookService(new WrongBookStore(ledgerDir), { ...(options.wrongBookPort ? { port: options.wrongBookPort } : {}), ...(appSwitches ? { enabled: () => appSwitches.enabled('wrong-book') } : {}) });
     mountWrongBookRoutes(app, wrongBook);
     if (options.wrongBookPort) {
       wrongBook.start();
       options.shutdownSignal?.addEventListener('abort', () => wrongBook.stop(), { once: true });
     }
   }
-  mountShareRoutes(app, { artifacts, shares: new ArtifactShares(options.shareFile), publicHosts, ...(challenge ? { challenge } : {}), ...(challengePoem ? { poem: challengePoem } : {}), ...(challengeIcon ? { icon: challengeIcon } : {}) });
+  // 独立版里未发布的分享扩展只有空桩（返回 undefined）：列表里不能放 undefined，否则整套 API 一起挂。
+  const challengeShare = challenge ? challengeShareExtension({ store: challenge, ...(challengePoem ? { poem: challengePoem } : {}), ...(challengeIcon ? { icon: challengeIcon } : {}) }) : undefined;
+  mountShareRoutes(app, { artifacts, shares: new ArtifactShares(options.shareFile), publicHosts,
+    extensions: challengeShare ? [challengeShare] : [] });
   // 消息里的 Mermaid / PlantUML 图表预览
   mountDiagramRoutes(app, options.plantUml ? { plantuml: options.plantUml } : {});
 
@@ -1167,6 +1362,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
 
   app.get("*", (c) => {
     const url = new URL(c.req.url);
+    if (appSwitchEdition === 'homebrew' && /^\/open-source-release\.(?:js|css)$/.test(url.pathname)) return c.json({ error: "not found" }, 404);
     const archived = staticRelease.get(url.pathname);
     const file = archived ? url.pathname : STATIC[url.pathname];
     if (!file) return c.json({ error: "not found" }, 404);
@@ -1201,7 +1397,8 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     console.error(err);
     return c.text("Internal Server Error", 500);
   });
-  return app;
+  // 装配入口（main.ts）要用开关去管后台监听（局域网端口等），所以挂在返回值上。
+  return Object.assign(app, { appSwitches });
 }
 async function handle(c: Context, fn: () => Promise<unknown>, okStatus: 200 | 201 = 200, timing = false): Promise<Response> {
   try {

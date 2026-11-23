@@ -193,6 +193,21 @@ describe("outbox (排队消息)", () => {
     expect(prompts()[1]).toBe("during drain");
   });
 
+  it("sends a due reservation after restart when the last turn was stopped before it was queued", async () => {
+    const id = await runningSession();
+    await mgr.interrupt(id, "local");
+    await until(() => binding(id).status === "idle" && binding(id).turns.at(-1)?.status === "cancelled");
+    await until(() => !(mgr as unknown as { fingerprintPending: Set<string> }).fingerprintPending.has(id), 5000); // 停止后的指纹刷新
+    mgr.enqueueMessage(id, { messageId: mid(), prompt: "停止后的预约", scheduledFor: new Date(Date.now() + 60000).toISOString() } as any, "local");
+    expect(binding(id).outboxPaused).toBeUndefined();
+    // 之前版本在重启时把它标成「上一轮没有正常结束」并留下自动暂停
+    mgr.store.updateBinding(id, x => { x.outboxPaused = { at: new Date().toISOString(), reason: "服务重启时上一轮没有正常结束", auto: true }; x.outbox![0]!.scheduledFor = new Date(Date.now() - 1000).toISOString(); }, undefined, { bump: false });
+    (mgr as unknown as { resumeOutboxesAfterRestart(): void }).resumeOutboxesAfterRestart();
+    await until(() => driver.turns.length === 2);
+    expect(prompts()[1]).toBe("停止后的预约");
+    expect(binding(id).outboxPaused).toBeUndefined();
+  });
+
   it("binds queued images to the session, lets them be replaced, and sends them", async () => {
     const profile = mgr.profile("codex")!;
     profile.capabilities.imageInput = { status: "supported", reason: "fixture" };

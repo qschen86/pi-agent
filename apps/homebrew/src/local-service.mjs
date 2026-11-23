@@ -4,37 +4,23 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { initializeInstallation, readInstallation, verifyPassword } from './initialization.mjs';
 import { inspectEnvironment } from './preflight.mjs';
 import { checkModel } from './model-check.mjs';
-import { ONBOARDING_KIND, ONBOARDING_TITLE, onboardingPrompt } from './onboarding.mjs';
 import { PREVIEW_WRAPPER_CSP, renderStatefulPreview } from './preview-storage.mjs';
 import { evaluateRuntimeNetwork, withRuntimeNetworkGate } from './runtime-network-gate.mjs';
+import { prepareWorkspaceRepo } from './workspace-repo.mjs';
+
+// The first task runs in its own worktree with the runtime's native tools and no approval prompts.
+const FIRST_TASK_PERMISSION = Object.freeze({ pi: 'pi-native', codex: 'full-access', 'claude-code': 'bypassPermissions', antigravity: 'bypassPermissions' });
 
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'cache-control': 'no-store' } });
 const hash = text => createHash('sha256').update(text).digest('hex');
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
-const KNOWN_MESSAGE = /^(请输入|模型服务|账号没有|无法连接|两次密码|管理员密码|设备检查|数据位置|数据目录|模型配置|输入内容|请求格式)/;
-const oneLine = text => String(text ?? '').replace(/\s+/g, ' ').trim();
-/** Local diagnostics only: every submitted credential, bearer value and long token-like string is masked before logging. */
-export function redactForLog(text, secrets = []) {
-  let out = oneLine(text);
-  for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 4) out = out.split(secret).join('[redacted]');
-  return out.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]').replace(/\bsk-[A-Za-z0-9_-]+/g, '[redacted]').replace(/[A-Za-z0-9_+/=-]{32,}/g, '[redacted]');
-}
 const safeHeaders = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 
-export function createLocalService({ root, origin, bootstrapToken, webRoot, coreFactory, setAutoStart, networkInspector, componentInstall, environment = () => inspectEnvironment(root), modelCheck = checkModel, log = line => console.error(line) }) {
-  const sessions = new Set(); let corePromise; let proof; let busy = false; let attempts = 0; let loginWindow = Date.now();
-  let networkKey; const secrets = new Set();
-  const remember = value => { if (typeof value === 'string' && value.trim()) secrets.add(value.trim()); if (secrets.size > 16) secrets.delete(secrets.values().next().value); };
-  const record = (request, status, detail) => { try { log(`[pi-agent] ${new Date().toISOString()} ${request.method} ${new URL(request.url).pathname} -> ${status} ${redactForLog(detail, [...secrets, bootstrapToken])}`); } catch { /* Logging must never change the response. */ } };
-  /** Distinguishes what failed at save time so the wizard can tell the user what to do next. */
-  const requireEligible = () => {
-    const report = environment();
-    if (report?.eligible) return;
-    const failed = (report?.checks ?? []).filter(check => !check.passed).map(check => check.label).filter(Boolean);
-    throw Object.assign(Error(`设备检查未通过${failed.length ? `（${failed.join('、')}）` : ''}，请处理后重新保存`), { code: 'DEVICE_INELIGIBLE' });
-  };
+export function createLocalService({ root, origin, bootstrapToken, webRoot, coreFactory, setAutoStart, networkInspector, componentInstall, environment = () => inspectEnvironment(root), modelCheck = checkModel, prepareWorkspace = prepareWorkspaceRepo }) {
+  const sessions = new Set(); let proof; let corePromise; let busy = false; let attempts = 0; let loginWindow = Date.now();
+  let networkKey;
   const installed = () => existsSync(join(root, 'installation.json'));
-  const core = () => corePromise ??= Promise.resolve().then(() => coreFactory({ root, port: Number(new URL(origin).port) })).catch(error => { corePromise = undefined; throw error; });
+  const core = () => corePromise ??= Promise.resolve().then(() => coreFactory({ root, port: Number(new URL(origin).port), networkInspector, componentInstall, modelCheck })).catch(error => { corePromise = undefined; throw error; });
   const cookie = request => /(?:^|;\s*)pi_local_session=([a-f0-9]{64})(?:;|$)/.exec(request.headers.get('cookie') ?? '')?.[1];
   const authenticated = request => sessions.has(cookie(request));
   const issueSession = () => { const token = randomBytes(32).toString('hex'); if (sessions.size >= 32) sessions.delete(sessions.values().next().value); sessions.add(token); return token; };
@@ -44,10 +30,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     writeFileSync(temporary, JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); renameSync(temporary, join(root, 'installation.json'));
   };
   const body = async request => { const text = await request.text(); if (Buffer.byteLength(text) > 16_384) throw Error('输入内容过大'); try { return JSON.parse(text); } catch { throw Error('请求格式无效'); } };
-  const optionalKind = kind => ['codex', 'claude-code'].includes(kind);
-  // 保存时按需重校验的预算：检查结论只存在内存里，过期或服务重启后需要重新问一次厂商，同一条路不能变成无限次外部请求。
-  let verifications = 0, verificationWindow = Date.now();
-  const verificationAllowed = () => { if (Date.now() - verificationWindow > 15 * 60_000) { verificationWindow = Date.now(); verifications = 0; } return ++verifications <= 10; };
+  const optionalKind = kind => ['codex', 'claude-code', 'antigravity'].includes(kind);
   const inspectNetwork = async kind => {
     if (!optionalKind(kind) || !networkInspector) throw Error('网络检测暂不可用');
     let key = networkKey;
@@ -59,16 +42,17 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     if (!installed()) return { configured: false, environment: environment() };
     const config = readInstallation(root);
     const task = config.acceptance.taskSession;
-    if (task && config.acceptance.firstTask !== 'passed' && config.acceptance.taskKind !== ONBOARDING_KIND) {
+    if (task && config.acceptance.firstTask !== 'passed') {
       const app = await core(); const session = app.runtime.store.binding(task);
       const turn = session?.turns?.at(-1);
-      const file = join(root, 'workspaces/first-plan.html');
+      // A worktree session writes inside its own directory, not the shared workspaces root.
+      const file = join(session?.workspace || join(root, 'workspaces'), 'first-plan.html');
       if (session?.status === 'idle' && turn?.status === 'completed' && existsSync(file) && lstatSync(file).isFile() && !lstatSync(file).isSymbolicLink() && lstatSync(file).size > 0 && lstatSync(file).size <= 5 * 1024 ** 2) {
         config.acceptance.firstTask = 'passed'; config.state = 'ready'; saveConfig(config);
       }
       return { configured: true, acceptance: config.acceptance, taskStatus: turn?.status ?? session?.status, taskUrl: `/#/rt/${encodeURIComponent(task)}`, previewUrl: '/api/local/first-preview', model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding };
     }
-    return { configured: true, acceptance: config.acceptance, model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding, ...(task ? { taskUrl: `/#/rt/${encodeURIComponent(task)}` } : {}) };
+    return { configured: true, acceptance: config.acceptance, model: config.model, runtimeKind: config.runtimeKind || 'pi', onboarding: config.onboarding };
   }
   async function handle(request) {
     const url = new URL(request.url);
@@ -89,9 +73,9 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
       if (!installed() || !verifyPassword(input.password, JSON.parse(readFileSync(join(root, 'credentials/admin.json'), 'utf8')))) return json({ error: '密码不正确' }, 401);
       attempts = 0; return responseWithSession();
     }
-    if (url.pathname === '/setup' || url.pathname === '/login' || url.pathname === '/setup.js' || url.pathname === '/setup.css') {
-      const file = url.pathname === '/setup.js' ? 'setup.js' : url.pathname === '/setup.css' ? 'setup.css' : 'setup.html';
-      return new Response(readFileSync(join(webRoot, file)), { headers: { ...safeHeaders, 'content-type': file.endsWith('.js') ? 'text/javascript; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/html; charset=utf-8' } });
+    if (url.pathname === '/setup' || url.pathname === '/login' || url.pathname === '/setup.js' || url.pathname === '/setup.css' || url.pathname === '/setup-brand.png' || url.pathname === '/setup-brand-dark.png') {
+      const file = url.pathname === '/setup.js' ? 'setup.js' : url.pathname === '/setup.css' ? 'setup.css' : url.pathname === '/setup-brand.png' ? 'setup-brand.png' : url.pathname === '/setup-brand-dark.png' ? 'setup-brand-dark.png' : 'setup.html';
+      return new Response(readFileSync(join(webRoot, file)), { headers: { ...safeHeaders, 'content-type': file.endsWith('.js') ? 'text/javascript; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : file.endsWith('.png') ? 'image/png' : 'text/html; charset=utf-8' } });
     }
     if (!authenticated(request)) {
       if (url.pathname.startsWith('/api/')) return json({ error: '请先登录' }, 401);
@@ -101,7 +85,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     if (url.pathname === '/api/local/network-check' && request.method === 'POST') {
       const input = await body(request);
       const kind = installed() ? readInstallation(root).runtimeKind : input.runtimeKind;
-      if (!optionalKind(kind)) return json({ error: '请选择 Codex 或 Claude Code' }, 400);
+      if (!optionalKind(kind)) return json({ error: '请选择 Codex、Claude Code 或 Antigravity' }, 400);
       if (input.apiKey !== undefined) {
         if (typeof input.apiKey !== 'string' || input.apiKey.length > 4096 || /[\r\n\0]/.test(input.apiKey)) return json({ error: '网络检测 Key 无效' }, 400);
         networkKey = input.apiKey.trim() || undefined;
@@ -114,6 +98,45 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
       const result = await inspectNetwork(kind);
       return json({ ...result, decision: evaluateRuntimeNetwork({ runtime: kind, ...result }) });
     }
+    if (url.pathname === '/api/local/runtime-login/status' && request.method === 'GET') {
+      if (!installed()) return json({ error: '请先保存本机设置' }, 409);
+      const config = readInstallation(root); const kind = config.runtimeKind;
+      if (!optionalKind(kind)) return json({ error: '当前实例未选择可选运行时' }, 409);
+      const app = await core();
+      const flowId = url.searchParams.get('flowId') || undefined;
+      const flow = app.loginStatus ? app.loginStatus(kind, flowId) : null;
+      if (flow?.phase === 'succeeded' && config.acceptance.modelConnection !== 'passed') {
+        const profile = app.runtime.profile?.(kind) ?? await app.runtime.probe(kind);
+        const model = profile?.models?.find(m => m.isDefault) || profile?.models?.[0];
+        if (model) config.model = { provider: kind, id: model.id };
+        config.onboarding = { ...(config.onboarding || {}), component: 'installed', login: 'passed' };
+        config.acceptance.modelConnection = 'passed';
+        saveConfig(config);
+      }
+      return json({ flow, connected: config.acceptance.modelConnection === 'passed' });
+    }
+    if (['/api/local/runtime-login/submit', '/api/local/runtime-login/cancel'].includes(url.pathname) && request.method === 'POST') {
+      if (!installed()) return json({ error: '请先保存本机设置' }, 409);
+      const config = readInstallation(root); const kind = config.runtimeKind;
+      if (!optionalKind(kind)) return json({ error: '当前实例未选择可选运行时' }, 409);
+      const input = await body(request);
+      const app = await core();
+      if (url.pathname.endsWith('/cancel')) {
+        const flow = app.cancelLogin ? await app.cancelLogin(kind, input.flowId) : null;
+        return json({ flow });
+      }
+      if (!app.submitLogin) return json({ error: '当前实例不支持提交授权码' }, 400);
+      const flow = await app.submitLogin(kind, String(input.flowId || ''), { code: typeof input.code === 'string' ? input.code : undefined, apiKey: typeof input.apiKey === 'string' ? input.apiKey : undefined });
+      if (flow?.phase === 'succeeded' && config.acceptance.modelConnection !== 'passed') {
+        const profile = app.runtime.profile?.(kind) ?? await app.runtime.probe(kind);
+        const model = profile?.models?.find(m => m.isDefault) || profile?.models?.[0];
+        if (model) config.model = { provider: kind, id: model.id };
+        config.onboarding = { ...(config.onboarding || {}), component: 'installed', login: 'passed' };
+        config.acceptance.modelConnection = 'passed';
+        saveConfig(config);
+      }
+      return json(flow);
+    }
     if (['/api/local/runtime-install', '/api/local/runtime-login', '/api/local/runtime-account'].includes(url.pathname) && request.method === 'POST') {
       if (!installed()) return json({ error: '请先保存本机设置' }, 409);
       if (busy) return json({ error: '正在处理，请稍后重试' }, 409);
@@ -125,6 +148,10 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
           if (!componentInstall) return json({ error: '安装工具未就绪' }, 409);
           const result = await gated(kind, 'install', () => componentInstall(kind));
           config.onboarding.component = 'installed'; saveConfig(config);
+          if (corePromise) {
+            const app = await corePromise.catch(() => null);
+            await app?.activateRuntime?.(kind);
+          }
           return json(result);
         }
         if (config.onboarding?.component !== 'installed') return json({ error: '请先安装运行时组件' }, 409);
@@ -150,7 +177,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     }
     if (url.pathname === '/api/local/model-check' && request.method === 'POST') {
       if (installed()) return json({ error: '实例已经初始化' }, 409);
-      const input = await body(request); remember(input.apiKey); const models = await modelCheck(input.apiKey);
+      const input = await body(request); const models = await modelCheck(input.apiKey);
       proof = { keyHash: hash(input.apiKey.trim()), models, expires: Date.now() + 10 * 60_000 };
       return json({ models });
     }
@@ -158,8 +185,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
       if (busy || installed()) return json({ error: '实例已初始化或正在处理' }, 409);
       busy = true;
       try {
-        const input = await body(request); remember(input.model?.apiKey);
-        requireEligible();
+        const input = await body(request);
         if (optionalKind(input.runtimeKind)) {
           await gated(input.runtimeKind, 'install', async () => {
             initializeInstallation({ ...input, root, environment: environment(), networkApiKey: networkKey });
@@ -167,20 +193,7 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
           networkKey = undefined;
           return json({ configured: true });
         }
-        // The check result lives only in memory (10 minutes, lost on restart) while the page keeps saying "connected", so saving never trusts it alone:
-        // a missing, expired or different-key result is re-verified against the same fixed vendor endpoint, within a request budget.
-        const key = String(input.model?.apiKey ?? '').trim();
-        if (!proof || proof.expires < Date.now() || !same(proof.keyHash, hash(key))) {
-          if (!verificationAllowed()) { record(request, 429, 'save-recheck-rate-limited'); return json({ error: '连接检查次数过多，请稍后重试' }, 429); }
-          let models;
-          try { models = await modelCheck(key); }
-          catch (error) {
-            record(request, 409, `save-recheck-failed ${error.message}`);
-            return json({ error: `保存前重新检查连接未通过：${KNOWN_MESSAGE.test(error.message ?? '') ? error.message : '请返回上一步重新检查连接'}`, code: 'model-recheck-failed' }, 409);
-          }
-          proof = { keyHash: hash(key), models, expires: Date.now() + 10 * 60_000 };
-        }
-        if (!proof.models.includes(input.model?.id)) { record(request, 409, 'save-model-unavailable'); return json({ error: '所选模型不在当前发行版支持的模型列表内，请重新检查连接后选择模型', code: 'model-unavailable' }, 409); }
+        if (!proof || proof.expires < Date.now() || !same(proof.keyHash, hash(String(input.model?.apiKey ?? '').trim())) || !proof.models.includes(input.model?.id)) return json({ error: '请先完成模型连接检查' }, 409);
         initializeInstallation({ ...input, root, environment: environment() });
         const config = readInstallation(root); config.model = { provider: input.model.provider, id: input.model.id }; config.acceptance.modelConnection = 'passed'; saveConfig(config);
         proof = undefined;
@@ -195,16 +208,16 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
         const config = readInstallation(root); const kind = config.runtimeKind || 'pi';
         if (optionalKind(kind) && (config.onboarding?.login !== 'passed' || config.acceptance.modelConnection !== 'passed')) return json({ error: '请先完成组件安装和账号连接检查' }, 409);
         if (!config.acceptance.taskSession) {
-          // API-key installs start a guided welcome session (assistant speaks first); optional runtimes keep the original sample task.
-          const guided = kind === 'pi';
           const createTask = async () => {
           const app = await core(); const profile = await app.runtime.probe(kind);
-          return app.runtime.create({ runtimeKind: kind, confirmedProfileVersion: profile.checkedAt, workspace: join(root, 'workspaces'), model: kind === 'pi' ? `deepseek/${config.model.id}` : config.model.id, permissionMode: kind === 'pi' ? 'pi-ask' : kind === 'codex' ? 'ask' : 'default', worktree: false, ...(guided ? { title: ONBOARDING_TITLE, prompt: onboardingPrompt(), idempotencyKey: 'installation-onboarding-v1' } : { prompt: '请生成一份中文的本周计划清单，保存为工作目录内 first-plan.html，使用自包含 HTML 和可勾选的复选框。不要访问外部网站，不要读取其他文件。在回复中引用这个文件，方便我预览。', idempotencyKey: 'installation-first-task-v1' }) }, 'local-installer');
+          const workspace = join(root, 'workspaces');
+          // Without git the task still runs, in the shared workspace with the previous approval-based modes.
+          const worktree = await prepareWorkspace(workspace);
+          const permissionMode = worktree ? FIRST_TASK_PERMISSION[kind] : kind === 'pi' ? 'pi-ask' : kind === 'codex' ? 'ask' : kind === 'antigravity' ? 'auto' : 'default';
+          return app.runtime.create({ runtimeKind: kind, confirmedProfileVersion: profile.checkedAt, workspace, model: kind === 'pi' ? `deepseek/${config.model.id}` : config.model.id, permissionMode, worktree, prompt: '请生成一份中文的本周计划清单，保存为工作目录内 first-plan.html，使用自包含 HTML 和可勾选的复选框。不要访问外部网站，不要读取其他文件。在回复中引用这个文件，方便我预览。', idempotencyKey: 'installation-first-task-v1' }, 'local-installer');
           };
           const result = optionalKind(kind) ? await gated(kind, 'first-task', createTask) : await createTask();
-          config.acceptance.taskSession = result.session.platformSessionId;
-          if (guided) { config.acceptance.taskKind = ONBOARDING_KIND; config.acceptance.firstTask = 'guided'; config.state = 'ready'; } else config.acceptance.firstTask = 'running';
-          saveConfig(config);
+          config.acceptance.taskSession = result.session.platformSessionId; config.acceptance.firstTask = 'running'; saveConfig(config);
         }
         return json(await status(), 202);
       } finally { busy = false; }
@@ -236,12 +249,9 @@ export function createLocalService({ root, origin, bootstrapToken, webRoot, core
     async fetch(request) {
       try { return await handle(request); }
       catch (error) {
-        if (error.code === 'RUNTIME_NETWORK_BLOCKED') { record(request, 409, 'network-gate-blocked'); return json({ error: '网络检查未通过，已阻止此操作。请重新检查网络。', decision: error.decision }, 409); }
+        if (error.code === 'RUNTIME_NETWORK_BLOCKED') return json({ error: '网络检查未通过，已阻止此操作。请重新检查网络。', decision: error.decision }, 409);
         // Never return vendor bodies, stack traces, filesystem contents or submitted credentials.
-        const known = KNOWN_MESSAGE.test(error.message ?? '');
-        const frames = String(error.stack ?? '').split('\n').slice(1, 4).join(' | ');
-        record(request, error.code === 'DEVICE_INELIGIBLE' ? 409 : 400, `${error.code ? `code=${error.code} ` : ''}${error.message ?? ''}${known ? '' : ` | ${frames}`}`);
-        if (error.code === 'DEVICE_INELIGIBLE') return json({ error: error.message, code: 'device-ineligible' }, 409);
+        const known = /^(请输入|模型服务|账号没有|无法连接|两次密码|管理员密码|设备检查|数据位置|数据目录|模型配置|输入内容|请求格式|授权码|登录会话|当前登录|登录进程|官方登录|未安装|请先)/.test(error.message ?? '');
         return json({ error: known ? error.message : '操作未完成，请检查设置或导出本机诊断后重试' }, 400);
       }
     },

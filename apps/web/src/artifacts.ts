@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { ARTIFACT_PRODUCTS, type ArtifactProduct } from "./artifact-products.js";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -42,65 +43,73 @@ const CATEGORIES: ArtifactCategory[] = [
   { id: "evals", name: "评测产物", description: "固定评测任务在各 runtime、各版本下跑出的结果，可以并排对比。", kind: "eval" },
 ];
 
+/** 名称 / 分类 / 概览 / 标签只登记在 artifact-products.ts：分类器和产物库共用同一份数据。 */
+const product = (id: string): ArtifactProduct => {
+  const found = ARTIFACT_PRODUCTS.find(item => item.id === id);
+  if (!found) throw Error(`产物 ${id} 没有在 artifact-products.ts 登记`);
+  return found;
+};
+
 const SOURCES: Source[] = [
   {
-    id: "pet-math-game",
-    category: "games",
-    name: "算术宠物进化岛",
+    ...product("pet-math-game"),
     emoji: "🦄",
     accent: "#7fb7e8",
-    summary: "三年级口算 × 小马宝莉养成",
     description:
       "天上掉下不同能量的食物，算对口算就能喂给小马宝莉：算得越快，食物能量越高，小马长得越快。24 个关卡每关只学一个新本领，从表内加减乘除一路递进到四则混合；答错的题会反复出现，又快又准的题逐渐减少，还有薄弱题专项加练。两个小朋友还能在同一台手机上左右对战，赢的人可以拿走对方一件礼物或一匹小马。",
-    tags: ["口算", "三年级", "宠物养成", "双人对战", "可离线"],
     version: "",
     entry: "/games/pet-math-game/",
     root: join(HERE, "../../pet-math-game"),
   },
   {
-    id: "challenge-island",
-    category: "games",
-    name: "心愿挑战岛",
+    ...product("challenge-island"),
     emoji: "🌟",
     accent: "#ffcf3d",
-    summary: "每天 / 每周目标 · 拍照打卡攒星星换心愿",
     description:
       "给三年级小朋友的挑战目标小游戏：和爸爸妈妈一起定下每天、每周的小目标（阅读、口算、运动、整理书包……），完成后拍照打卡，进度换成星星；心愿池里的礼物各有价格，攒够了就能兑换，兑换后会扣掉星星并留下记录。打卡和兑换都有烟花结算动画。记录、照片和星星会同步到家里的 Mac Mini，换手机不会丢；也可以生成家庭分享链接，让另一台手机一起用。",
-    tags: ["打卡", "三年级", "积分", "心愿", "拍照", "可离线"],
     version: "",
     entry: "/games/challenge-island/",
     root: join(HERE, "../../challenge-island"),
   },
   {
-    id: "wrong-book",
-    category: "games",
-    name: "错题本",
+    ...product("wrong-book"),
     emoji: "📒",
     accent: "#f0a35e",
-    summary: "拍照录入错题 · 每周专属测验 · 小朋友听得懂的讲解",
     description:
       "给三年级小朋友的上海数学错题本：爸爸妈妈把学校考试和每天的作业拍下来，AI 把习题整理成结构化的题目（记下日期、年级、知识点），确认后放进错题本，还能转成网页查看。每周按设定的时间，根据错题和知识点掌握情况出一份专属小测验：补弱、温习刚学会的、再把熟练的知识点适当拔高；每道题都经过独立重解核对。做完每道题都有讲解，用生活里的例子和一步一步的动画讲给小朋友听。",
-    tags: ["错题", "三年级", "上海数学", "拍照", "每周测验", "讲解动画"],
     version: "",
     entry: "/games/wrong-book/",
     private: true,
     root: join(HERE, "../../wrong-book"),
   },
   {
-    id: "word-detective",
-    category: "games",
-    name: "句子侦探社",
+    ...product("word-detective"),
     emoji: "🕵️",
     accent: "#e0a868",
-    summary: "三年级英语：主语动词宾语 × 变疑问句",
     description:
       "每句英语话里都住着三个角色：谁（主语）、做什么（动词）、对什么（宾语）。先把它们一一点出来，再把陈述句变成疑问句——问东西用 What、问人用 Who、问是不是把 Do/Does 搬到最前面。六个案逐层教一个规则，答错时侦探猫只说孩子听得懂的那一句：does 会把 -s 收走、问「谁」不用帮手。",
-    tags: ["英语", "三年级", "语法", "可离线"],
     version: "",
     entry: "/games/word-detective/",
     root: join(HERE, "../../word-detective"),
   },
+  {
+    ...product("ring-toss"),
+    emoji: "⭕",
+    accent: "#eb523d",
+    description:
+      "还原夜市套圈手感：开局先确定拿几个圈，再确认要摆上摊位的奖品（支持自定义真实兑奖清单）。进入摊位后手指从圈往上滑，根据力道、速度与甩弧控制投掷距离、方向和旋转；3D 物理碰撞与震动触感覆盖出手、砸奖品、弹跳与最终套中，套中就真的归你。",
+    version: "",
+    entry: "/games/ring-toss/",
+    root: join(HERE, "../../ring-toss"),
+  },
 ];
+
+/**
+ * 分类器用的产物清单：只带名称 / 分类 / 概览 / 标签，不读文件系统、不带路径。
+ * 待办分类的实体词表从这里取产品名与标签（单一来源）：新增一个小游戏只要在上面登记一次，
+ * 分类器下次启动就认得它，不用再改提示词。
+ */
+export { ARTIFACT_PRODUCTS };
 
 /** 只允许这几个入口文件；其余一律 404（路径穿越因此不成立） */
 const TOP_FILES = [

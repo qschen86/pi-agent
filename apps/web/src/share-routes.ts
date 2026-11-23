@@ -10,13 +10,15 @@ import { createHash } from "node:crypto";
 import { ARTIFACT_CSP, type ArtifactLibrary } from "./artifacts.js";
 import { ArtifactShares, SHARE_ID_RE, ShareInputError, type ArtifactShare } from "./artifact-shares.js";
 import { preferredOrigin } from "./entry-origin.js";
-import { mountChallengeRoutes } from "./challenge-routes.js";
-import type { ChallengeIconService } from "./challenge-icon.js";
-import type { ChallengePoemService } from "./challenge-poem.js";
-import type { ChallengeStore } from "./challenge-store.js";
 
-/** 心愿挑战岛是唯一允许「分享后继续写数据」的产物：打卡和照片要回到主人家的 Mac Mini。 */
-export const CHALLENGE_SHARE_ARTIFACT = "challenge-island";
+/**
+ * 可选应用挂到分享页上的扩展（例如心愿挑战岛的打卡接口）。
+ * 分享页只对 artifactId 对应的分享开放：`authorize` 凭分享 cookie 校验，`base` 是 `/share/:id`。
+ */
+export interface ShareExtension {
+  artifactId: string;
+  mount(app: Hono, ctx: { base: string; authorize: (c: Context) => boolean }): void;
+}
 
 export const SHARE_PREFIX = "/share/";
 export const isSharePath = (path: string) => path === "/share" || path.startsWith(SHARE_PREFIX);
@@ -43,7 +45,7 @@ function page(title: string, body: string): string {
 <title>${esc(title)}</title><link rel="stylesheet" href="/share/_/share.css"></head><body><main class="card">${body}</main></body></html>`;
 }
 
-export function mountShareRoutes(app: Hono, deps: { artifacts: ArtifactLibrary; shares: ArtifactShares; publicHosts: string[]; preferredOrigin?: string | null; challenge?: ChallengeStore; poem?: ChallengePoemService; icon?: ChallengeIconService }) {
+export function mountShareRoutes(app: Hono, deps: { artifacts: ArtifactLibrary; shares: ArtifactShares; publicHosts: string[]; preferredOrigin?: string | null; extensions?: ShareExtension[] }) {
   const { artifacts, shares } = deps;
   // 分享链接优先用国内备用入口（deps.preferredOrigin 显式传 null 表示不用）；没有再退回第一个对外域名/请求自身的源。
   const preferred = deps.preferredOrigin === undefined ? preferredOrigin() : deps.preferredOrigin;
@@ -134,16 +136,16 @@ export function mountShareRoutes(app: Hono, deps: { artifacts: ArtifactLibrary; 
     return c.html(lockedPage(share, "密码不对"), 401, PAGE_HEADERS);
   });
 
-  // 分享页面里的打卡 / 兑换 / 照片：只对心愿挑战岛的分享开放，凭分享 cookie 授权。
+  // 可选应用的分享扩展（如心愿挑战岛的打卡 / 兑换 / 照片）：只对各自产物的分享开放，凭分享 cookie 授权。
   // 路由要排在下面的静态文件兜底之前，否则会被当成产物文件 404。
-  if (deps.challenge) {
-    mountChallengeRoutes(app, deps.challenge, {
-      base: `${SHARE_PREFIX}:id/challenge`,
-      ...(deps.poem ? { poem: deps.poem } : {}),
-      ...(deps.icon ? { icon: deps.icon } : {}),
+  // 独立版里未发布的扩展只有空桩（调用后返回 undefined）：跳过去，不能让一个空桩把整套 API 带下水。
+  for (const extension of deps.extensions ?? []) {
+    if (!extension || typeof extension.mount !== "function") continue;
+    extension.mount(app, {
+      base: `${SHARE_PREFIX}:id`,
       authorize: (c) => {
         const share = shares.authorize(c.req.param("id") ?? "", getCookie(c, COOKIE));
-        return !!share && share.artifactId === CHALLENGE_SHARE_ARTIFACT;
+        return !!share && share.artifactId === extension.artifactId;
       },
     });
   }

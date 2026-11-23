@@ -9,6 +9,7 @@ import type { Note, NoteRepeat } from "./notes.js";
 import { NOTE_REPEAT_WEEKDAYS, noteAutomation } from "./notes.js";
 import { lunarRepeatDay } from "./lunar.js";
 import { BEIJING_OFFSET_MS, beijingDayStartMs, beijingParts } from "./platform-time.js";
+import { noteRemindOffsetLabel, noteReminderInstant } from "./note-reminder.js";
 
 export type CalendarEventSource = "pi" | "google" | "agent";
 
@@ -43,6 +44,19 @@ export interface CalendarEvent {
   agentPlatform?: string;
   agentStatus?: "active" | "paused" | "unknown";
   needsHuman?: boolean;
+  /** 本地日程的提醒：每次日程各自的提醒时刻（提前量见 note.schedule.remind） */
+  reminders?: CalendarEventReminder[];
+  /** 提醒计划本身（来源与场景），页面详情用 */
+  remind?: { offsets: number[]; source: "explicit" | "inferred"; scene: string };
+}
+
+export interface CalendarEventReminder {
+  /** 提前多少分钟 */
+  minutes: number;
+  /** 提醒时刻（ISO） */
+  at: string;
+  /** 说法：提前 1 小时 / 提前 1 天 */
+  label: string;
 }
 
 function noteEventOrigin(note: Note): Pick<CalendarEvent, "source" | "title" | "needsHuman" | "agentApp" | "agentScene" | "agentName" | "agentPlatform" | "calendarName"> {
@@ -80,9 +94,30 @@ export function noteCalendarEvents(note: Note, range?: { from: string; to: strin
   // 笔记是想法记录，不进日历（正常不会带时间；旧数据或手工改类型时兜底）。
   if (note.kind === "note" || !note.schedule) return [];
   const repeat = note.schedule.repeat;
-  if (!repeat) return noteBaseEvents(note);
-  const window = noteCalendarWindow(range);
-  return note.schedule.allDay ? repeatedAllDayEvents(note, repeat, window) : repeatedTimedEvents(note, repeat, window);
+  const events = !repeat ? noteBaseEvents(note)
+    : note.schedule.allDay ? repeatedAllDayEvents(note, repeat, noteCalendarWindow(range)) : repeatedTimedEvents(note, repeat, noteCalendarWindow(range));
+  return withEventReminders(note, events);
+}
+
+/** 给每一次日程补上提醒时刻：提醒是日程的一部分，页面与推送都读这里。 */
+function withEventReminders(note: Note, events: CalendarEvent[]): CalendarEvent[] {
+  const remind = note.schedule?.remind;
+  if (!remind) return events;
+  return events.map((event) => {
+    const allDay = event.allDay === true;
+    const dayStart = allDay ? beijingDayStartMs(event.start.slice(0, 10)) : undefined;
+    // 只有截止时间的日程按截止提前（「周五 20:30 前」），其余按开始时间。
+    const anchor = allDay ? dayStart! : Date.parse(note.schedule?.start ? event.start : event.end);
+    const reminders = remind.offsets
+      .filter((minutes) => Number.isFinite(anchor))
+      .map((minutes) => ({
+        minutes,
+        at: new Date(noteReminderInstant({ minutes, anchor, allDay, ...(dayStart !== undefined ? { dayStart } : {}) })).toISOString(),
+        label: noteRemindOffsetLabel(minutes)
+      }))
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    return reminders.length ? { ...event, reminders, remind: { offsets: [...remind.offsets], source: remind.source, scene: remind.scene } } : event;
+  });
 }
 
 /** 非周期日程：start / end / repeats 各派生一条。 */

@@ -307,6 +307,7 @@ function addNamesFromObjectArray(
 function defaultConfigDir(kind: RuntimeKind, home: string): string {
   if (kind === "pi") return process.env["PI_CODING_AGENT_DIR"] ?? join(home, ".pi", "agent");
   if (kind === "claude-code") return process.env["CLAUDE_CONFIG_DIR"] ?? join(home, ".claude");
+  if (kind === "antigravity") return join(home, ".gemini", "antigravity-cli");
   return process.env["CODEX_HOME"] ?? join(home, ".codex");
 }
 
@@ -414,6 +415,12 @@ function scanRuntime(kind: RuntimeKind, dir: string, home: string, piOptions?: P
   const seen = new Set<string>();
   const notes = new Map<RuntimeConfigKind, string[]>();
   const type = typeOf(dir);
+  // Antigravity 的 MCP、技能、插件由 agy 原生管理，平台还没有对应的扫描器：只报告目录状态，不套用 Codex 的扫描
+  if (kind === "antigravity") {
+    const categories = categoriesOf(items, notes);
+    return { runtimeKind: kind, label: RUNTIME_LABEL[kind], configDir: dir, state: type === "dir" ? "ok" : type ? "unreadable" : "missing",
+      ...(type === "dir" ? {} : { stateReason: type ? "配置目录不是目录" : "没有找到用户级配置目录（可能尚未安装或未登录）" }), categories, total: 0 };
+  }
   let state: RuntimeConfigRuntime["state"] = type === "dir" ? "ok" : type ? "unreadable" : "missing";
   let stateReason = type === "dir" ? undefined : type ? "配置目录不是目录" : "没有找到用户级配置目录（可能尚未安装或未登录）";
   if (type === "dir") {
@@ -479,12 +486,12 @@ function scanRuntime(kind: RuntimeKind, dir: string, home: string, piOptions?: P
   };
 }
 
-/** 扫描三个运行时的用户级配置与 Pi 独立装配；不返回配置正文。 */
+/** 扫描各运行时的用户级配置与 Pi 独立装配；不返回配置正文。 */
 export function scanRuntimeConfigs(options: RuntimeConfigScanOptions = {}): RuntimeConfigsView {
   const home = options.home ?? homedir();
   const notes: string[] = [];
   const runtimes = RUNTIME_KINDS.map((kind) => scanRuntime(kind, options.dirs?.[kind] ?? defaultConfigDir(kind, home), home, options.piRuntime));
-  if (runtimes.every((runtime) => runtime.state !== "ok")) notes.push("三个运行时的用户级配置目录都不可读；只显示目录状态");
+  if (runtimes.every((runtime) => runtime.state !== "ok")) notes.push("所有运行时的用户级配置目录都不可读；只显示目录状态");
   return {
     generatedAt: new Date(options.now ?? Date.now()).toISOString(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,

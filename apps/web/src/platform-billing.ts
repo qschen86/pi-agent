@@ -1,3 +1,4 @@
+import { appData } from "./app-data.js";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BEIJING_OFFSET_MS, beijingDateKey } from "./platform-time.js";
@@ -25,7 +26,7 @@ export const DEFAULT_BILLING: BillingConfig = {
 export function readBilling(dataDir: string): BillingConfig {
   const config: BillingConfig = { ...DEFAULT_BILLING };
   let raw: unknown;
-  try { raw = JSON.parse(readFileSync(join(dataDir, BILLING_FILE), "utf8")); } catch { return config; }
+  try { raw = JSON.parse(readFileSync(appData(dataDir, "shell").path(BILLING_FILE), "utf8")); } catch { return config; }
   if (!raw || typeof raw !== "object") return config;
   for (const runtime of BILLING_RUNTIMES) {
     const item = (raw as Record<string, unknown>)[runtime] as Record<string, unknown> | undefined;
@@ -65,13 +66,13 @@ type FetchLike = (url: string, init?: { signal?: AbortSignal }) => Promise<{ ok:
 
 function readFxCache(dataDir: string): FxCache | undefined {
   try {
-    const value = JSON.parse(readFileSync(join(dataDir, FX_FILE), "utf8")) as FxCache;
+    const value = JSON.parse(readFileSync(appData(dataDir, "shell").path(FX_FILE), "utf8")) as FxCache;
     return value && typeof value.day === "string" && value.rates && typeof value.rates === "object" ? value : undefined;
   } catch { return undefined; }
 }
 
 function writeFxCache(dataDir: string, cache: FxCache): void {
-  const file = join(dataDir, FX_FILE), tmp = `${file}.tmp`;
+  const file = appData(dataDir, "shell").path(FX_FILE), tmp = `${file}.tmp`;
   try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(tmp, JSON.stringify(cache)); renameSync(tmp, file); } catch { /* 缓存写不进去只是下次再取 */ }
 }
 

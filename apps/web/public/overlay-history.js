@@ -33,6 +33,7 @@
     { sel: ".room-layout.members-open", when: () => !!window.matchMedia?.("(max-width: 1100px)").matches, close: () => call("roomToggleMembers") },
     { sel: ".room-diff-drawer", close: (el) => el.querySelector(".room-diff-drawer-head button")?.click() },
     { sel: ".rt-new-workspace-panel", close: () => call("rtSetWorkspaceOpen", false) },
+    { sel: ".rt-auth-overlay", close: () => call("rtCloseAuthModal", false) },
     { sel: ".rt-lightbox", close: () => call("rtCloseLightbox") },
     { sel: ".image-zoom", close: (el) => key(el, "Escape") },
     { sel: ".category-modal-backdrop", close: (el) => (el.querySelector(".category-modal") || el).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })) },

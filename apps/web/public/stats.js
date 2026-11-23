@@ -17,6 +17,13 @@
     { id: "7d", label: "近 7 天", days: 7, offset: 0 },
     { id: "30d", label: "近 30 日", days: 30, offset: 0 },
   ];
+  // Runtime 筛选：四个胶囊直接铺开（全部 = 不筛），地址里用 rt
+  const RUNTIMES = [
+    { id: "", label: "全部" },
+    { id: "pi", label: "Pi" },
+    { id: "claude-code", label: "Claude" },
+    { id: "codex", label: "Codex" },
+  ];
   const TREND_DAYS = 90; // 趋势图固定看近 90 天
   const LOAD_DAYS = 371; // 53 周：热力图要整年
   const STALE_MS = 60_000;
@@ -114,6 +121,8 @@
     const s = (ui.stats ||= {});
     s.domain ||= "cost"; s.range ||= "7d";
     s.metric ||= {}; s.data ||= {}; s.error ||= {}; s.loading ||= {};
+    s.runtime ??= "";
+    s.runtimeOpen ??= false;
     s.hash ??= ""; s.picked ??= ""; s.focus ??= "";
     return s;
   }
@@ -121,9 +130,9 @@
     const m = /^#\/stats(?:\/(cost|sessions|deploys))?(?:\?(.*))?$/.exec(hash || "");
     if (!m) return null;
     const q = new URLSearchParams(m[2] || "");
-    return { domain: m[1] || "cost", metric: q.get("m") || "", focus: q.get("focus") || "" };
+    return { domain: m[1] || "cost", metric: q.get("m") || "", focus: q.get("focus") || "", runtime: q.get("rt") || "" };
   }
-  /** 地址变化（从别处跳进来）时采用地址里的模块 / 指标 / 维度；页内切换时自己维护状态。 */
+  /** 地址变化（从别处跳进来）时采用地址里的模块 / 指标 / 维度 / 筛选；页内切换时自己维护状态。 */
   function adoptHash() {
     const s = state(), parsed = parseHash(location.hash);
     if (!parsed || s.hash === location.hash) return;
@@ -132,12 +141,15 @@
     const def = DOMAINS[parsed.domain];
     if (def.metrics.some((m) => m.id === parsed.metric)) s.metric[parsed.domain] = parsed.metric;
     s.focus = parsed.focus === "trend" || parsed.focus === "heat" ? parsed.focus : "";
+    s.runtime = RUNTIMES.some((r) => r.id === parsed.runtime) ? parsed.runtime : "";
+    s.runtimeOpen = false;
     s.picked = "";
   }
   function syncHash() {
     const s = state(), def = DOMAINS[s.domain];
     const q = new URLSearchParams();
     if (metricOf().id !== def.metrics[0].id) q.set("m", metricOf().id);
+    if (s.runtime) q.set("rt", s.runtime);
     const hash = `#/stats/${s.domain}${q.toString() ? `?${q}` : ""}`;
     s.hash = hash;
     history.replaceState(null, "", hash);
@@ -145,6 +157,43 @@
   const defOf = () => DOMAINS[state().domain];
   const metricOf = () => { const s = state(), def = defOf(); return def.metrics.find((m) => m.id === s.metric[s.domain]) || def.metrics[0]; };
   const dataOf = () => state().data[state().domain]?.value || null;
+
+  /* -------------------------------- Runtime 筛选 -------------------------------- */
+  /**
+   * 按选中的 runtime 把按日明细收窄：从交叉明细（x）重算各维的边际合计，返回和接口同形状的按日数据，
+   * 于是区间合计、拆解、趋势、热力图都不用改。选「全部」时直接用原始数据。
+   */
+  function filteredDays(data, runtime) {
+    const dims = DOMAINS[state().domain].dims;
+    return data.days.map((day) => {
+      const v = {};
+      for (const [id, metric] of Object.entries(day.v)) {
+        if (!metric.x) { v[id] = metric; continue; }
+        const cell = { total: 0, by: {} };
+        for (const [key, value] of Object.entries(metric.x)) {
+          const parts = key.split("\u001f");
+          if ((parts[0] || "") !== runtime) continue;
+          cell.total += value;
+          dims.forEach((dim, i) => {
+            const bucket = (cell.by[dim] ||= {});
+            const part = parts[i] || "";
+            bucket[part] = (bucket[part] || 0) + value;
+          });
+        }
+        if (cell.total) v[id] = cell;
+      }
+      return { day: day.day, v };
+    });
+  }
+
+  /** 页面用的数据（已按 runtime 收窄）；同一个 runtime 只算一次，点图表重画时不重复遍历交叉明细。 */
+  function viewOf() {
+    const s = state(), entry = s.data[s.domain];
+    if (!entry) return null;
+    if (!s.runtime) return entry.value;
+    if (entry.viewKey !== s.runtime) { entry.view = { ...entry.value, days: filteredDays(entry.value, s.runtime) }; entry.viewKey = s.runtime; }
+    return entry.view;
+  }
 
   function load(domain, force = false) {
     const s = state(), entry = s.data[domain];
@@ -202,6 +251,47 @@
       def.metrics.map((m) => tabButton(m.label, metricOf().id === m.id, () => {
         s.metric[s.domain] = m.id; s.picked = ""; syncHash(); rerender();
       }, { "data-key": `stats-metric-${m.id}` })));
+  }
+
+  /* -------------------------------- Runtime 筛选 -------------------------------- */
+  // 三个 runtime 直接铺成一行胶囊（前面是「全部」，默认选中）。宽屏和指标行并排；
+  // 手机上太占地方，收成一枚「Runtime：全部」的小胶囊，点开才铺开四个选项，选完自动收起。
+  function runtimeChips() {
+    const s = state(), label = RUNTIME_LABEL[s.runtime] || "全部";
+    return h("div", { class: "stats-runtime-wrap" },
+      h("button", {
+        type: "button", class: `stats-runtime-toggle${s.runtime ? " on" : ""}`, "data-key": "stats-runtime-toggle",
+        "aria-expanded": String(!!s.runtimeOpen), "aria-controls": "stats-runtime-options",
+        onclick: () => toggleRuntimeOpen(),
+      },
+        h("span", {}, `Runtime：${label}`),
+        h("span", { class: "stats-runtime-caret", "aria-hidden": "true" }, "▾")),
+      h("div", { id: "stats-runtime-options", class: `stats-runtime${s.runtimeOpen ? " open" : ""}`, role: "group", "aria-label": "按 Runtime 筛选" },
+        h("span", { class: "stats-runtime-label" }, "Runtime"),
+        RUNTIMES.map((r) => h("button", {
+          type: "button", class: `pm-chip${s.runtime === r.id ? " active" : ""}`, "aria-pressed": String(s.runtime === r.id),
+          "data-key": `stats-runtime-${r.id || "all"}`, title: r.id ? `只看 ${r.label}` : "不按 runtime 筛",
+          onclick: () => setRuntime(r.id),
+        }, r.label))));
+  }
+
+  function toggleRuntimeOpen() {
+    const s = state();
+    s.runtimeOpen = !s.runtimeOpen;
+    rerender();
+  }
+
+  function setRuntime(id) {
+    const s = state();
+    if (s.runtime === id) return;
+    s.runtime = id;
+    s.runtimeOpen = false; // 选完收起，手机上的统计内容往上一点
+    syncHash();
+    rerender();
+  }
+
+  function controls() {
+    return h("div", { class: "stats-controls" }, metricTabs(), runtimeChips());
   }
 
   function rangeCards(data) {
@@ -299,13 +389,15 @@
     const range = RANGES.find((r) => r.id === s.range) || RANGES.find((r) => r.id === "7d");
     const days = data ? rangeDays(data, range) : [];
     const note = metric.additive ? "" : `，饼图按${metric.sub === "n" ? "有耗时记录的部署次数" : "成功 + 失败的次数"}划分`;
+    const runtime = state().runtime;
+    const picked = runtime ? ` · 只看 ${RUNTIME_LABEL[runtime] || runtime}` : "";
     const cards = data ? def.dims.map((dim) => pieCard(dim, metric, days))
       : def.dims.map(() => h("div", { class: "stats-pie" }, h("div", { class: "stats-pie-skeleton skeleton", "aria-hidden": "true" })));
     const simple = cards.filter((card) => !card.classList.contains("stats-pie-wide"));
     if (simple.length % 2) simple[simple.length - 1].classList.add("stats-pie-single");
     return h("section", { class: "stats-section", "aria-label": "拆解" },
       h("div", { class: "stats-section-head" }, h("h2", {}, "拆解")),
-      h("p", { class: "muted small stats-section-note" }, `${range.label}${data ? ` · ${rangeSpan(data, range)}` : ""} · ${metric.label}${note}`),
+      h("p", { class: "muted small stats-section-note" }, `${range.label}${data ? ` · ${rangeSpan(data, range)}` : ""} · ${metric.label}${note}${picked}`),
       // 外壳是容器查询的容器（容器自己不能被自己的查询改样式），里面的 .stats-pies 按宽度排成两列或三列
       h("div", { class: "stats-pies-host" },
         h("div", { class: "stats-pies" },
@@ -470,9 +562,9 @@
   }
 
   function content() {
-    const s = state(), data = dataOf(), error = s.error[s.domain];
+    const s = state(), data = viewOf(), error = s.error[s.domain];
     return [
-      metricTabs(),
+      controls(),
       error && !data ? h("p", { class: "field-error stats-error", role: "alert" }, `统计读取失败：${error}`, h("button", { type: "button", class: "btn small", onclick: () => void load(s.domain, true) }, "重试")) : null,
       rangeCards(data),
       breakdown(data),

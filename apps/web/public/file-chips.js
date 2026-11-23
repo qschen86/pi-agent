@@ -1,6 +1,9 @@
 "use strict";
 /* V3.5 file references are presentation only. Reads happen only on activation —— 唯一例外：SVG / .mmd / .puml 引用进入视野后读一次文件来画缩略图（diagram-preview.js），走同一个受授权范围限制的 file-preview 接口。 */
 let fileRenderContext;
+/** 末段没有扩展名的路径是目录（临时工作区、docs/x 这类），服务端只能预览文件：不做成可点胶囊，按普通文本显示 */
+const FILE_EXTENSIONLESS=/^(?:Makefile|Dockerfile|LICENSE|LICENCE|README|CHANGELOG|Procfile|Gemfile|Rakefile|Jenkinsfile|Vagrantfile|CODEOWNERS|Doxyfile|BUILD|WORKSPACE)$/i;
+function fileHasExtension(path){const name=String(path||'').split('/').pop()||'';return /\.[A-Za-z0-9]{1,12}$/.test(name)||FILE_EXTENSIONLESS.test(name);}
 function fileReference(raw, explicit=false, decodeLink=false) {
  let path=String(raw||'').trim().replace(/^<|>$/g,'');
  if(!path || path.startsWith('#') || (/^[a-z][a-z0-9+.-]*:/i.test(path)&&!/^file:\/\//i.test(path)) || path.endsWith('/'))return null;
@@ -9,6 +12,7 @@ function fileReference(raw, explicit=false, decodeLink=false) {
  if(match)path=path.slice(0,match.index);
  if(!explicit&&!/^(?:\/|~\/|file:\/\/|\.\.?\/)|^[\w\-.一-龥]+\/[\w\-./一-龥]+/.test(path))return null;
  if(!/^(?:\/|~\/|file:\/\/|\.\.?\/)/.test(path)&&!path.includes('.')&&!path.includes('/'))return null;
+ if(!fileHasExtension(path))return null;
  return {path,line};
 }
 /** 行内代码里只写了图片文件名（没有目录）：也当作文件引用，点开时服务端会在工作目录内按文件名找 */

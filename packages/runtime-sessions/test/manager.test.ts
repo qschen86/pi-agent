@@ -1,4 +1,5 @@
 import {SCREENSHOT_INSTRUCTIONS} from "../../pi-runtime/src/screenshot-policy.mjs";
+import {LINK_READ_INSTRUCTIONS} from "../src/public-link-reader.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ let codex: FakeDriver;
 let claude: FakeDriver;
 let mgr: RuntimeSessionManager;
 
-function make(opts: { approvalTtlMs?: number } = {}): RuntimeSessionManager {
+function make(opts: { approvalTtlMs?: number; authAutoVerifyDelayMs?: number; binaryWatchMs?: number } = {}): RuntimeSessionManager {
   return new RuntimeSessionManager({ dataDir: join(dir, "data"), drivers: { codex, "claude-code": claude }, skipRecovery: true, ...opts });
 }
 
@@ -79,6 +80,40 @@ it("returns the create result before the first native turn starts", async () => 
 });
 
 describe("automatic account quota refresh", () => {
+  it("Antigravity 模型组快照复用缓存、合并查询，失败保留原值并标记过期", async () => {
+    const anti = new FakeDriver("antigravity");
+    const runtime = new RuntimeSessionManager({dataDir:join(dir,"antigravity-data"),drivers:{antigravity:anti},skipRecovery:true});
+    const snapshot = {available:true,source:"agy CLI /usage (JSON)",sampledAt:new Date().toISOString(),windows:[
+      {group:"Gemini Models",label:"5 小时窗口",usedPercent:25,resetsAt:null},
+      {group:"Claude and GPT models",label:"周窗口",usedPercent:50,resetsAt:null}
+    ]};
+    try {
+      await runtime.probe("antigravity");
+      const query=vi.spyOn(anti,"rateLimits").mockResolvedValue(snapshot);
+      await runtime.refreshRateLimit("antigravity");
+      const initial=runtime.profiles().find(p=>p.runtimeKind==="antigravity")!.rateLimit!;
+      runtime.store.saveRateLimit({...initial,sampledAt:new Date(Date.now()-120_000).toISOString()});
+      let release!:()=>void;
+      query.mockClear().mockImplementation(async()=>{await new Promise<void>(r=>{release=r;});return {...snapshot,windows:snapshot.windows.map(w=>({...w,usedPercent:10}))};});
+      const manual=runtime.refreshRateLimit("antigravity");
+      const second=runtime.refreshRateLimit("antigravity");
+      expect((await runtime.refreshRateLimit("antigravity",{automatic:true}))?.windows).toEqual(snapshot.windows);
+      expect(query).toHaveBeenCalledTimes(1);
+      release(); await Promise.all([manual,second]);
+      query.mockRejectedValue(new Error("Antigravity 额度读取超时"));
+      await expect(runtime.refreshRateLimit("antigravity")).rejects.toThrow("额度读取超时");
+      const stale=runtime.profiles().find(p=>p.runtimeKind==="antigravity")!.rateLimit!;
+      expect(stale.stale).toBe(true);
+      expect(stale.windows.map(w=>w.group)).toEqual(["Gemini Models","Claude and GPT models"]);
+      expect(stale.windows.every(w=>w.usedPercent===10)).toBe(true);
+      const calls=query.mock.calls.length;
+      expect((await runtime.refreshRateLimit("antigravity",{automatic:true}))?.windows).toEqual(stale.windows);
+      expect(query).toHaveBeenCalledTimes(calls);
+      query.mockResolvedValue(snapshot);
+      await runtime.refreshRateLimit("antigravity");
+      expect(runtime.profiles().find(p=>p.runtimeKind==="antigravity")!.rateLimit!.stale).toBe(false);
+    } finally {runtime.shutdown();}
+  });
   it("discards a late quota response after the account has changed", async () => {
     const previous = mgr.profile("codex")!.identity!.identityScopeId;
     let release!: () => void;
@@ -561,6 +596,201 @@ describe("并发、排队与停止（V28-08）", () => {
 });
 
 describe("外部写入冲突（V28-24）", () => {
+  async function backgroundTurn() {
+    const { session } = await create();
+    await until(() => codex.turns.length === 1);
+    const t = codex.turns[0]!, pid = session.platformSessionId;
+    t.sink.event(ev(`antigravity:${t.nativeId}:message:tool:call-120`, "", { kind: "tool", tool: { name: "命令", input: "Android tests", status: "inProgress" } }));
+    t.sink.event(ev(`antigravity:${t.nativeId}:message:tool:call-122`, "", { kind: "tool", tool: { name: "命令", input: "Web tests", status: "inProgress" } }));
+    codex.fingerprints.set(t.nativeId, "s125i124");
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(pid)!.nativeFingerprint?.value === "s125i124", 4000);
+    const events = [125, 126, 127, 128].map((idx, i) => ev(`antigravity:step:${t.nativeId}:${idx}`, ["Android 完成", "Android 通过", "Web 完成", "全部通过"][i]!, {
+      source: "history", parserVersion: "antigravity-background@1", kind: i % 2 ? "message" : "notice", role: i % 2 ? "assistant" : "system", partial: false
+    }));
+    return { pid, t, events };
+  }
+
+  it("本轮后台完成后新增 4 条：发送前回填至原轮次、更新基线，不新建后台轮次，重复查看不重复入库", async () => {
+    const { pid, t, events } = await backgroundTurn();
+    codex.fingerprints.set(t.nativeId, "s129i128");
+    codex.readContinuation = vi.fn(async (_id, opts) => {
+      expect(opts.toolCallIds).toEqual(["call-120", "call-122"]);
+      expect(opts.endedAt).toBe(mgr.store.binding(pid)!.turns[0]!.endedAt);
+      return { fingerprint: "s129i128", events, pending: false, active: false };
+    });
+    await mgr.view(pid); await mgr.view(pid);
+    expect(mgr.store.events(pid).filter(e => e.parserVersion === "antigravity-background@1").map(e => [e.text, e.turnNo])).toEqual(events.map(e => [e.text, 1]));
+    expect(mgr.store.binding(pid)!.turns).toHaveLength(1);
+    expect(mgr.store.binding(pid)!.nativeFingerprint?.value).toBe("s129i128");
+    await mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t");
+    await until(() => codex.turns.length === 2);
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+    expect(codex.turns[1]!.args.nativeSessionId).toBe(t.nativeId);
+  }, 10_000);
+
+  it("首条回复结束后保留工具连接，迟到流式消息仍属于原轮次，通道关闭后才释放连接", async () => {
+    const start = codex.startTurn.bind(codex);
+    let close!: () => void;
+    const continuationDone = new Promise<void>(resolve => { close = resolve; });
+    codex.startTurn = async (args, sink) => ({ ...(await start(args, sink)), continuationDone });
+    const { session } = await create();
+    await until(() => codex.turns.length === 1);
+    const t = codex.turns[0]!, pid = session.platformSessionId;
+    const socket = t.args.platformBrowser!.socketPath;
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(pid)!.turns[0]!.status === "completed");
+    expect(existsSync(socket)).toBe(true);
+    t.sink.event(ev("late-owned-reply", "后台结果"));
+    expect(mgr.store.events(pid).find(e => e.key === "late-owned-reply")).toMatchObject({ turnNo: 1, text: "后台结果" });
+    close();
+    await until(() => !existsSync(socket));
+  }, 10_000);
+
+  it("后台续写未结清时延后自动补检，结清后再补检并处理排队消息", async () => {
+    const { pid, t } = await backgroundTurn();
+    await tick(100);
+    let active = true;
+    const driver = codex as typeof codex & { continuationState: () => { clientMessageId: string; revision: number; active: boolean } };
+    driver.continuationState = () => ({ clientMessageId: t.args.clientMessageId, revision: 1, active });
+    codex.readContinuation = async () => ({ fingerprint: "s125i124", events: [], active, pending: active });
+    const memory = vi.spyOn(mgr as any, "enforceMemoryRules").mockResolvedValue(false);
+    const ui = vi.spyOn(mgr as any, "enforceUiReport").mockResolvedValue(false);
+    const drain = vi.spyOn(mgr as any, "drainOutbox").mockResolvedValue(undefined);
+    await (mgr as any).completeIdleTurn(pid, 1, false);
+    expect(memory).not.toHaveBeenCalled();
+    expect(drain).not.toHaveBeenCalled();
+    active = false;
+    await until(() => drain.mock.calls.length === 1, 4000);
+    expect(memory).toHaveBeenCalledTimes(1);
+    expect(ui).toHaveBeenCalledTimes(1);
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+  }, 10_000);
+
+  it("续写核对后、指纹读取前又追加合法记录：重新核对，不误标外部写入", async () => {
+    const { pid, t, events } = await backgroundTurn();
+    let reads = 0;
+    codex.readContinuation = async () => {
+      reads++;
+      return { fingerprint: reads === 1 ? "s127i126" : "s129i128", events: reads === 1 ? events.slice(0, 2) : events, pending: false, active: false };
+    };
+    codex.fingerprints.set(t.nativeId, "s129i128");
+    await mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t");
+    expect(reads).toBe(2);
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+  }, 10_000);
+
+  it("读取指纹期间实时通道又活动：暂缓发送，保留原轮次接收通道", async () => {
+    const { pid, t } = await backgroundTurn();
+    const driver = codex as typeof codex & { continuationState: () => { clientMessageId: string; revision: number; active: boolean } };
+    let revision = 0;
+    driver.continuationState = () => ({ clientMessageId: t.args.clientMessageId, revision, active: revision > 0 });
+    codex.readContinuation = async () => ({ fingerprint: "s125i124", events: [], pending: false, active: false });
+    codex.fingerprint = async () => { revision++; return { value: "s125i124" }; };
+    await expect(mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t")).rejects.toMatchObject({ code: "RT_BUSY" });
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+    expect(codex.turns).toHaveLength(1);
+  }, 10_000);
+
+  it("实时通道已投影的原生去重标记持久化，重启后的数据库恢复不会重复消息和工具", async () => {
+    const { pid, events } = await backgroundTurn();
+    codex.readContinuation = async () => ({ fingerprint: "s129i128", events, streamedKeys: [events[1]!.key, events[3]!.key], pending: false, active: false });
+    await mgr.view(pid);
+    expect(mgr.store.binding(pid)!.nativeFingerprint).toMatchObject({ streamedKeys: [events[1]!.key, events[3]!.key] });
+    // Reload the actual durable binding/event store with no live channel.
+    mgr.shutdown(); mgr = make();
+    codex.readContinuation = async () => ({ fingerprint: "s129i128", events, pending: false, active: false });
+    await mgr.view(pid);
+    expect(mgr.store.events(pid).filter(e => events.some(x => x.key === e.key)).map(e => e.kind)).toEqual(["notice", "notice"]);
+  }, 10_000);
+
+  it("后台尚未回报完时保留草稿与旧基线；partial 完成后更新同一事件，再允许下一轮", async () => {
+    const { pid, t, events } = await backgroundTurn();
+    let active = true;
+    codex.fingerprints.set(t.nativeId, "s129i128");
+    codex.readContinuation = async () => ({ fingerprint: "s129i128", events: events.map((e, i) => i === 3 ? { ...e, text: active ? "正在汇报" : "全部通过", partial: active } : e), pending: false, active });
+    await expect(mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t")).rejects.toMatchObject({ code: "RT_BUSY" });
+    expect(mgr.store.binding(pid)!.nativeFingerprint?.value).toBe("s125i124");
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+    expect(codex.turns).toHaveLength(1);
+    active = false;
+    await mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t");
+    expect(mgr.store.events(pid).filter(e => e.key === events[3]!.key)).toMatchObject([{ text: "全部通过", partial: false, turnNo: 1 }]);
+  }, 10_000);
+
+  it("无法归属的新增记录仍触发只读，不导入部分合法回复", async () => {
+    const { pid, t } = await backgroundTurn();
+    codex.fingerprints.set(t.nativeId, "s130i129");
+    codex.readContinuation = async () => undefined;
+    await expect(mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t")).rejects.toMatchObject({ code: "RT_EXTERNAL_WRITE" });
+    expect(mgr.sessionView(pid).readOnly).toBe(true);
+    expect(mgr.store.events(pid).some(e => e.parserVersion === "antigravity-background@1")).toBe(false);
+  }, 10_000);
+
+  it("不等用户再发送，后台观察会自动回填完成结果", async () => {
+    const { pid, t, events } = await backgroundTurn();
+    codex.readContinuation = async () => ({ fingerprint: "s129i128", events, pending: false, active: false });
+    codex.fingerprints.set(t.nativeId, "s129i128");
+    (mgr as unknown as { watchNativeContinuation(id: string): void }).watchNativeContinuation(pid);
+    await until(() => mgr.store.events(pid).some(e => e.key === events[3]!.key), 4000);
+    expect(mgr.store.binding(pid)!.turns).toHaveLength(1);
+    expect(mgr.store.binding(pid)!.nativeFingerprint?.value).toBe("s129i128");
+  }, 10_000);
+
+  it("后台唤醒期工具审批（有本会话全部授权）：自动批准且会话保持 idle", async () => {
+    const { pid, t } = await backgroundTurn();
+    mgr.store.updateBinding(pid, (x) => { x.approvalGrant = { grantedBy: "u", at: new Date().toISOString(), approvalId: "ap-grant" }; });
+    const autoDec = await t.sink.approval({
+      nativeRequestId: "bg-req-1", nativeTurnId: t.args.clientMessageId, kind: "command",
+      title: "Antigravity 请求运行命令", action: "npx vitest", scope: "会话工作目录", source: "antigravity session/request_permission", params: { cmd: "npx vitest" }
+    });
+    expect(autoDec.approve).toBe(true);
+    expect(mgr.store.binding(pid)!.status).toBe("idle");
+    expect(mgr.pendingApprovals().filter(x => x.platformSessionId === pid)).toHaveLength(0);
+  }, 10_000);
+
+  it("后台唤醒期工具审批（无授权）：弹审批、阻断并发续聊，处理后恢复 idle 并可续聊", async () => {
+    const { pid, t } = await backgroundTurn();
+    const pendingPromise = t.sink.approval({
+      nativeRequestId: "bg-req-2", nativeTurnId: t.args.clientMessageId, kind: "command",
+      title: "Antigravity 请求运行命令", action: "git add -N x", scope: "会话工作目录", source: "antigravity session/request_permission", params: { cmd: "git add -N x" }
+    });
+    await until(() => mgr.pendingApprovals().some(x => x.platformSessionId === pid));
+    expect(mgr.store.binding(pid)!.status).toBe("waiting-input");
+    expect(mgr.store.binding(pid)!.turns[0]!.status).toBe("completed");
+    await expect(mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "抢发", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t")).rejects.toMatchObject({ code: "RT_BUSY" });
+    const req = mgr.pendingApprovals().find(x => x.platformSessionId === pid)!;
+    mgr.decideApproval(pid, req.approvalId, { approve: true, paramsDigest: req.paramsDigest, turnNo: req.turnNo }, "u");
+    expect((await pendingPromise).approve).toBe(true);
+    expect(mgr.store.binding(pid)!.status).toBe("idle");
+    expect(mgr.store.binding(pid)!.statusReason).toBe("本轮完成");
+    await mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t");
+    await until(() => codex.turns.length === 2);
+  }, 10_000);
+
+  it("后台回复暂时完整但还有任务未完成时，不抢先发送下一轮", async () => {
+    const { pid, t, events } = await backgroundTurn();
+    codex.fingerprints.set(t.nativeId, "s127i126");
+    codex.readContinuation = async () => ({ fingerprint: "s127i126", events: events.slice(0, 2), pending: true, active: false });
+    await expect(mgr.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(pid)!.bindingRevision }, "t")).rejects.toMatchObject({ code: "RT_BUSY" });
+    expect(mgr.store.binding(pid)!.nativeFingerprint?.value).toBe("s127i126");
+    expect(codex.turns).toHaveLength(1);
+    expect(mgr.store.binding(pid)!.conflict).toBeUndefined();
+  }, 10_000);
+
+  it("归属核对期间会话版本变更时，迟到的快照不能覆盖当前基线或插入事件", async () => {
+    const { pid, events } = await backgroundTurn();
+    let resolve!: (value: { fingerprint: string; events: typeof events; pending: boolean; active: boolean }) => void;
+    codex.readContinuation = () => new Promise(r => { resolve = r; });
+    const view = mgr.view(pid);
+    await until(() => !!resolve);
+    mgr.store.updateBinding(pid, b => { b.nativeFingerprint = { value: "newer-baseline", checkedAt: new Date().toISOString() }; });
+    resolve({ fingerprint: "s129i128", events, pending: false, active: false });
+    await view;
+    expect(mgr.store.binding(pid)!.nativeFingerprint?.value).toBe("newer-baseline");
+    expect(mgr.store.events(pid).some(e => e.parserVersion === "antigravity-background@1")).toBe(false);
+  }, 10_000);
+
   it("原生指纹变化 → 暂停写入转只读；核对后显式恢复", async () => {
     const { session } = await create();
     await until(() => codex.turns.length === 1);
@@ -580,6 +810,36 @@ describe("外部写入冲突（V28-24）", () => {
     await mgr.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "继续", expectedRevision: resumed.bindingRevision }, "t");
     await until(() => codex.turns.length === 2);
     expect(codex.turns[1]!.args.nativeSessionId).toBe(t.nativeId);
+  }, 10_000);
+
+  it("指纹语式升级（migrated）：只重建基线，不判外部写入", async () => {
+    const { session } = await create();
+    await until(() => codex.turns.length === 1);
+    const t = codex.turns[0]!;
+    codex.fingerprints.set(t.nativeId, "7569408:1795319074598:32857616");
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(session.platformSessionId)!.nativeFingerprint?.value.startsWith("7569408") === true, 4000);
+    codex.fingerprint = async () => ({ value: "s5i4", migrated: true });
+    await mgr.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(session.platformSessionId)!.bindingRevision }, "t");
+    await until(() => codex.turns.length === 2);
+    const b = mgr.store.binding(session.platformSessionId)!;
+    expect(b.conflict).toBeUndefined();
+    expect(b.nativeFingerprint!.value).toBe("s5i4");
+  }, 10_000);
+
+  it("读不到原生记录时沿用上次指纹：只记审计，不拦写入", async () => {
+    const { session } = await create();
+    await until(() => codex.turns.length === 1);
+    const t = codex.turns[0]!;
+    codex.fingerprints.set(t.nativeId, "s3i2");
+    t.finish({ status: "completed" });
+    await until(() => mgr.store.binding(session.platformSessionId)!.nativeFingerprint?.value === "s3i2", 4000);
+    codex.fingerprint = async () => ({ value: "s3i2", note: "读不到 Antigravity 会话库，沿用上次指纹（未判外部写入）" });
+    await mgr.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "继续", expectedRevision: mgr.store.binding(session.platformSessionId)!.bindingRevision }, "t");
+    await until(() => codex.turns.length === 2);
+    expect(mgr.store.binding(session.platformSessionId)!.conflict).toBeUndefined();
+    const audit = readFileSync(join(mgr.store.dir, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(audit.some((e) => e.type === "fingerprint-note" && e.platformSessionId === session.platformSessionId)).toBe(true);
   }, 10_000);
 
   it("无法核对原生状态时维持只读", async () => {
@@ -968,6 +1228,91 @@ describe("回补顺序与认证失败（V28-06/09/15）", () => {
     expect(result.lastAuthFailure).toBeDefined();
   });
 
+  describe("runtime 二进制升级后自动重新检测", () => {
+    const auditTypes = () => readFileSync(join(mgr.store.dir, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+    it("修改时间晚于上次检测：连续两轮指纹不变后自动重测一次，刷新模型目录并记审计", async () => {
+      mgr.shutdown(); mgr = make({ binaryWatchMs: 15 });
+      const before = mgr.profile("codex")!;
+      const base = await codex.probe();
+      const spy = vi.spyOn(codex, "probe").mockResolvedValue({ ...base, binaryVersion: "fake-2", models: [{ id: "m-new", label: "New" }, ...base.models] });
+      const stable = { path: "/app/codex", mtimeMs: Date.now() + 60_000 };
+      codex.binaryStamp = () => stable;
+      await until(() => mgr.profile("codex")!.models.some((m) => m.id === "m-new"));
+      expect(mgr.profile("codex")!.binaryVersion).toBe("fake-2");
+      expect(mgr.profile("codex")!.checkedAt).not.toBe(before.checkedAt);
+      await tick(80);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const a = auditTypes().find((x) => x.type === "runtime-binary-changed");
+      expect(a).toMatchObject({ runtimeKind: "codex", from: "fake-1", to: "fake-2", path: "/app/codex" });
+    });
+
+    it("二进制路径变了也重测；指纹还在变（升级写到一半）时不动手", async () => {
+      mgr.shutdown(); mgr = make({ binaryWatchMs: 15 });
+      const spy = vi.spyOn(codex, "probe");
+      let n = 0;
+      codex.binaryStamp = () => ({ path: "/app/codex", mtimeMs: Date.now() + 60_000 + n++ });
+      await tick(100);
+      expect(spy).not.toHaveBeenCalled();
+      const settled = { path: "/app/codex", mtimeMs: Date.now() + 90_000 };
+      codex.binaryStamp = () => settled;
+      await until(() => spy.mock.calls.length === 1);
+    });
+
+    it("二进制没比上次检测更新、路径也没变：不重测", async () => {
+      mgr.shutdown(); mgr = make({ binaryWatchMs: 15 });
+      const spy = vi.spyOn(codex, "probe");
+      const p = mgr.profile("codex")!;
+      mgr.store.saveProfile({ ...p, binaryPath: "/app/codex" });
+      codex.binaryStamp = () => ({ path: "/app/codex", mtimeMs: Date.parse(p.checkedAt) - 1_000 });
+      await tick(100);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it("重测失败：记审计，同一指纹不反复重试", async () => {
+      mgr.shutdown(); mgr = make({ binaryWatchMs: 15 });
+      const spy = vi.spyOn(codex, "probe").mockRejectedValue(new Error("boom"));
+      const stable = { path: "/app/codex", mtimeMs: Date.now() + 60_000 };
+      codex.binaryStamp = () => stable;
+      await until(() => auditTypes().some((x) => x.type === "runtime-binary-reprobe-failed"));
+      await tick(80);
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("a real-call auth failure schedules one online re-verification that clears the failure once login is valid again", async () => {
+    mgr.shutdown(); mgr = make({ authAutoVerifyDelayMs: 20 });
+    await create("claude-code");
+    await until(() => claude.turns.length === 1);
+    const probe = await claude.probe();
+    const spy = vi.spyOn(claude, "probe").mockResolvedValue({ ...probe, authVerified: true });
+    claude.turns[0]!.finish({ status: "failed", reason: "Failed to authenticate: OAuth session expired and could not be refreshed", code: "authentication_failed" });
+    await until(() => spy.mock.calls.length === 1);
+    await until(() => !mgr.profile("claude-code")!.lastAuthFailure);
+    expect(mgr.profile("claude-code")!.state).toBe("executable");
+    expect(spy).toHaveBeenCalledTimes(1);
+    const audits = readFileSync(join(mgr.store.dir, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(audits.some((a) => a.type === "auth-recovered" && a.auto === true)).toBe(true);
+  });
+
+  it("a failed automatic re-verification keeps needs-login and records why, without downgrading to an error", async () => {
+    mgr.shutdown(); mgr = make({ authAutoVerifyDelayMs: 20 });
+    await create("claude-code");
+    await until(() => claude.turns.length === 1);
+    const probe = await claude.probe();
+    const spy = vi.spyOn(claude, "probe").mockResolvedValue({ ...probe, state: "needs-login", stateReason: "在线认证未通过" });
+    claude.turns[0]!.finish({ status: "failed", reason: "Failed to authenticate: OAuth session expired and could not be refreshed", code: "authentication_failed" });
+    await until(() => spy.mock.calls.length === 1);
+    await until(() => (mgr.profile("claude-code")!.stateReason ?? "").includes("自动复核"));
+    const p = mgr.profile("claude-code")!;
+    expect(p.state).toBe("needs-login");
+    expect(p.lastAuthFailure?.message).toContain("OAuth session expired");
+    expect(p.stateReason).toContain("OAuth session expired");
+    // 不会反复重试：同一次失败只复核一次
+    await tick(80);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("cached identity cannot clear a Claude auth failure, even after manual confirmation", async () => {
     const { session } = await create("claude-code");
     await until(() => claude.turns.length === 1);
@@ -1213,7 +1558,8 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
   it("新建与续聊都经驱动的角色通道注入同一份角色正文；绑定只存哈希与证据层级", async () => {
     const a = await create("codex", "开始调研", { role, projectRef: "prj-1" });
     await until(() => codex.turns.length === 1);
-    expect(codex.turns[0]!.args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(codex.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
     // 角色不混进用户消息
     expect(codex.turns[0]!.args.prompt).toBe("开始调研");
     codex.turns[0]!.finish({ status: "completed" });
@@ -1225,7 +1571,7 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     expect(JSON.stringify(b)).not.toContain("只负责调研");
     await mgr.sendTurn(b.platformSessionId, { idempotencyKey: key(), prompt: "继续", expectedRevision: b.bindingRevision }, "t");
     await until(() => codex.turns.length === 2);
-    expect(codex.turns[1]!.args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+    expect(codex.turns[1]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
     expect(codex.turns[1]!.args.nativeSessionId).toBe(codex.turns[0]!.nativeId);
   });
 
@@ -1234,8 +1580,9 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     await create("codex", "调研", { role });
     const c = await create("claude-code", "做演示稿", { role: other });
     await until(() => codex.turns.length === 1 && claude.turns.length === 1);
-    expect(claude.turns[0]!.args.roleInstructions).toBe(other.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
-    expect(codex.turns[0]!.args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+    expect(claude.turns[0]!.args.roleInstructions).toBe([other.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(claude.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
     expect(mgr.store.binding(c.session.platformSessionId)!.role!.injection).toBe("claude.systemPrompt.append");
   });
 
@@ -1250,7 +1597,7 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     const pid = a.session.platformSessionId;
     await again.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: again.store.binding(pid)!.bindingRevision }, "t");
     await until(() => codex2.turns.length === 1);
-    expect(codex2.turns[0]!.args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+    expect(codex2.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
     codex2.turns[0]!.finish({ status: "completed" });
     await until(() => again.store.binding(pid)!.status === "idle");
     rmSync(join(dir, "data", "runtime", "roles", `${pid}.txt`));
@@ -1425,6 +1772,21 @@ it("freezes Pi default from persisted profile after restart without another prob
   fresh.turns[0].finish({ status: "completed" });
 });
 
+it("dispatches a public link fallback to Antigravity at the normal chat entry", async () => {
+  mgr.shutdown();
+  const antigravity = new FakeDriver("antigravity");
+  mgr = new RuntimeSessionManager({ dataDir: join(dir, "data"), drivers: { antigravity }, skipRecovery: true });
+  await mgr.probe("antigravity");
+  const prompt = "请读取这个分享对话";
+  await create("antigravity", prompt);
+  await until(() => antigravity.turns.length === 1);
+  const turn = antigravity.turns[0]!;
+  expect(turn.args.prompt).toBe(prompt);
+  expect(turn.args.roleInstructions).toBe([SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+  expect(turn.args.platformBrowser?.socketPath).toBeTruthy();
+  turn.finish({ status: "completed" });
+});
+
 it("V3.1 Pi preserves driver role eligibility, injects role on create and native resume", async () => {
   mgr.shutdown();
   const pi = new FakeDriver("pi");
@@ -1434,14 +1796,15 @@ it("V3.1 Pi preserves driver role eligibility, injects role on create and native
   const role = { definitionRef: "requirements-clarifier@1.0.0", templateVersion: "1", instructions: "只澄清需求" };
   const { session } = await create("pi", "澄清目标", { role });
   await until(() => pi.turns.length === 1);
-  expect(pi.turns[0].args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+  expect(pi.turns[0].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+  expect(pi.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
   expect(mgr.store.binding(session.platformSessionId)!.role!.injection).toBe("pi.appendSystemPrompt");
   pi.turns[0].finish({ status: "completed" });
   await until(() => mgr.store.binding(session.platformSessionId)!.status === "idle");
   const b = mgr.store.binding(session.platformSessionId)!;
   await mgr.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "继续澄清", expectedRevision: b.bindingRevision }, "t");
   await until(() => pi.turns.length === 2);
-  expect(pi.turns[1].args.roleInstructions).toBe(role.instructions+"\n\n"+SCREENSHOT_INSTRUCTIONS);
+  expect(pi.turns[1].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
   expect(pi.turns[1].args.nativeSessionId).toBe(pi.turns[0].nativeId);
   pi.turns[1].finish({ status: "completed" });
 });

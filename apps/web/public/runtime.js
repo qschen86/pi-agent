@@ -7,16 +7,30 @@
  * 性能：按页独立加载；对话只渲染最新 100 条，向上翻页加载更早；实时事件局部更新，不整页重绘。
  */
 
-const RT_KIND = { codex: "Codex Desktop", "claude-code": "Claude Code CLI", pi: "Pi" };
-const RT_KINDS = ["codex", "claude-code", "pi"];
-const RT_GLYPH = { codex: "◎", "claude-code": "✳", pi: "π" };
+const RT_KIND = { codex: "Codex Desktop", "claude-code": "Claude Code CLI", pi: "Pi", antigravity: "Antigravity CLI" };
+const RT_KINDS = ["codex", "claude-code", "pi", "antigravity"];
+const RT_GLYPH = { codex: "◎", "claude-code": "✳", pi: "π", antigravity: "△" };
+/** 窄处用的短名（手机输入区卡片、筛选条） */
+const RT_SHORT = { codex: "Codex", "claude-code": "Claude", pi: "Pi", antigravity: "Antigravity" };
+/**
+ * 选 runtime 的横滑条（新建页卡片、列表筛选、列表底部方框）都用这一套：条数不固定，放不下时只在条内左右滑，页面本身不横向动。
+ * 重绘会把条换成新节点，滚动位置由 data-keep-scroll-x 保留；这里只保证「选中的那一项」在可见范围内。
+ */
+function rtRevealSelected(stripSelector, itemSelector) {
+  requestAnimationFrame(() => {
+    const strip = document.querySelector(stripSelector), el = strip && strip.querySelector(itemSelector);
+    if (!strip || !el) return;
+    const left = el.offsetLeft, right = left + el.offsetWidth;
+    if (left < strip.scrollLeft) strip.scrollLeft = Math.max(0, left - 8);
+    else if (right > strip.scrollLeft + strip.clientWidth) strip.scrollLeft = right - strip.clientWidth + 8;
+  });
+}
 const RT_STATUS = {
   creating: ["创建中", "accent"], idle: ["空闲", ""], running: ["运行中", "accent"], "waiting-input": ["等待你处理", "warn"],
   stopping: ["停止中", "warn"], interrupted: ["被中断", "bad"], failed: ["失败", "bad"], completed: ["已结束", ""], unknown: ["状态未知", "warn"]
 };
 const RT_TURN = { queued: "排队中", running: "运行中", "waiting-input": "等待你处理", completed: "本轮完成", failed: "失败", cancelled: "已停止", interrupted: "被中断", unknown: "结果未知" };
-/** 桌面会话详情的四个面板；手机只保留「对话」。 */
-const RT_TABS = [["chat", "对话"], ["tools", "工具"], ["usage", "用量"], ["source", "来源"]];
+/** 桌面会话详情只有对话正文：工具、用量、来源三个标签已取消（用量的口径与各轮明细、来源与身份都收进右侧会话详情）。 */
 const RT_PROFILE_STATE = {
   "not-installed": ["未安装", "bad"], incompatible: ["不兼容", "bad"], "needs-login": ["待登录", "warn"],
   connectable: ["可连接", "warn"], executable: ["可执行", "ok"], error: ["错误", "bad"]
@@ -26,8 +40,10 @@ const RT_OBS = { live: "实时", "catching-up": "补读中", stale: "待核对",
 
 ui.rt = {
   access: null, dir: null, dirError: "", filter: { runtime: "", q: "" }, collapsed: {}, showArchived: null,
+  // 触屏：当前左滑露出归档入口的会话行 id（列表重绘后保持滑开）
+  swipeOpen: null,
   id: null, view: null, viewError: "", events: [], hasMoreBefore: false, total: 0, coverage: "", notes: [],
-  loading: false, tab: "chat", newCount: 0, atBottom: true, drafts: {}, outgoing: {}, busy: "", flash: "", error: "",
+  loading: false, newCount: 0, atBottom: true, drafts: {}, outgoing: {}, busy: "", flash: "", error: "",
   profiles: null, host: null, settings: null, settingsDraft: null, auth: null,
   form: null, confirm: null, createKey: null, listOpen: false, infoOpen: false, sideCollapsed: false, subOpen: false, moreOpen: false, noticeOpen: false, noteOpen: false, recommendationOpen: false, turnEffort: {}, conn: "", es: null, esFor: null, lastSeq: 0, gen: 0, lastId: null,
   // 快捷回复：会话 id → { key: 最后一条助手消息 key, state: loading|ready|none|error, replies, deployment? }
@@ -495,14 +511,14 @@ function rtDirectoryVisible() {
 function rtSessionVisible() {
   return document.visibilityState !== 'hidden' && ui.view === 'rt' && !!rtId() && !(rtPhone.matches && ui.rt.listOpen);
 }
-function rtConversationVisible() { return rtSessionVisible() && !(rtPhone.matches && ui.rt.infoOpen) && ['chat','tools'].includes(ui.rt.tab || 'chat'); }
+function rtConversationVisible() { return rtSessionVisible() && !(rtPhone.matches && ui.rt.infoOpen); }
 /** 页面在后台或窗口失焦：这时的自动跳转会打断用户，切回后看起来像被默认选中了别的会话。 */
 function rtPageAway() {
   return document.visibilityState === 'hidden' || !document.hasFocus();
 }
 function rtUsageVisible() {
   if (!rtSessionVisible()) return false;
-  const panel = ui.rt.tab === 'usage' ? document.querySelector('[data-rt-tab-panel="usage"]') : rtInfoPanelOpen() ? document.querySelector('.rt-side') : null;
+  const panel = rtInfoPanelOpen() ? document.querySelector('.rt-side') : null;
   return !!panel?.getClientRects?.().length;
 }
 function rtUsageVersion(v) { return JSON.stringify([v?.session?.bindingRevision,v?.session?.lastActivityAt,v?.session?.turns?.at(-1),ui.rt.lastSeq]); }
@@ -510,7 +526,7 @@ const rtUsageFlights = new Map();
 const RT_USAGE_REFRESH_MS = 10000;
 let rtUsageTimer = null;
 function rtMemoryVisible() {
-  return rtSessionVisible() && rtInfoPanelOpen() && ['pi','codex','claude-code'].includes(ui.rt.view?.session?.runtimeKind) && !!document.querySelector('.rt-side')?.getClientRects().length;
+  return rtSessionVisible() && rtInfoPanelOpen() && RT_KINDS.includes(ui.rt.view?.session?.runtimeKind) && !!document.querySelector('.rt-side')?.getClientRects().length;
 }
 /** 搜索 / 抓取记录：和记忆共用侧栏卡片，所有 runtime 都读（记忆只有 Pi 有）。服务端从会话的工具调用里挑出，这里只负责按需刷新。 */
 function rtWebVisible() {
@@ -617,11 +633,7 @@ async function rtLoadVisibleUsage(force = false) {
       const usage = await api(`/api/runtime-sessions/${encodeURIComponent(id)}/usage`);
       if (!rtReadCurrent(id, gen)) return;
       ui.rt.usageFor = id; ui.rt.usageVersion = version; ui.rt.usageAt = Date.now();
-      const previous = ui.rt.view;
-      ui.rt.view = { ...previous, usage };
-      // Statistics cannot invalidate retained transcript DOM or its scroll anchor.
-      const panels = document.querySelector('.rt-center')?.rtPanels;
-      if (panels) for (const [tab, panel] of panels) if (tab !== 'usage' && panel.view === previous) panel.view = ui.rt.view;
+      ui.rt.view = { ...ui.rt.view, usage };
     } catch (e) {
       if (rtReadCurrent(id, gen)) {
         if ([401,403,404,410].includes(e.status)) rtReadFailure(id, gen, e);
@@ -783,11 +795,10 @@ function rtApplyMessages(m,id,gen,exact=false) {
         if (!r.atBottom) r.newCount += m.events.filter(e => !known.has(e.key)).length;
         const box = document.querySelector('.rt-transcript');
         const reading = sessionReadingCapture(box, r.atBottom);
-        if (box && (r.tab === 'chat' || r.tab === 'tools')) {
+        if (box) {
           const removed = before.some(e => !events.some(x => x.key === e.key));
-          if (removed && r.tab === 'chat') rtRerenderTranscript(box);
-          else if (removed) { for (const row of box.querySelectorAll('[data-ev-key]')) if (!events.some(e => e.key === row.dataset.evKey)) row.remove(); }
-          if (!removed || r.tab === 'tools') for (const e of events) if (JSON.stringify(known.get(e.key)) !== JSON.stringify(e)) rtPatchEventRow(e, !known.has(e.key));
+          if (removed) rtRerenderTranscript(box);
+          else for (const e of events) if (JSON.stringify(known.get(e.key)) !== JSON.stringify(e)) rtPatchEventRow(e, !known.has(e.key));
           sessionReadingRestore(box, reading);
         }
       }
@@ -988,7 +999,7 @@ function rtRemember() {
   if (box && ui.view === 'rt') { rtRememberFolds(box); r.reading = sessionReadingCapture(box, r.atBottom); }
   const snap = rtSnapshotEvents(r);
   sessionSnapshotPut(`rt:${id}`, { view: r.view, events: snap.events, hasMoreBefore: snap.hasMoreBefore, total: r.total, coverage: r.coverage, notes: r.notes, lastSeq: r.lastSeq,
-    atBottom: r.atBottom, reading: r.reading, tab: r.tab, openSteps: r.openSteps, openFolds: r.openFolds, trimmedTail: snap.trimmedTail, newCount: r.newCount });
+    atBottom: r.atBottom, reading: r.reading, openSteps: r.openSteps, openFolds: r.openFolds, trimmedTail: snap.trimmedTail, newCount: r.newCount });
 }
 /**
  * 离页快照最多保留 200 条事件，但不能因此丢掉阅读锚点或伪称历史完整。
@@ -1025,7 +1036,7 @@ function rtSelect(id) {
   r.id = id; r.infoOpen = false; r.view = hit?.view || null; r.events = hit ? hit.events.slice() : [];
   r.hasMoreBefore = hit?.hasMoreBefore || false; r.total = hit?.total || 0; r.coverage = hit?.coverage || ''; r.notes = hit?.notes || [];
   r.lastSeq = hit?.lastSeq || 0; r.messagesFor = hit ? id : null;
-  r.tab = hit?.tab || 'chat'; r.error = ''; r.flash = ''; r.trimmedTail = hit?.trimmedTail || false; r.newCount = hit?.newCount || 0; r.atBottom = hit ? hit.atBottom : true;
+  r.error = ''; r.flash = ''; r.trimmedTail = hit?.trimmedTail || false; r.newCount = hit?.newCount || 0; r.atBottom = hit ? hit.atBottom : true;
   r.loadingNewer = false; r.loadingEarlier = false; r.earlierError = ''; r.fillRounds = 0; r.fillEarlierRounds = 0;
   r.reading = hit?.reading || { atBottom: r.atBottom, top: 0 }; r.viewError = ''; r.syncError = ''; r.viewSyncError = ''; r.messageSyncError = ''; r.statusConfirmed = false; r.syncing = !!id && !hit;
   r.linkedNote = null; r.linkedNoteFor = null; r.linkedNoteBusy = false; r.linkedNoteError = '';
@@ -1116,6 +1127,7 @@ async function rtRefresh() {
     await access;
     // 新建会话在对话工作台里：左侧会话列表照常显示
     await Promise.all([rtLoadProfiles(), rtLoadSettings(), !ui.rt.dir || Date.now() - (ui.rt.dirAt || 0) > 60_000 ? rtLoadDir().then(() => { ui.rt.dirAt = Date.now(); }) : null]);
+    if (gen === ui.rt.gen && ui.view === "rt-new" && rtForm().runtimeKind === "antigravity" && ui.rt.antigravityCheck?.generation !== gen) void rtCheckAntigravityConnection();
     rtConnect();
   } else if (ui.view === "runtimes") {
     // 用量汇总要扫本机记录、可能要几秒：它自己的卡片显示「加载中…」，不拖住整页的读取状态
@@ -1253,29 +1265,15 @@ function rtPatchConn() {
 function rtPatchEventRow(e, isNew) {
   const box = document.querySelector(".rt-transcript");
   if (!box) return;
-  if (!rtVisible(e)) return;
   if (e.kind === "turn-status" && ui.rt.events.some(rtBackgroundTask)) { rtRerenderTranscript(box); return; }
-  if (ui.rt.tab === "chat" || e.kind === "turn-status" || (e.kind === "notice" && (e.enforcement || rtBackgroundTask(e))) || rtEnforcementFeedback(e)) return rtPatchBlock(box, e, isNew);
-  const old = box.querySelector(`[data-ev-key="${CSS.escape(e.key)}"]`);
-  if (old) rtRememberFolds(old);
-  const row = rtEventRow(e);
-  if (old) old.replaceWith(row);
-  else {
-    const after = [...box.querySelectorAll("[data-ev-seq]")].find((x) => Number(x.dataset.evSeq) > e.seq);
-    const tail = box.querySelector(".rt-tail");
-    if (after) box.insertBefore(row, after); else if (tail) tail.before(row); else box.append(row);
-    const empty = box.querySelector(".rt-empty"); if (empty) empty.remove();
-  }
-  if (ui.rt.atBottom) box.scrollTop = box.scrollHeight;
-  else if (isNew) rtPatchNewCount();
-  rtPatchOutgoing();
+  return rtPatchBlock(box, e, isNew);
 }
 /**
  * 对话页：思考与工具调用按块折叠，局部更新只重建事件所在的那一块。
  * 新事件不在末尾（乱序到达）时整段重绘，保持块的划分与顺序正确。
  */
 function rtPatchBlock(box, e, isNew) {
-  const events = ui.rt.events.filter(rtVisible);
+  const events = ui.rt.events;
   if (isNew && events.length && events[events.length - 1].key !== e.key) { rtRerenderTranscript(box); return; }
   // 正文之后才到的思考要挪到正文前面：整段重绘
   if (e.kind === "reasoning" && e.key.endsWith(":thinking") && box.querySelector(`[data-ev-key="${CSS.escape(e.key.slice(0, -":thinking".length))}"]`) && !box.querySelector(`[data-ev-key="${CSS.escape(e.key)}"]`)) { rtRerenderTranscript(box); return; }
@@ -1311,7 +1309,7 @@ function rtRerenderTranscript(box) {
   rtRememberFolds(box);
   const keep = box.scrollTop;
   const openGroups = [...box.querySelectorAll(".rt-steps[open]")];
-  const rows = rtBlocks(ui.rt.events.filter(rtVisible)).map((b) => {
+  const rows = rtBlocks(ui.rt.events).map((b) => {
     // 窗口裁剪改变首键时，仍按剩余事件的交集保留原组展开状态。
     if (b.steps && openGroups.some(group => b.steps.some(e => group.rtStepKeys?.has(e.key)))) (ui.rt.openSteps ||= {})[b.steps[0].key] = true;
     return rtBlockNode(b);
@@ -1358,7 +1356,7 @@ function rtAnchorTurnIncomplete(events = ui.rt.events) {
  * 最多补几页，避免超大回合把整段历史一次性拖进来。
  */
 function rtFillNewerIfShort() {
-  if (ui.view !== "rt" || ui.rt.tab !== "chat" || !ui.rt.trimmedTail || ui.rt.atBottom || ui.rt.loadingNewer) return;
+  if (ui.view !== "rt" || !ui.rt.trimmedTail || ui.rt.atBottom || ui.rt.loadingNewer) return;
   if ((ui.rt.fillRounds || 0) >= 3 || !rtAnchorTurnIncomplete()) return;
   const box = document.querySelector(".rt-transcript");
   if (!box || !box.isConnected || box.clientHeight <= 0) return;
@@ -1374,7 +1372,7 @@ function rtFillNewerIfShort() {
  */
 function rtFillEarlierIfShort() {
   const r = ui.rt;
-  if (!rtConversationVisible() || r.tab !== "chat" || !r.hasMoreBefore || r.loadingEarlier || r.earlierError || !r.events.length) return;
+  if (!rtConversationVisible() || !r.hasMoreBefore || r.loadingEarlier || r.earlierError || !r.events.length) return;
   const box = document.querySelector(".rt-transcript");
   if (!box || !box.isConnected || box.clientHeight <= 0) return;
   const noMessage = !r.events.some((e) => e.kind === "message");
@@ -1543,7 +1541,6 @@ rtPhone.addEventListener("change", () => {
   rtSyncChrome();
   rtSetInfoOpen(false, false);
   rtSyncPhoneControls();
-  if (rtPhone.matches && ui.view === "rt" && ui.rt.tab !== "chat") rtSwitchTab("chat");
   // 断点变化后重新渲染头部：手机上标题才可点进列表
   if (ui.view === "rt" && ui.rt.view && typeof rtHead === "function") document.querySelector(".rt-head")?.replaceWith(rtHead(ui.rt.view));
   if (["rt", "rt-new", "rt-room-new"].includes(ui.view)) { syncRtListOpen(); rtRenderListOnly(); }
@@ -1667,7 +1664,7 @@ function rtLastEndedTurn(e) {
 function rtWatching(id) {
   if (document.hidden) return false;
   if (ui.view === "rt" && !rtConversationVisible()) return false;
-  if (ui.view === "rt") return rtId() === id && ui.rt.messagesFor === id && ui.rt.atBottom && !ui.rt.trimmedTail && ui.rt.tab === "chat";
+  if (ui.view === "rt") return rtId() === id && ui.rt.messagesFor === id && ui.rt.atBottom && !ui.rt.trimmedTail;
   if (ui.view === "rt-compare") return !!ui.rtc?.view?.lanes?.some((l) => l.platformSessionId === id);
   if (ui.view === "rt-room") return !!ui.room?.view?.members?.some((m) => m.platformSessionId === id);
   return false;
@@ -1821,6 +1818,8 @@ function rtRenderNavStatus() {
   if (attention) nav.append(h("span", { class: "rt-nav-attention", "aria-hidden": "true" }, attention > 99 ? "99+" : String(attention)));
   if (running) (nav.querySelector(".tab-label") || nav).append(h("span", { class: "rt-nav-running", "aria-hidden": "true" }, String(running)));
   nav.setAttribute("aria-label", ["对话", attention ? `${attention} 条待处理` : "", running ? `${running} 个会话运行中` : ""].filter(Boolean).join("，"));
+  // 手机上会话不在底栏：别处新来的未读用顶部的悬浮胶囊提醒（session-island.js）
+  window.piSessionIsland?.sync(entries);
 }
 /** 角标跨页面保持更新：取未筛选的普通对话目录（不读历史，开销小），列表的搜索 / 筛选不影响计数 */
 const rtUnreadState={timer:null,flight:null,lastAttempt:null,failed:false,again:false,boot:Date.now()+1500};
@@ -1933,9 +1932,9 @@ const rtStagedWord = (q, started, p) => {
   if (!q?.staging) return undefined;
   if (!started) return q.wait?.kind === "staged" ? "3/4 已预发 · 待切换" : q.wait?.kind === "skipped" ? "预发失败 · 切换后重试" : "1/4 排队中";
   if (q.stage !== "cutover") return "2/4 预发检查中";
-  return (p && { preparing: "3/4 切换前复核", waiting: p.sessions?.length ? `3/4 等对话结束 · ${p.sessions.length} 个会话` : "3/4 等待任务核对", switching: "4/4 正在切换", ready: "4/4 部署成功", failed: "部署未完成" }[p.phase]) || "3/4 切换前复核";
+  return (p && { preparing: "3/4 切换前复核", idle: p.sessions?.length ? `3/4 等空闲 · ${p.sessions.length} 个会话` : "3/4 等空闲", waiting: p.sessions?.length ? `3/4 等对话结束 · ${p.sessions.length} 个会话` : "3/4 等待任务核对", switching: "4/4 正在切换", ready: "4/4 部署成功", failed: "部署未完成" }[p.phase]) || "3/4 切换前复核";
 };
-const rtDeployWord = (started, p, q) => rtStagedWord(q, started, p) ?? (!started ? "排队部署" : !p ? "准备发布" : ({ preparing: "检查与准备中", waiting: p.sessions?.length ? `等待会话结束 · ${p.sessions.length} 个会话` : "等待任务核对", switching: "正在切换服务", ready: "部署成功", failed: "部署未完成" }[p.phase] || "准备发布"));
+const rtDeployWord = (started, p, q) => rtStagedWord(q, started, p) ?? (!started ? "排队部署" : !p ? "准备发布" : ({ preparing: "检查与准备中", idle: p.sessions?.length ? `等空闲 · ${p.sessions.length} 个会话` : "等空闲", waiting: p.sessions?.length ? `等待会话结束 · ${p.sessions.length} 个会话` : "等待任务核对", switching: "正在切换服务", ready: "部署成功", failed: "部署未完成" }[p.phase] || "准备发布"));
 function rtDeployLabel(q) {
   const label = rtDeployWord(!!q.startedAt || q.state === "started", q.progress, q).replace(/^[1-4]\/4\s+/, "");
   return q.action === "rollback" ? label.replace("排队部署", "排队回滚").replace("部署成功", "回滚成功").replace("部署未完成", "回滚未完成") : label;
@@ -2030,7 +2029,7 @@ function rtOpenDeployResult(notice, { sid, time } = {}, trigger) {
   // 流程步骤来自守候进程结束时的存档；旧部署没有存档，就只留上面的结论
   if (sha) api(`/api/platform/deployments/runs/${encodeURIComponent(sha.slice(0, 7))}`).then(({ run }) => {
     if (rtDeployPanel !== state || !run) return;
-    const steps = rtDeployStepList({ sha: run.sha, startedAt: run.steps[0]?.at || run.since, progress: run, ended: !["ready", "failed"].includes(run.phase) }, close);
+    const steps = rtDeployStepList({ sha: run.sha, startedAt: run.steps[0]?.at || run.since, progress: run, ...(run.staging ? { staging: true } : {}), ended: !["ready", "failed"].includes(run.phase) }, close);
     const holder = h("div", { class: "rt-deploy-result-steps" }, steps.list, steps.summary, run.testPlan ? rtDeployTestPlan(run.testPlan, false) : null);
     const anchor = panel.querySelector(".rt-deploy-result-detail, .rt-system-log");
     if (anchor) anchor.before(holder); else panel.querySelector(".rt-deploy-actions")?.before(holder);
@@ -2048,16 +2047,90 @@ function rtDeployStepTime(p, key, state) {
     const first = Date.parse(steps[0]?.at || ""), finished = Date.parse(since || p.since || "");
     return Number.isFinite(first) && Number.isFinite(finished) ? { text: rtDeployDuration(finished - first) } : { text: "—" };
   }
-  if (index < 0 && key === "waiting" && state === "done") return { text: "耗时 0s" };
+  if (index < 0 && (key === "idle" || key === "waiting") && state === "done") return { text: "耗时 0s" };
   if (!Number.isFinite(start)) return { text: "—" };
   if (index >= 0 && Number.isFinite(end)) return { text: `耗时 ${rtDeployDuration(end - start)}` };
   if (state === "current") return { text: `耗时 ${rtDeployDuration(Date.now() - start)}`, since };
   return { text: "—" };
 }
-/** 部署流程四步（检查与准备 → 等待会话结束 → 切换服务 → 部署成功）；进行中的进度弹窗和结束后的结果弹窗共用 */
+/** 部署耗时：从开始准备（叠加预发则从预发检查开始）到上线完成，扣掉「等待会话结束」和预发完成后等切换的时间（与设置 → 统计同一口径）；没有流程记录时返回 undefined。 */
+function rtDeployTotal(p, timeline = p?.staging) {
+  const steps = (p?.steps || []).map(s => ({ phase: s.phase, at: Date.parse(s.at) })).filter(s => Number.isFinite(s.at));
+  if (!steps.length) return undefined;
+  const stagedStart = Date.parse(timeline?.startedAt || ""), stagedEnd = Date.parse(timeline?.stagedAt || "");
+  const start = Number.isFinite(stagedStart) ? Math.min(stagedStart, steps[0].at) : steps[0].at;
+  const finished = p?.phase === "ready" ? Date.parse(p.since) : Date.parse(p?.finishedAt || "");
+  const end = Number.isFinite(finished) ? finished : steps[steps.length - 1].at;
+  if (!(end >= start)) return undefined;
+  let waiting = Number.isFinite(stagedEnd) ? Math.max(0, steps[0].at - stagedEnd) : 0;
+  for (let i = 0; i < steps.length; i++) if (steps[i].phase === "waiting" || steps[i].phase === "idle") waiting += Math.max(0, (steps[i + 1]?.at ?? end) - steps[i].at);
+  return Math.max(0, end - start - Math.min(waiting, end - start));
+}
+const RT_DEPLOY_TOTAL_TITLE = "部署耗时：从开始检查到上线完成，不含排队、等待会话和预发后等待切换的时间";
+/** 部署成功通知上的总耗时：流程存档按提交只读一次（失败也记住，避免重绘反复请求）。 */
+const rtDeployRunTotals = new Map();
+function rtDeployNoticeTotal(commit) {
+  const node = h("span", { class: "rt-system-elapsed", hidden: true, title: RT_DEPLOY_TOTAL_TITLE });
+  const paint = (ms) => { if (!Number.isFinite(ms)) return; node.hidden = false; node.textContent = `总耗时${rtDeployDuration(ms)}`; };
+  if (rtDeployRunTotals.has(commit)) { const ms = rtDeployRunTotals.get(commit); if (Number.isFinite(ms)) paint(ms); return node; }
+  api(`/api/platform/deployments/runs/${encodeURIComponent(commit)}`).then(({ run } = {}) => {
+    const ms = run ? rtDeployTotal(run) : null;
+    rtDeployRunTotals.set(commit, ms);
+    if (Number.isFinite(ms)) paint(ms);
+  }).catch(() => {});
+  return node;
+}
+
+function rtDeployStepItem({ state, label, status, time, blockers, detail, current }) {
+  return h("li", { class: `rt-deploy-step ${state}`, "data-step-state": state, "aria-current": current ? "step" : null },
+    h("span", { class: "rt-deploy-step-marker", "aria-hidden": "true" }, state === "done" ? "✓" : state === "failed" ? "×" : ""),
+    h("div", { class: "rt-deploy-step-body" },
+      h("div", { class: "rt-deploy-step-heading" }, h("span", { class: "rt-deploy-step-title" }, label), h("span", { class: "rt-deploy-step-meta" },
+        h("span", { class: "rt-deploy-step-status small" }, status),
+        time ? h("span", { class: "rt-deploy-step-duration small", ...(time.since ? { "data-rt-deploy-step-since": time.since } : {}) }, time.text) : null)),
+      detail ? h("p", { class: "small rt-deploy-progress-detail" }, detail) : null,
+      blockers));
+}
+const rtDeployBlockers = (p, onNavigate) => p?.sessions?.length ? h("ul", { class: "rt-deploy-blockers" }, ...p.sessions.map(s => h("li", {},
+  h("a", { href: `#/rt/${encodeURIComponent(s.id)}`, onclick: onNavigate }, s.title || "未命名会话"),
+  h("span", { class: "muted small" }, ({ running: "运行中", creating: "创建中", "waiting-input": "等待处理", stopping: "停止中" }[s.status] || s.status))))) : null;
+/**
+ * 叠加预发的四个节点，与会话列表标签的 1/4～4/4 同一套：排队 → 预发检查 → 待切换（切换前复核、等空闲、排空兜底）→ 切换上线。
+ * 时间来自 q.timeline（进行中）或流程存档里的 staging（已结束）：每个节点的耗时 = 到下一个节点开始的间隔。
+ */
+function rtStagedStepList(q, onNavigate) {
+  const p = q.progress, phase = p?.phase, steps = p?.steps || [], t = q.timeline || p?.staging || {};
+  const at = key => steps.find(s => s.phase === key)?.at;
+  const finishedAt = phase === "ready" ? p.since : phase === "failed" ? p.finishedAt || p.since : undefined;
+  const marks = [t.queuedAt || q.requestedAt, t.startedAt || (q.stage === "staging" ? q.startedAt : undefined), t.stagedAt || (q.stage !== "staging" && p ? steps[0]?.at : undefined), at("switching"), finishedAt];
+  const nodeOf = ph => ph === "switching" || ph === "ready" ? 3 : 2;
+  const lastPhase = phase === "failed" ? steps.filter(x => x.phase !== "failed").at(-1)?.phase : phase;
+  const current = q.stage === "staging" ? 1 : p ? (phase === "ready" ? 4 : nodeOf(lastPhase)) : q.wait?.kind === "staged" || t.stagedAt ? 2 : 0;
+  const labels = ["排队", "预发检查", "待切换", "切换上线"];
+  const detail = q.ended ? "本次请求已结束，请在设置的部署记录中查看结果" : [
+    q.wait?.detail || "请求已登记，等待发布服务处理",
+    p?.detail || "正在预发检查（类型检查与测试），当前线上服务继续运行",
+    !p ? q.wait?.detail || "已预发，等待切换" : phase === "preparing" ? "正在切换前复核，当前线上服务继续运行" : p.detail,
+    p?.detail || "正在切换服务并核对新版本是否就绪"
+  ][Math.min(current, 3)];
+  const items = labels.map((label, i) => {
+    const state = phase === "failed" && i === current ? "failed" : i < current ? "done" : i === current && !q.ended ? "current" : "pending";
+    const start = Date.parse(marks[i] || ""), end = Date.parse(marks[i + 1] || "");
+    const time = state === "done" && Number.isFinite(start) && Number.isFinite(end) ? { text: `耗时 ${rtDeployDuration(end - start)}` }
+      : state === "current" && Number.isFinite(start) ? { text: `耗时 ${rtDeployDuration(Date.now() - start)}`, since: marks[i] }
+      : { text: "—" };
+    const status = { failed: "未完成", current: "进行中", done: i === 3 ? "已上线" : "已完成", pending: "尚未开始" }[state];
+    return rtDeployStepItem({ state, label, status, time, current: state === "current", detail: state === "current" ? detail : null, blockers: state === "current" && i === 2 ? rtDeployBlockers(p, onNavigate) : null });
+  });
+  const totalMs = phase === "ready" ? rtDeployTotal(p, t) : undefined;
+  const summary = Number.isFinite(totalMs) ? h("div", { class: "rt-deploy-total", title: RT_DEPLOY_TOTAL_TITLE }, h("span", {}, "总耗时", h("small", { class: "muted" }, " 不含排队与等待")), h("strong", {}, rtDeployDuration(totalMs))) : null;
+  return { current: Math.min(current, 3), detail, summary, list: h("ol", { class: "rt-deploy-steps", "aria-label": "部署流程" }, ...items) };
+}
+/** 部署流程五步（检查与准备 → 等空闲 → 排空等待会话结束（兜底，通常无需等待）→ 切换服务 → 部署成功）；进行中的进度弹窗和结束后的结果弹窗共用 */
 function rtDeployStepList(q, onNavigate) {
+  if (q.staging || q.timeline || q.progress?.staging) return rtStagedStepList(q, onNavigate);
   const p = q.progress, phase = p?.phase;
-  const labels = [["preparing", "检查与准备"], ["waiting", "等待会话结束"], ["switching", "切换服务"], ["ready", "部署成功"]];
+  const labels = [["preparing", "检查与准备"], ["idle", "等空闲"], ["waiting", "排空等待会话结束"], ["switching", "切换服务"], ["ready", "部署成功"]];
   const activePhase = phase === "failed" ? p?.steps?.filter(x => x.phase !== "failed").at(-1)?.phase : phase;
   const current = labels.findIndex(x => x[0] === activePhase);
   const detail = q.ended ? "本次请求已结束，请在设置的部署记录中查看结果" : p?.detail || q.wait?.detail || (q.startedAt || q.state === "started" ? "正在确认发布阶段" : "请求已登记，等待发布服务处理");
@@ -2066,22 +2139,14 @@ function rtDeployStepList(q, onNavigate) {
     const active = atStep && !q.ended;
     const visited = (p?.steps || []).some(x => x.phase === key);
     const stepState = atStep && phase === "failed" ? "failed" : current > i || (atStep && phase === "ready") ? "done" : active ? "current" : "pending";
-    const status = stepState === "failed" ? "未完成" : stepState === "current" ? "进行中" : stepState === "done" ? (key === "waiting" && !visited ? "无需等待" : "已完成") : !p && q.startedAt ? "待确认" : "尚未开始";
+    const status = stepState === "failed" ? "未完成" : stepState === "current" ? "进行中" : stepState === "done" ? ((key === "idle" || key === "waiting") && !visited ? "无需等待" : "已完成") : !p && q.startedAt ? "待确认" : "尚未开始";
     const time = key === "ready" ? null : rtDeployStepTime(p, key, stepState);
-    const blockers = active && p?.sessions?.length ? h("ul", { class: "rt-deploy-blockers" }, ...p.sessions.map(s => h("li", {},
-      h("a", { href: `#/rt/${encodeURIComponent(s.id)}`, onclick: onNavigate }, s.title || "未命名会话"),
-      h("span", { class: "muted small" }, ({ running: "运行中", creating: "创建中", "waiting-input": "等待处理", stopping: "停止中" }[s.status] || s.status))))) : null;
-    return h("li", { class: `rt-deploy-step ${stepState}`, "data-step-state": stepState, "aria-current": active && phase !== "ready" ? "step" : null },
-      h("span", { class: "rt-deploy-step-marker", "aria-hidden": "true" }, stepState === "done" ? "✓" : stepState === "failed" ? "×" : ""),
-      h("div", { class: "rt-deploy-step-body" },
-        h("div", { class: "rt-deploy-step-heading" }, h("span", { class: "rt-deploy-step-title" }, label), h("span", { class: "rt-deploy-step-meta" },
-          h("span", { class: "rt-deploy-step-status small" }, status),
-          time ? h("span", { class: "rt-deploy-step-duration small", ...(time.since ? { "data-rt-deploy-step-since": time.since } : {}) }, time.text) : null)),
-        active ? h("p", { class: "small rt-deploy-progress-detail" }, detail) : null,
-        blockers));
+    const blockers = active ? rtDeployBlockers(p, onNavigate) : null;
+    return rtDeployStepItem({ state: stepState, label, status, time, blockers, detail: active ? detail : null, current: active && phase !== "ready" });
   });
-  const total = phase === "ready" ? rtDeployStepTime(p, "ready", "done") : null;
-  const summary = total && total.text !== "—" ? h("div", { class: "rt-deploy-total" }, h("span", {}, "总耗时"), h("strong", {}, total.text)) : null;
+  // 总耗时统一用「开始准备 → 上线完成，扣掉等待会话」的口径：状态行和结果弹窗显示的是同一个数
+  const totalMs = phase === "ready" ? rtDeployTotal(p) : undefined;
+  const summary = Number.isFinite(totalMs) ? h("div", { class: "rt-deploy-total", title: RT_DEPLOY_TOTAL_TITLE }, h("span", {}, "总耗时"), h("strong", {}, rtDeployDuration(totalMs))) : null;
   return { current, detail, summary, list: h("ol", { class: "rt-deploy-steps", "aria-label": "部署流程" }, ...steps) };
 }
 function rtDeployTestPlan(testPlan, open) {
@@ -2114,7 +2179,7 @@ function rtDeployActions(state) {
   const canControl = state.sid && ui.rt.access?.control && state.info?.eligible;
   const active = canControl && !state.cancelled && !state.result && !q.ended && !["ready", "failed"].includes(phase);
   const supported = state.info?.actionsSupported === true;
-  const cancellable = supported && (!q.startedAt || ["preparing", "waiting"].includes(phase));
+  const cancellable = supported && (!q.startedAt || ["preparing", "idle", "waiting"].includes(phase));
   const target = state.info?.rollback;
   const success = state.result ? state.success : phase === "ready";
   const rollback = canControl && supported && success && !state.cancelled && target && target.live.startsWith(q.progress?.sha || q.sha || "?") && !(state.info.requests || []).length;
@@ -2187,7 +2252,7 @@ function rtUpdateDeployProgress(requests) {
 // 与阶段文字使用同一套映射；图形表示阶段序号，不估算耗时百分比。
 function rtDeployPie(node, d) {
   const staged = rtStagedWord(d, !!d.startedAt || d.state === "started", d.progress);
-  const step = staged?.match(/^([1-4])\/4/)?.[1] || ({ preparing: "1", waiting: "2", switching: "3", ready: "4" }[d.progress?.phase]) || "1";
+  const step = staged?.match(/^([1-4])\/4/)?.[1] || ({ preparing: "1", idle: "2", waiting: "2", switching: "3", ready: "4" }[d.progress?.phase]) || "1";
   node.setAttribute("data-rt-deploy-pie", step);
   node.toggleAttribute("data-rt-deploy-sweep", !d.ended && !["ready", "failed", "cancelled"].includes(d.progress?.phase) && !["failed", "cancelled"].includes(d.state));
   return node;
@@ -2232,6 +2297,8 @@ function rtTickVisibleTimes() {
     node.classList.toggle("slow", Date.now() - Date.parse(at) > 300000);
   }
   for (const node of document.querySelectorAll("[data-rt-deploy-step-since]")) node.textContent = `耗时 ${rtDeployDuration(Date.now() - Date.parse(node.getAttribute("data-rt-deploy-step-since")))}`;
+  // 时间线末尾的部署状态行：标题后只放本阶段已用时，和列表标签同一套时长格式
+  for (const node of document.querySelectorAll("[data-rt-deploy-row-start]")) node.textContent = rtDeployDuration(Date.now() - Date.parse(node.getAttribute("data-rt-deploy-row-start")));
   for (const node of document.querySelectorAll("[data-rt-deploy-start]")) {
     const [state, at] = (node.getAttribute("data-rt-deploy-start") || "").split("|");
     node.textContent = rtElapsedLabel(state === "started" ? "准备发布" : state === "pending" ? "排队部署" : state, at);
@@ -2280,19 +2347,6 @@ function rtHeadLoading(kind = "session", override = null, options = {}) {
         h("button", { type: "button", class: "btn small rt-more-btn", "aria-label": "更多", disabled: true, "aria-disabled": "true" }, "⋮")),
       tags));
 }
-/** 桌面详情页 loading 时也摆好面板 tab 行，避免真实数据到达时正文整体下移。 */
-function rtTabsLoading() {
-  if (rtPhone.matches) return null;
-  return h("div", { class: "rt-tabs", role: "tablist", "aria-busy": "true" },
-    RT_TABS.map(([key, label], index) => h("button", { type: "button", role: "tab", class: `rt-tab${index === 0 ? " active" : ""}`, "aria-selected": String(index === 0), disabled: true }, label)));
-}
-/** 正文已从本机显示时的 tab 行：对话可点，其余等核对完成；不带 aria-busy，看起来不是骨架。 */
-function rtTabsCached() {
-  if (rtPhone.matches) return null;
-  return h("div", { class: "rt-tabs", role: "tablist" },
-    RT_TABS.map(([key, label], index) => h("button", { type: "button", role: "tab", class: `rt-tab${index === 0 ? " active" : ""}`, "aria-selected": String(index === 0), disabled: index !== 0, title: index === 0 ? "" : "核对最新状态后可切换" }, label)));
-}
-
 // Keep the first conversation frame available before deferred detail code arrives.
 // Loading can accept a draft, but cannot send until live authority is confirmed.
 function renderRtLoadingWorkbench() {
@@ -2306,9 +2360,8 @@ function renderRtLoadingWorkbench() {
 }
 function rtDetailLoading() {
   return h("section", { class: "rt-center" },
-    // 先摆好会话框、tab 行与标题（标题取自会话目录），内容区显示“加载中…”，加载完由 rtHead 接手
+    // 先摆好会话框与标题（标题取自会话目录），内容区显示“加载中…”，加载完由 rtHead 接手
     rtHeadLoading("session"),
-    rtTabsLoading(),
     // 先摆好输入区，再加载内容：进入会话时就看得见输入框，不在加载完成后才出现
     h("div", { class: "rt-center-wait", "aria-busy": String(!ui.rt.viewError) },
       ui.rt.viewError ? [
@@ -2469,6 +2522,56 @@ function rtFill(pct) {
 /** 窗口已用比例的色阶：≥95% 告急、≥80% 偏高 */
 function rtQuotaTone(pct) { return pct == null ? "" : pct >= 95 ? " bad" : pct >= 80 ? " warn" : ""; }
 function rtQuotaShortLabel(label) { return label === "5 小时窗口" ? "5h" : label === "周窗口" ? "周" : String(label || "").replace(/窗口$/, "").trim() || "额度"; }
+function rtQuotaWindowName(w) { return [w.group, w.label].filter(Boolean).join(" · "); }
+function rtQuotaGroups(windows) {
+  const groups = new Map();
+  for (const w of windows) { const name = w.group || ""; if (!groups.has(name)) groups.set(name, { name, windows: [] }); groups.get(name).windows.push(w); }
+  return [...groups.values()];
+}
+/** 新建卡片用当前选择；未选中的运行时用它保存的选择，再回退到原生默认模型。 */
+function rtQuotaSelectedModel(kind) {
+  const profile = (ui.rt.profiles || []).find(p => p.runtimeKind === kind);
+  const selected = ui.view === "rt-new" && ui.rt.form?.runtimeKind === kind ? rtForm().model : rtDraftValue(kind, "model");
+  return selected || rtModelOption(profile, "")?.id || (kind === "antigravity" ? "gemini-4-neon" : "");
+}
+/** Antigravity 额度按模型分池：在紧凑额度行前放当前选中/默认模型的短词简写（参考 Pi 的 DS / OR） */
+function rtQuotaModelShort(kind, model) {
+  if (kind !== "antigravity") return "";
+  const raw = String(model || rtQuotaSelectedModel(kind)).trim();
+  const profile = (ui.rt?.profiles || []).find(p => p.runtimeKind === kind);
+  const mo = typeof rtModelOption === "function" ? rtModelOption(profile, raw) : null;
+  const tag = `${raw.split("/").pop()} ${mo?.label || ""}`.toLowerCase();
+  if (/argon|g1-pro/.test(tag)) return "Argon";
+  if (/neon/.test(tag)) return "Neon";
+  if (/hydrogen/.test(tag)) return "Hydro";
+  if (/flash/.test(tag)) return "Flash";
+  if (/opus/.test(tag)) return "Opus";
+  if (/sonnet/.test(tag)) return "Sonnet";
+  if (/haiku/.test(tag)) return "Haiku";
+  if (/fable/.test(tag)) return "Fable";
+  if (/gpt/.test(tag)) return "GPT";
+  if (/gemini/.test(tag)) return "Gemini";
+  return "";
+}
+/** 紧凑位置只取一个模型组、至多两个窗口；未识别模型不冒用其他模型的额度。 */
+function rtQuotaForModel(rl, kind, model) {
+  if (kind !== "antigravity" || !rl?.windows?.some(w => w.group)) return rl;
+  const raw = String(model || rtQuotaSelectedModel(kind)).trim();
+  const id = raw.toLowerCase().split("/").pop();
+  const profile = (ui.rt?.profiles || []).find(p => p.runtimeKind === kind);
+  const mo = typeof rtModelOption === "function" ? rtModelOption(profile, raw) : null;
+  const tag = `${id} ${(mo?.label || "").toLowerCase()}`;
+  const groups = rtQuotaGroups(rl.windows);
+  const base = groups.find(g => /gemini/i.test(g.name) && !/argon/i.test(g.name));
+  const group = /^(claude|gpt)(?:-|$)/.test(id) ? groups.find(g => /claude|gpt/i.test(g.name))
+    : /^(gemini|orchestrator)(?:-|$)/.test(id) ? (/argon|g1-pro/.test(tag) ? groups.find(g => /argon/i.test(g.name)) || base : base) : null;
+  const rank = w => w.windowMinutes === 300 || w.label === "5 小时窗口" ? 0 : w.windowMinutes === 10080 || w.label === "周窗口" ? 1 : 2;
+  return { ...rl, windows: group ? [...group.windows].sort((a, b) => rank(a) - rank(b)).slice(0, 2) : [] };
+}
+function rtQuotaResetTime(iso) {
+  if (!Number.isFinite(Date.parse(iso))) return "";
+  return `${new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso))}（北京时间）`;
+}
 
 /**
  * 额度重置倒计时（只显示剩余时间，不显示绝对时间）。
@@ -2478,6 +2581,7 @@ function rtQuotaShortLabel(label) { return label === "5 小时窗口" ? "5h" : l
 function rtCountdown(iso, style) {
   const ms = Date.parse(iso) - Date.now();
   if (!Number.isFinite(ms)) return "";
+  if (style === "beijing") return `${rtQuotaResetTime(iso)}重置${ms <= 0 ? "，等待更新" : ""}`;
   const long = style === "long";
   if (ms <= 0) return long ? "已到重置时间，等待新的额度快照" : "待更新";
   const m = Math.floor(ms / 60000);
@@ -2489,9 +2593,10 @@ function rtCountdown(iso, style) {
   return `↻${d ? `${d}d${hr ? `${hr}h` : ""}` : hr ? `${hr}h${mi ? `${mi}m` : ""}` : `${mi}m`}`;
 }
 /** 倒计时节点：带上重置时间，由下面的定时器原地刷新文字 */
-function rtResetIn(iso, style, cls) {
+function rtResetIn(iso, style, cls, beijing = false) {
   const el = h("span", { class: cls, "data-reset-at": iso, "data-reset-style": style }, rtCountdown(iso, style));
-  if (style !== "long") el.title = rtCountdown(iso, "long");
+  if (beijing || style === "beijing") { el.dataset.resetBeijing = "true"; el.title = `${rtCountdown(iso, "long")} · ${rtQuotaResetTime(iso)}`; }
+  else if (style !== "long") el.title = rtCountdown(iso, "long");
   return el;
 }
 function rtTickCountdowns() {
@@ -2500,7 +2605,8 @@ function rtTickCountdowns() {
     const style = el.dataset.resetStyle;
     const text = rtCountdown(el.dataset.resetAt, style);
     if (el.textContent !== text) el.textContent = text;
-    if (style !== "long") el.title = rtCountdown(el.dataset.resetAt, "long");
+    if (el.dataset.resetBeijing) el.title = `${rtCountdown(el.dataset.resetAt, "long")} · ${rtQuotaResetTime(el.dataset.resetAt)}`;
+    else if (style !== "long") el.title = rtCountdown(el.dataset.resetAt, "long");
   }
 }
 
@@ -2533,6 +2639,10 @@ function rtPatchQuotaViews() {
     const select = choice?.querySelector(".rt-runtime-select");
     const strip = rtQuotaStrip(p.rateLimit, "short", "", "", p.runtimeKind), old = select?.querySelector(".rt-quota-strip");
     if (old && strip) old.replaceWith(strip); else if (old) old.remove(); else if (select && strip) select.append(strip);
+    if (p.runtimeKind === "antigravity" && p.rateLimit?.available && typeof rtSummaryQuotaNodes === "function") {
+      const summary = document.querySelector('.rt-rt-sum-row[data-runtime="antigravity"] .rt-rt-sum-lines');
+      if (summary) summary.replaceChildren(...rtSummaryQuotaNodes(p.rateLimit, p.runtimeKind));
+    }
     for (const el of document.querySelectorAll(`[data-quota-kind="${p.runtimeKind}"]`)) {
       if (el.dataset.quotaScope && el.dataset.quotaScope !== p.rateLimit?.identityScopeId) continue;
       el.replaceChildren(...[rtRateLimit(p.rateLimit, true)].flat(Infinity));
@@ -2576,18 +2686,23 @@ async function rtRefreshQuotas() {
 
 
 /** 新建会话的运行时选项里：每个账户窗口一条细进度条（已用比例）＋重置倒计时；没有快照就不画 */
-function rtQuotaStrip(rl, resetStyle = "short", wideResetStyle = "", note = "", kind = "") {
+function rtQuotaStrip(rl, resetStyle = "short", wideResetStyle = "", note = "", kind = "", model) {
   if (!rl || !rl.available || !rl.windows || !rl.windows.length) return null;
-  const detail = rl.windows.map((w) => `${w.label} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}`).join("\n");
+  const compact = kind === "antigravity" && rl.windows.some(w => w.group);
+  const modelShort = compact ? rtQuotaModelShort(kind, model) : "";
+  rl = rtQuotaForModel(rl, kind, model);
+  if (!rl.windows.length) return h("span", { class: "rt-quota-strip rt-quota-compact", title: "尚未取得当前模型对应的额度组，请查看额度详情" }, "额度待确认");
+  const detail = rl.windows.map((w) => `${rtQuotaWindowName(w)} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}${!compact && w.group && w.resetsAt ? `，${rtQuotaResetTime(w.resetsAt)}重置` : ""}`).join("\n");
+  const row = (w) => h("span", { class: `rt-quota-item${rtQuotaTone(w.usedPercent)}` },
+    h("span", { class: "rt-quota-label" }, [modelShort, rtQuotaShortLabel(w.label)].filter(Boolean).join(" ")),
+    h("span", { class: "rt-quota-bar", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(w.usedPercent ?? 0), "aria-label": `${rtQuotaWindowName(w)} 已用` }, rtFill(w.usedPercent)),
+    h("span", { class: "rt-quota-pct" }, w.usedPercent == null ? "?" : `${Math.round(w.usedPercent)}%`),
+    w.resetsAt ? rtResetIn(w.resetsAt, resetStyle, `rt-quota-reset${wideResetStyle ? " rt-narrow" : ""}`, !compact && !!w.group) : null,
+    w.resetsAt && wideResetStyle ? rtResetIn(w.resetsAt, wideResetStyle, "rt-quota-reset rt-wide", !compact && !!w.group) : null);
   // note：这份数值来自本机缓存（上次数值，正在刷新）时的说明，替换默认的「已陈旧」
-  return h("span", { class: `rt-quota-strip${rl.stale ? " stale" : ""}`, title: `账户额度${rl.stale ? `（${note || "已陈旧"}）` : ""}\n${detail}\n采样于 ${rtAgo(rl.sampledAt)}` },
-    rl.windows.map((w) => h("span", { class: `rt-quota-item${rtQuotaTone(w.usedPercent)}` },
-      h("span", { class: "rt-quota-label" }, rtQuotaShortLabel(w.label)),
-      h("span", { class: "rt-quota-bar", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(w.usedPercent ?? 0), "aria-label": `${w.label} 已用` }, rtFill(w.usedPercent)),
-      h("span", { class: "rt-quota-pct" }, w.usedPercent == null ? "?" : `${Math.round(w.usedPercent)}%`),
-      w.resetsAt ? rtResetIn(w.resetsAt, resetStyle, `rt-quota-reset${wideResetStyle ? " rt-narrow" : ""}`) : null,
-      // 会话输入操作区：桌面宽度换用更完整的倒计时（CSS 按宽度二选一）
-      w.resetsAt && wideResetStyle ? rtResetIn(w.resetsAt, wideResetStyle, "rt-quota-reset rt-wide") : null)),
+  return h("span", { class: `rt-quota-strip${compact ? " rt-quota-compact" : ""}${rl.stale ? " stale" : ""}`, title: compact ? detail : `账户额度${rl.stale ? `（${note || "已陈旧"}）` : ""}\n${detail}\n采样于 ${rtAgo(rl.sampledAt)}` },
+    compact ? rl.windows.map(row) : rtQuotaGroups(rl.windows).map(g => g.name ? h("span", { class: "rt-quota-group-strip" }, h("span", { class: "rt-quota-group-name" }, g.name), g.windows.map(row)) : g.windows.map(row)),
+    !compact && rl.stale && rl.windows.some(w => w.group) ? h("span", { class: "rt-quota-stale warn-text" }, "已过期，等待刷新") : null,
     // 有可用 reset 卡时跟着额度条一起排（同一套小标，数据就在这份快照里）
     rtResetDot(kind, rl));
 }
@@ -2794,14 +2909,16 @@ function rtComposeAccountData(v) {
   return snap ? { kind, balances: snap.balances, rateLimit: snap.rateLimit, cached: true } : { kind, balances: null, rateLimit: null, cached: false };
 }
 /** 输入区的额度：账户 logo + 窗口。手机上下两行「窗口名 百分比 倒计时」，所有窗口默认带倒计时；桌面横排，每个窗口一圈细环 + 百分比 + 倒计时 */
-function rtComposeQuotaStrip(kind, rl, note) {
-  const detail = rl.windows.map((w) => `${w.label} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}`).join("\n");
+function rtComposeQuotaStrip(kind, rl, note, modelShort = "") {
+  const detail = rl.windows.map((w) => `${rtQuotaWindowName(w)} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}`).join("\n");
   const logo = RT_ACCOUNT_LOGO[kind];
   return h("span", { class: `rt-quota-strip rt-quota-rings${rl.stale ? " stale" : ""}`, title: `账户额度${rl.stale ? `（${note || "已陈旧"}）` : ""}\n${detail}\n采样于 ${rtAgo(rl.sampledAt)}` },
     logo ? rtAccountLogo(logo) : null,
     h("span", { class: "rt-quota-rows" }, rl.windows.map((w) => h("span", { class: `rt-quota-item${rtQuotaTone(w.usedPercent)}` },
       rtQuotaRing(w.usedPercent),
-      h("span", { class: "rt-quota-label" }, rtQuotaShortLabel(w.label)),
+      h("span", { class: "rt-quota-label" },
+        modelShort ? h("span", { class: "rt-quota-model" }, modelShort) : null,
+        rtQuotaShortLabel(w.label)),
       h("span", { class: "rt-quota-bar", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(w.usedPercent ?? 0), "aria-label": `${w.label} 已用` }, rtFill(w.usedPercent)),
       h("span", { class: "rt-quota-pct" }, w.usedPercent == null ? "?" : `${Math.round(w.usedPercent)}%`),
       w.resetsAt ? rtResetIn(w.resetsAt, "tiny", "rt-quota-reset rt-narrow") : null,
@@ -2841,11 +2958,15 @@ function rtComposeAccount(v) {
   }
   if (data.rateLimit && data.rateLimit.available && data.rateLimit.windows && data.rateLimit.windows.length) {
     const rl = data.cached ? { ...data.rateLimit, stale: true } : data.rateLimit;
-    const windows = rl.windows.slice(0, 2);
-    const spoken = rl.windows.map((w) => `${w.label} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}${w.resetsAt ? `，${rtCountdown(w.resetsAt, "long")}` : ""}`).join("；");
+    const model = data.kind === "antigravity" ? (v.session.effectiveModel || v.session.requestedModel || rtQuotaSelectedModel(data.kind)) : "";
+    const selected = data.kind === "antigravity" ? rtQuotaForModel(rl, data.kind, model) : rl;
+    const modelShort = data.kind === "antigravity" ? rtQuotaModelShort(data.kind, model) : "";
+    const windows = selected.windows.slice(0, 2);
+    if (!windows.length) return h("span", { class: "rt-compose-account", hidden: true });
+    const spoken = rl.windows.map((w) => `${rtQuotaWindowName(w)} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}${w.resetsAt ? `，${rtQuotaResetTime(w.resetsAt)}重置` : ""}`).join("；");
     return h("button", { type: "button", class: `rt-compose-account${windows.length > 1 ? " multi" : ""}${data.cached ? " cached" : ""}`, "data-account": "quota",
       "aria-label": `账户额度${rl.stale ? `（${note || "已陈旧"}）` : ""}：${spoken}。查看详情`,
-      onclick: () => { if (rtPhone.matches) rtSetInfoOpen(true); } }, rtComposeQuotaStrip(data.kind, { ...rl, windows }, note));
+      onclick: () => { if (rtPhone.matches) rtSetInfoOpen(true); } }, rtComposeQuotaStrip(data.kind, { ...rl, windows }, note, modelShort));
   }
   return h("span", { class: "rt-compose-account", hidden: true });
 }
@@ -2877,13 +2998,14 @@ function rtBalances(balances) {
 function rtRateLimit(rl, compact) {
   if (!rl) return h("p", { class: "muted small" }, "不可用：还没有读到 runtime 返回的账户窗口");
   if (!rl.available) return h("p", { class: "muted small" }, `不可用：${rl.reason || "runtime 未提供"}`);
-  return [
-    rl.windows.map((w) => h("div", { class: `rt-meter${rtQuotaTone(w.usedPercent)}` },
+  const row = (w) => h("div", { class: `rt-meter${rtQuotaTone(w.usedPercent)}` },
       h("span", { class: "rt-meter-label small" }, w.label),
-      h("span", { class: "rt-meter-bar", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(w.usedPercent ?? 0), "aria-label": `${w.label} 已用` },
+      h("span", { class: "rt-meter-bar", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(w.usedPercent ?? 0), "aria-label": `${rtQuotaWindowName(w)} 已用` },
         rtFill(w.usedPercent)),
       h("span", { class: "small" }, w.usedPercent == null ? "未知" : `${Math.round(w.usedPercent)}% 已用`),
-      w.resetsAt ? rtResetIn(w.resetsAt, "long", "muted small rt-meter-reset") : null)),
+      w.resetsAt ? rtResetIn(w.resetsAt, w.group ? "beijing" : "long", "muted small rt-meter-reset") : null);
+  return [
+    rtQuotaGroups(rl.windows).map(g => g.name ? h("section", { class: "rt-quota-group", "aria-label": g.name }, h("h4", { class: "small" }, g.name), g.windows.map(row)) : g.windows.map(row)),
     compact
       ? h("p", { class: `small ${rl.stale ? "warn-text" : "muted"}`, title: `账户级快照，与会话 token 独立 · 来源 ${rl.source}` }, `${rl.plan ? `计划 ${rl.plan} · ` : ""}${rl.stale ? "已陈旧，" : ""}采样于 ${rtAgo(rl.sampledAt)}`)
       : h("p", { class: `small ${rl.stale ? "warn-text" : "muted"}` }, `账户级快照，与会话 token 独立${rl.plan ? ` · 计划 ${rl.plan}` : ""} · ${rl.stale ? "已陈旧，" : ""}采样于 ${rtTime(rl.sampledAt)} · 来源 ${rl.source}`)
@@ -2918,7 +3040,7 @@ function rtDefaultEffortLabel(mo) {
   return mo && mo.defaultEffort ? `模型默认（${RT_EFFORT[mo.defaultEffort] || mo.defaultEffort}）` : "runtime 默认";
 }
 /** 折叠态摘要用短名：手机上一眼看完审批模式，完整说明仍在选项面板里 */
-const RT_PERMISSION_SHORT = { "read-only": "只读", "pi-read-only": "只读", ask: "审批", "auto-review": "自动审核", "full-access": "完全访问", bypassPermissions: "完全访问", default: "默认审批", acceptEdits: "自动编辑", plan: "计划模式", "pi-ask": "工作区沙盒", "pi-native": "原生权限" };
+const RT_PERMISSION_SHORT = { "read-only": "只读", "pi-read-only": "只读", ask: "审批", "auto-review": "自动审核", auto: "自动审批", "full-access": "完全访问", bypassPermissions: "完全访问", default: "默认审批", acceptEdits: "自动编辑", plan: "计划模式", "pi-ask": "工作区沙盒", "pi-native": "原生权限" };
 function rtPermissionShort(option) { return option ? RT_PERMISSION_SHORT[option.id] || option.label : ""; }
 function rtEffortShort(value, mo) {
   const label = (e) => (RT_EFFORT[e] || e).split("（")[0];
@@ -2971,7 +3093,7 @@ const RT_MINI_PATHS = {
 const RT_PERMISSION_ICON = {
   "read-only": "eye", "pi-read-only": "eye",
   ask: "message", default: "message", "pi-ask": "message",
-  "auto-review": "shieldCheck",
+  "auto-review": "shieldCheck", auto: "shieldCheck",
   acceptEdits: "pencil",
   plan: "list",
   "full-access": "lockOpen", bypassPermissions: "lockOpen",
@@ -2979,7 +3101,7 @@ const RT_PERMISSION_ICON = {
 };
 const RT_PERMISSION_ICON_LABEL = {
   "read-only": "只读", "pi-read-only": "只读", ask: "询问", default: "询问", "pi-ask": "询问",
-  "auto-review": "审核", acceptEdits: "编辑", plan: "计划",
+  "auto-review": "审核", auto: "自动", acceptEdits: "编辑", plan: "计划",
   "full-access": "全权", bypassPermissions: "全权", "pi-native": "原生",
 };
 /**
@@ -3005,7 +3127,7 @@ function rtQuotaRing(pct) {
   if (used > 0) svg.append(rtSvgNode("circle", { cx: 12, cy: 12, r: 9, "stroke-dasharray": `${(C * used / 100).toFixed(2)} ${C.toFixed(2)}`, transform: "rotate(-90 12 12)" }));
   return svg;
 }
-const RT_ACCOUNT_LOGO = { codex: "codexmark", "claude-code": "claudecode" };
+const RT_ACCOUNT_LOGO = { codex: "codexmark", "claude-code": "claudecode", antigravity: "gemini" };
 const RT_PROVIDER_LOGO = { deepseek: "deepseek" };
 function rtAccountLogo(id) {
   const node = h("span", { class: "rt-account-logo", "aria-hidden": "true" });
@@ -3084,7 +3206,7 @@ function rtEffortSelect(mo, value, onChange, key, compact, disabled = false) {
   }
   return compact ? h("label", { class: "rt-effort-compact small", title: "下一轮的推理强度" }, h("span", { class: "rt-effort-label", "aria-hidden": "true" }, rtMiniIcon(RT_MINI_PATHS.sliders, { className: "rt-new-field-icon", size: 11 }), "强度"), sel) : h("label", { class: "rt-field" }, "推理强度", sel);
 }
-function rtDefaultPermission(kind) { return kind === "codex" ? "ask" : kind === "pi" ? "pi-native" : "default"; }
+function rtDefaultPermission(kind) { return kind === "codex" ? "ask" : kind === "pi" ? "pi-native" : kind === "antigravity" ? "auto" : "default"; }
 const RT_PREFERENCES_KEY = "pi-agent.runtime-chat.preferences.v1";
 function rtReadPreferences() {
   try {
@@ -3095,7 +3217,8 @@ function rtReadPreferences() {
 function rtSavePreferences() {
   const prefs = rtReadPreferences(), drafts = { ...prefs.drafts, ...ui.rt.draftsByRuntime };
   if (prefs.piPermissionPolicyVersion !== 1 && !ui.rt.draftsByRuntime?.pi && drafts.pi?.permissionMode === "pi-ask") drafts.pi = { ...drafts.pi, permissionMode: "pi-native" };
-  try { localStorage.setItem(RT_PREFERENCES_KEY, JSON.stringify({ version: 1, piPermissionPolicyVersion: 1, lastRuntimeKind: ui.rt.form?.runtimeKind || "codex", lastWorkspace: ui.rt.workspace ?? prefs.lastWorkspace ?? "", drafts })); }
+  if (prefs.antigravityPermissionPolicyVersion !== 1 && !ui.rt.draftsByRuntime?.antigravity && drafts.antigravity?.permissionMode === "default" && drafts.antigravity?.explicit?.permissionMode !== true) drafts.antigravity = { ...drafts.antigravity, permissionMode: "auto" };
+  try { localStorage.setItem(RT_PREFERENCES_KEY, JSON.stringify({ version: 1, piPermissionPolicyVersion: 1, antigravityPermissionPolicyVersion: 1, lastRuntimeKind: ui.rt.form?.runtimeKind || "codex", lastWorkspace: ui.rt.workspace ?? prefs.lastWorkspace ?? "", drafts })); }
   catch { /* Storage may be disabled; in-page drafts remain usable. */ }
 }
 const RT_DRAFT_KEYS = ["model", "effort", "permissionMode"];
@@ -3111,9 +3234,11 @@ function rtRuntimeDraft(kind) {
     drafts[kind] = { model: "", effort: "", permissionMode: rtDefaultPermission(kind), explicit: {} };
     for (const key of RT_DRAFT_KEYS) {
       if (saved && typeof saved[key] === "string" && saved[key].length <= 256) {
-        drafts[kind][key] = saved[key];
-        drafts[kind].explicit[key] = saved.explicit && typeof saved.explicit === "object" ? saved.explicit[key] === true
-          : key === "permissionMode" ? saved[key] !== rtDefaultPermission(kind) : saved[key] !== "";
+        const hasExplicit = saved.explicit && typeof saved.explicit === "object";
+        const legacyDefault = !hasExplicit && key === "permissionMode" && ((kind === "pi" && prefs.piPermissionPolicyVersion !== 1 && saved[key] === "pi-ask") || (kind === "antigravity" && prefs.antigravityPermissionPolicyVersion !== 1 && saved[key] === "default"));
+        const isExplicit = hasExplicit ? saved.explicit[key] === true : (!legacyDefault && (key === "permissionMode" ? saved[key] !== rtDefaultPermission(kind) : saved[key] !== ""));
+        drafts[kind].explicit[key] = isExplicit;
+        if (key !== "permissionMode" || isExplicit) drafts[kind][key] = saved[key];
       }
     }
     if (kind === "pi" && prefs.piPermissionPolicyVersion !== 1 && drafts[kind].permissionMode === "pi-ask") drafts[kind].permissionMode = "pi-native";
@@ -3126,6 +3251,7 @@ function rtDraftValue(kind, key) {
   if (d.explicit?.[key]) return d[key];
   const server = ui.rt.settings?.defaultSessionByRuntime?.[kind];
   if (server && typeof server[key] === "string") {
+    if (key === "permissionMode") return server.permissionMode || d.permissionMode;
     // 推理强度跟着模型走：本地换了模型，服务端默认的强度不再适用
     if (key !== "effort" || rtDraftValue(kind, "model") === server.model) return server[key];
     return "";
@@ -3245,6 +3371,8 @@ function rtSelectRuntime(kind) {
   ui.rt.confirm = null; ui.rt.formError = "";
   if (ui.rt.busy === "confirm") { ui.rt.busy = ""; ui.rt.launch = null; }
   renderMain();
+  rtRevealSelected(".rt-runtime-choices", ".rt-runtime-choice.selected");
+  if (kind === "antigravity" && ui.view === "rt-new") void rtCheckAntigravityConnection();
 }
 function rtWorkspaceRoots(kind) {
   const settings = ui.rt.settings;
@@ -3268,16 +3396,6 @@ function rtSearchIcon() {
   const svg = document.createElementNS(ns, "svg");
   for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
   for (const d of ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z", "m21 21-4.35-4.35"]) { const path = document.createElementNS(ns, "path"); path.setAttribute("d", d); svg.append(path); }
-  return svg;
-}
-
-function rtGearIcon() {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  for (const [k, v] of Object.entries({ viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(k, v);
-  for (const d of ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"]) {
-    const path = document.createElementNS(ns, "path"); path.setAttribute("d", d); svg.append(path);
-  }
   return svg;
 }
 
@@ -3469,12 +3587,12 @@ function rtBgJobs() {
     ui.rt.bg = [];
     try {
       for (const j of JSON.parse(localStorage.getItem(RT_BG_STORAGE) || "[]"))
-        if (j?.req?.key) ui.rt.bg.push({ req: j.req, form: j.req, images: [], phase: "create", running: false, attempt: 0, unknown: true, error: "页面刷新前未确认发送。点重试会用同一个请求键核对，不会重复创建。" });
+        if (j?.req?.key) ui.rt.bg.push({ req: j.req, form: j.req, images: [], phase: "create", running: false, attempt: 0, unknown: true, ...(j.origin?.hash ? { origin: j.origin } : {}), error: "页面刷新前未确认发送。点重试会用同一个请求键核对，不会重复创建。" });
     } catch { /* 存储不可用时只保留内存 */ }
   }
   return ui.rt.bg;
 }
-function rtBgPersist() { try { localStorage.setItem(RT_BG_STORAGE, JSON.stringify(rtBgJobs().map((j) => ({ req: j.req })))); } catch { /* 忽略 */ } }
+function rtBgPersist() { try { localStorage.setItem(RT_BG_STORAGE, JSON.stringify(rtBgJobs().map((j) => ({ req: j.req, ...(j.origin?.hash ? { origin: j.origin } : {}) })))); } catch { /* 忽略 */ } }
 /** PC 上正在看这个后台条目的「创建中」详情页时整页重绘，其余情况只刷新列表。 */
 const rtBgRender = () => {
   try {
@@ -3490,9 +3608,9 @@ function rtBgBody(r) {
     permissionMode: r.permissionMode, confirmedProfileVersion: r.profileVersion
   };
 }
-function rtBgSubmit(req, images) {
-  // form 是创建中详情页（rtLaunchView）读取的字段名：与请求同一份配置
-  const job = { req, form: req, images: images || [], phase: "check", running: false, attempt: 0, error: "" };
+function rtBgSubmit(req, images, origin) {
+  // form 是创建中详情页（rtLaunchView）读取的字段名：与请求同一份配置；origin 是这次会话的发起场景
+  const job = { req, form: req, images: images || [], phase: "check", running: false, attempt: 0, error: "", ...(origin?.hash ? { origin } : {}) };
   rtBgJobs().push(job); rtBgPersist(); rtBgRender();
   void rtBgRun(job);
   return job;
@@ -3503,17 +3621,33 @@ async function rtBgRun(job) {
   job.running = true; job.error = ""; job.unknown = false; clearTimeout(job.retryTimer); job.retryTimer = null;
   const r = job.req;
   try {
-    if (!r.profileVersion) {
-      job.phase = "check"; rtBgRender();
-      const p = (ui.rt.profiles || []).find((x) => x.runtimeKind === r.runtimeKind);
-      if (!p) throw Object.assign(new Error("先到运行时配置检查连接"), { status: 400 });
-      if (p.state !== "executable") throw Object.assign(new Error(`${RT_KIND[r.runtimeKind]} 当前不可执行：${p.stateReason}`), { status: 400 });
-      const prev = await api(`/api/runtime-profiles/${r.runtimeKind}/settings-preview?cwd=${encodeURIComponent(r.workspace)}&permissionMode=${encodeURIComponent(r.permissionMode)}&model=${encodeURIComponent(r.model || "")}`);
-      if (prev.profileVersion !== p.checkedAt) throw Object.assign(new Error("运行时能力已更新，点重试会重新检查"), { status: 409, recheck: true });
-      r.profileVersion = prev.profileVersion; rtBgPersist();
+    let res;
+    for (let profileRetry = 0; ; profileRetry++) {
+      try {
+        if (!r.profileVersion) {
+          job.phase = "check"; rtBgRender();
+          const p = (ui.rt.profiles || []).find((x) => x.runtimeKind === r.runtimeKind);
+          if (!p) throw Object.assign(new Error("先到运行时配置检查连接"), { status: 400 });
+          if (p.state !== "executable") throw Object.assign(new Error(`${RT_KIND[r.runtimeKind]} 当前不可执行：${p.stateReason}`), { status: 400 });
+          const prev = await api(`/api/runtime-profiles/${r.runtimeKind}/settings-preview?cwd=${encodeURIComponent(r.workspace)}&permissionMode=${encodeURIComponent(r.permissionMode)}&model=${encodeURIComponent(r.model || "")}`);
+          if (prev.profileVersion !== p.checkedAt) throw Object.assign(new Error("运行时能力已更新，点重试会重新检查"), { status: 409, recheck: true });
+          r.profileVersion = prev.profileVersion; rtBgPersist();
+        }
+        job.phase = "create"; rtBgRender();
+        res = await api("/api/runtime-sessions", { method: "POST", onDeploymentWait: () => { job.phase = "deployment"; rtBgRender(); }, body: JSON.stringify(rtBgBody(r)) });
+        break;
+      } catch (e) {
+        const profileChanged = !!(e.recheck || (e.status === 409 && /重新检查过/.test(e.message || "")));
+        if (!profileChanged || profileRetry >= 1) throw e;
+        // 后台连接检查在提交途中完成会刷新 profileVersion：刷新配置后无感重试一次，不打断已发出的新建会话。
+        const staleVersion = r.profileVersion || (ui.rt.profiles || []).find((x) => x.runtimeKind === r.runtimeKind)?.checkedAt;
+        delete r.profileVersion; rtBgPersist();
+        await rtLoadProfiles();
+        if (staleVersion && (ui.rt.profiles || []).find((x) => x.runtimeKind === r.runtimeKind)?.checkedAt === staleVersion) {
+          await rtLoadProfiles();
+        }
+      }
     }
-    job.phase = "create"; rtBgRender();
-    const res = await api("/api/runtime-sessions", { method: "POST", onDeploymentWait: () => { job.phase = "deployment"; rtBgRender(); }, body: JSON.stringify(rtBgBody(r)) });
     const id = res.session.platformSessionId;
     // 从今天卡片发起的推荐任务：待办页可能已经返回并停在屏幕上，就地刷新推荐栏。
     if (r.recommendationRef && typeof noteRecommendationLaunched === "function") noteRecommendationLaunched(r.recommendationRef.taskId, id);
@@ -3522,10 +3656,10 @@ async function rtBgRun(job) {
       view: { session: res.session, readOnly: false, approvals: [], notes: [], usage: { semantics: "正在读取用量…" } }, events: [],
       ...(deferred ? {} : { initialOutgoing: { text: r.prompt, images: job.images, accepted: true, seq: 0,
         ...(res.session.turns?.[0]?.clientMessageId ? { eventKey: `user:${res.session.turns[0].clientMessageId}` } : {}) } }),
-      atBottom: true, reading: { atBottom: true, top: 0 }, tab: "chat"
+      atBottom: true, reading: { atBottom: true, top: 0 }
     });
-    // PC 上还停在这个会话的「创建中」页：原地换成真实会话详情；用户已经去了别处就不抢焦点。
-    const watching = !rtPhone.matches && ui.view === "rt-new" && ui.rt.launch === job;
+    // 还停在这个会话的「创建中」页（手机同样）：原地换成真实会话详情；用户已经去了别处就不抢焦点。
+    const watching = ui.view === "rt-new" && ui.rt.launch === job;
     // 已经切到其他应用 / 窗口失焦时不要把页面带走：切回来时仍停在离开前的创建页。
     const away = watching && rtPageAway();
     if (ui.rt.launch === job) ui.rt.launch = null;
@@ -3541,7 +3675,11 @@ async function rtBgRun(job) {
     } else {
       rtBgRemove(job);
       announce(r.scheduledFor ? `已创建：首条消息预约于 ${rtScheduleLabel(r.scheduledFor)}，可在会话列表的时钟里查看` : deferred ? "已创建：首条消息将在部署完成后发送" : watching ? "会话已创建" : "会话已创建，在会话列表中");
-      if (watching) location.replace(`#/rt/${id}`);
+      // 手机：把新建页换成交互历史里的会话列表，再压入详情页，系统返回时直接回列表
+      if (watching) {
+        rtPrepareDetailOrigin(id, job.origin || null);
+        if (rtPhone.matches) rtEnterCreated(`#/rt/${id}`); else location.replace(`#/rt/${id}`);
+      }
     }
     void rtLoadDir().then(rtBgRender);
   } catch (e) {
@@ -3571,7 +3709,7 @@ function rtBgRecreateStandalone(job) {
   delete job.req.recommendationRef; job.req.key = rtKey(); delete job.req.profileVersion; job.attempt = 0;
   rtBgPersist(); void rtBgRun(job);
 }
-/** 手机提交后的去向：原则上从哪来回哪去；没有来处（直接打开 / 刷新）就回会话列表。 */
+/** 手机从会话列表提交后的去向：从哪来回哪去；没有来处（直接打开 / 刷新）就回会话列表。 */
 function rtLeaveNewAfterSubmit() {
   const o = ui.rt.newOrigin;
   if (o?.hash && o.steps === 1) history.back();
@@ -3595,31 +3733,112 @@ function rtNewFromList() {
   const h = o?.hash;
   return !h || h === "#/rt" || (!rtPhone.matches && /^#\/rt\/r[tx]-[a-z0-9]+$/.test(h));
 }
-/**
- * 提交后问用户去哪：从待办、记忆条目等别处发起的会话，发送后让用户选「查看对话」还是「回到之前的页面」。
- * 查看对话：手机回会话列表（列表顶部有「正在创建」条目），PC 直接打开刚提交的会话；回到之前：关掉新建页回到来处。
- * Esc 等同回到之前。
+/* ------------------------------ 会话详情的进入来源 ------------------------------ */
+/*
+ * 详情页的「← 待办」扒边入口只反映「本次从哪里进入这条会话」：
+ * - 每次路由进入 #/rt/<id> 时刷新进入来源，不再按会话 ID 持久化到本地存储；
+ * - 从待办、记忆、产物、群聊、对比、设置或另一条会话正文链接进来，显示对应返回来源；
+ * - 从其他页面发起新建并停留在「创建中」直进详情页，继承本次新建的发起场景；
+ * - 从会话列表、主导航「会话」入口、或冷打开/刷新进入，来源清空，不显示扒边；
+ * - 离开该会话详情（回列表、点扒边返回、切到任何其他页面）立即清空，不残留到下次。
  */
-function rtAskAfterSubmit(job) {
-  document.querySelector(".rt-submit-choice")?.remove();
-  const view = () => {
-    if (rtPhone.matches) location.replace("#/rt");
-    else { ui.rt.launch = job; renderMain(); }
+const RT_DETAIL_ENTRY_MS = 4000;
+let rtDetailEntry = null;
+/** 标记即将进入会话详情的入口性质："list"（会话列表）、"nav"（主导航会话按钮）、"back"（点扒边返回）。 */
+function rtMarkDetailEntry(source) { rtDetailEntry = { source: source || "list", at: Date.now() }; }
+/** 「创建中」直进刚创建的详情页前交接本次发起场景；列表发起传 null。 */
+function rtPrepareDetailOrigin(id, origin) {
+  if (!id) return;
+  rtDetailEntry = {
+    source: "create",
+    id,
+    origin: origin?.hash ? { hash: origin.hash, label: origin.label || rtSceneLabel(origin.hash) } : null,
+    at: Date.now(),
   };
-  const gone = () => dialog.close();
-  const pick = (go) => { dialog.close(); go(); };
-  const dialog = h("dialog", { class: "rt-submit-choice", "aria-labelledby": "rt-submit-choice-title", onclose: () => { window.removeEventListener("hashchange", gone); dialog.remove(); },
-    oncancel: (ev) => { ev.preventDefault(); pick(() => rtLeaveNewAfterSubmit()); } },
-    h("h2", { id: "rt-submit-choice-title" }, "已发送，会话在后台创建"),
-    h("p", { class: "muted small" }, "接下来想去哪里？"),
-    h("div", { class: "rt-submit-choice-actions" },
-      h("button", { type: "button", class: "btn primary", onclick: () => pick(view) }, "查看对话"),
-      h("button", { type: "button", class: "btn", onclick: () => pick(() => rtLeaveNewAfterSubmit()) }, "回到之前的页面")));
-  // 用户在弹层之外（系统返回等）离开了新建页：不再替他做选择
-  window.addEventListener("hashchange", gone);
-  document.body.append(dialog); dialog.showModal();
-  dialog.querySelector("button")?.focus({ preventScroll: true });
 }
+/** 页面地址 → 场景名，用作「← 待办」这类入口文案。 */
+function rtSceneLabel(hash) {
+  const parts = String(hash || "").replace(/^#/, "").split(/[?#]/)[0].split("/").filter(Boolean);
+  const top = parts[0] || "";
+  if (top === "rt") {
+    if (parts[1] === "room") return "群聊";
+    if (parts[1] === "compare") return "对比";
+    return "会话";
+  }
+  const labels = { resources: "资源", notes: "待办", artifacts: "产物", ledger: "股票", communications: "通讯录", memory: "记忆", "web-x": "AI 浏览器", settings: "设置", stats: "统计", "open-source-release": "开源发布" };
+  return labels[top] || "之前的页面";
+}
+/** 提交时交出这次会话的发起场景：从会话列表或直接打开新建页进来时没有来处，返回 null。 */
+function rtNewSubmitOrigin() {
+  if (rtNewFromList()) return null;
+  const hash = ui.rt.newOrigin?.hash;
+  return hash ? { hash, label: rtSceneLabel(hash) } : null;
+}
+function rtDetailIdFromHash(hash) {
+  const m = String(hash || "").match(/^#\/rt\/([^/?#]+)$/);
+  if (!m || m[1] === "new" || m[1] === "room" || m[1] === "compare") return null;
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+/** 判断上一步地址能不能作为这次进入会话详情的来源：会话列表、新建页、空地址与当前会话本身都不算。 */
+function rtDetailOriginFromHash(id, previousHash) {
+  if (!previousHash) return null;
+  if (previousHash === "#/rt" || /^#\/rt\/(?:room\/)?new(?:[?#]|$)/.test(previousHash)) return null;
+  if (previousHash === `#/rt/${id}` || previousHash === `#/rt/${encodeURIComponent(id)}`) return null;
+  return { hash: previousHash, label: rtSceneLabel(previousHash) };
+}
+/** 路由切换时刷新本次会话详情的进入来源；离开会话详情时清空。 */
+function rtRefreshDetailOrigin(id, previousView, previousHash) {
+  const mark = rtDetailEntry && Date.now() - rtDetailEntry.at < RT_DETAIL_ENTRY_MS ? rtDetailEntry : null;
+  rtDetailEntry = null;
+  if (!id) { ui.rt.originVisit = null; return null; }
+  let origin = null;
+  if (mark?.source === "create" && mark.id === id) origin = mark.origin || null;
+  else if (mark?.source === "list" || mark?.source === "nav" || mark?.source === "back") origin = null;
+  else origin = rtDetailOriginFromHash(id, previousHash);
+  ui.rt.originVisit = origin ? { id, origin } : null;
+  return origin;
+}
+/** 详情页的「← 待办」返回来源链接。 */
+function rtOriginLink(origin, className) {
+  if (!origin?.hash) return null;
+  const label = origin.label || rtSceneLabel(origin.hash);
+  return h("a", { class: `rt-origin${className ? ` ${className}` : ""}`, href: origin.hash, "data-rt-origin": origin.hash, title: `回到${label}页面`, "aria-label": `回到${label}`, onclick: () => rtMarkDetailEntry("back") },
+    h("span", { class: "rt-origin-arrow", "aria-hidden": "true" }, "←"),
+    h("span", { class: "rt-origin-label" }, label));
+}
+/**
+ * 「← 待办」扒边入口：贴在消息区左边，滚动对话时一直看得见。
+ */
+function rtOriginEdge(origin) {
+  return rtOriginLink(origin, "rt-origin-edge");
+}
+/** 详情页本次停留要显示的进入来源；同一次停留里重绘/软更新继续显示内存里的那份。 */
+function rtOriginForDisplay(id) {
+  const visit = ui.rt.originVisit;
+  if (visit && visit.id === id) return visit.origin;
+  const mark = rtDetailEntry && Date.now() - rtDetailEntry.at < RT_DETAIL_ENTRY_MS ? rtDetailEntry : null;
+  if (mark?.source === "create" && mark.id === id && rtDetailIdFromHash(location.hash) === id) {
+    rtDetailEntry = null;
+    ui.rt.originVisit = mark.origin ? { id, origin: mark.origin } : null;
+    return mark.origin || null;
+  }
+  return null;
+}
+/** 兜底同步：离开当前会话地址时立即清空停留态；未挂载 app.js route() 时也能承接创建直进交接。 */
+function rtEndOriginVisit() {
+  const curId = rtDetailIdFromHash(location.hash);
+  const mark = rtDetailEntry && Date.now() - rtDetailEntry.at < RT_DETAIL_ENTRY_MS ? rtDetailEntry : null;
+  if (curId && mark?.source === "create" && mark.id === curId) {
+    rtDetailEntry = null;
+    ui.rt.originVisit = mark.origin ? { id: curId, origin: mark.origin } : null;
+    return;
+  }
+  const visit = ui.rt.originVisit;
+  if (!visit) return;
+  if (curId && curId === visit.id) return;
+  ui.rt.originVisit = null;
+}
+window.addEventListener("hashchange", rtEndOriginVisit);
 /** 路由进入新建页时记下来处与入口；单聊 / 群聊之间切换不覆盖来处，只累计压入的历史条数。 */
 function rtTrackNewOrigin(previousView, previousHash) {
   const r = ui.rt;
@@ -3674,6 +3893,7 @@ function rtScheduleCountdown(iso) {
   if (d) return `还有 ${d} 天${h % 24 ? ` ${h % 24} 小时` : ""}`;
   return `还有 ${h} 小时${m % 60 ? ` ${m % 60} 分钟` : ""}`;
 }
+function rtGearIcon() { return rtMiniIcon(['M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'], { size: 18 }); }
 function rtClockIcon() { return rtMiniIcon(['M12 8v4l3 2', 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0'], { size: 18 }); }
 
 /* 预约弹窗的返回恢复：打开时给当前历史条目做标记，点条目去看会话再返回时把弹窗按原状态打开并重新读取。 */
@@ -3772,8 +3992,8 @@ async function rtScheduledOverview() {
           // 真要跳到别的地址才保留历史标记，返回时才能恢复弹窗；点的是当前会话就正常关闭
           rtScheduledKeepHistory = location.hash !== target;
           ui.rt.scheduledFocus = { sid: m.platformSessionId, messageId: m.messageId };
-          modal.close(); rtSetListOpen(false); ui.rt.tab = 'chat';
-          if (location.hash === target) rtRenderSoft(); else location.hash = target;
+          modal.close(); rtSetListOpen(false);
+          if (location.hash === target) rtRenderSoft(); else { rtMarkDetailEntry("list"); location.hash = target; }
         } },
           // 与会话列表同一套头像：模型系列图标 + 运行时角标
           rtAvatar(m.runtimeKind, m.model),

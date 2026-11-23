@@ -42,6 +42,9 @@ function rtArchivePageNodes(group) {
   queueMicrotask(() => { const box = document.querySelector('.rt-list .rt-items'); if (box) rtArchiveScroll(box); });
   return nodes;
 }
+/** 待办（可选应用）在这个构建里是否可用：笔记模块已经加载，或路由清单里登记了它（懒加载，首次上滑时还没执行）。
+ *  没有路由加载器时（精简页面）沿用原行为，当作可用；只有清单明确没有 notes 才关掉。 */
+const rtNotesAvailable = () => typeof notesFocusInput === "function" || !window.piRouteModules || window.piRouteModules.has("notes");
 let rtTodayListRefreshTimer = null;
 function rtDirectoryRenderListOnly() {
   clearTimeout(rtTodayListRefreshTimer);
@@ -66,17 +69,16 @@ function rtDirectoryRenderListOnly() {
   const items = next.querySelector(".rt-items"); if (items) items.scrollTop = scroll;
   if (key) { const again = next.querySelector(`[data-key="${CSS.escape(key)}"]`); if (again) { again.focus(); if (sel) try { again.setSelectionRange(sel[0], sel[1]); } catch { /* 部分输入类型不支持 */ } } }
 }
-/** 展开 / 收起列表搜索；收起时清空搜索词并恢复完整列表 */
+/** 展开 / 收起列表搜索；收起时清空搜索词与运行时筛选，恢复完整列表（筛选行是搜索区的一部分，收起后不留看不见的条件） */
 function rtToggleSearch(open, setFilter) {
   ui.rt.searchOpen = open;
   clearTimeout(ui.rt.searchTimer);
-  if (!open && (ui.rt.filter.q || (rtPhone.matches && ui.rt.filter.runtime))) { setFilter({ q: "", ...(rtPhone.matches ? { runtime: "" } : {}) }); return; }
+  if (!open && (ui.rt.filter.q || ui.rt.filter.runtime)) { setFilter({ q: "", runtime: "" }); return; }
   rtRenderListOnly();
   if (open) document.querySelector('.rt-list [data-key="rt-search"]')?.focus();
 }
 
 function renderRtWorkbench() {
-  if (rtPhone.matches) ui.rt.tab = "chat";
   rtSyncChrome();
   const listing = ui.rt.listOpen || rtListPage();
   const layout = h("div", { class: `rt-layout${listing ? " list-open" : ""}${rtListPage() ? " list-page" : ""}${rtListPage() && !ui.rt.lastId ? " list-root" : ""}${ui.rt.sideCollapsed ? " side-collapsed" : ""}${rtId() ? "" : " no-session"}` }, rtList(), rtCenter(), h("button", { type: "button", class: "rt-info-backdrop", tabindex: "-1", "aria-label": "关闭会话详情浮层", onclick: () => rtSetInfoOpen(false) }), rtId() ? rtSide() : null, rtId() ? rtSideHandle() : null);
@@ -128,15 +130,20 @@ const rtSummaryTone = (pct) => pct == null ? "" : rtQuotaTone(pct).trim() || "ok
 const RT_SUMMARY_TONE_WORD = { ok: "够用", warn: "快不够用", bad: "基本用完" };
 const RT_SUMMARY_TONE_RANK = { "": 0, ok: 1, warn: 2, bad: 3 };
 /** 一个窗口一行：名称（5h / 周）、已用比例、重置倒计时（只留最大的一个单位；倒计时节点由 rtTickCountdowns 原地刷新）；精确口径在悬停提示里 */
-function rtSummaryQuotaNodes(rl) {
-  return rl.windows.map((w) => {
+function rtSummaryQuotaNodes(rl, kind = "", model) {
+  const compact = kind === "antigravity" && rl.windows.some(w => w.group);
+  const modelShort = compact && typeof rtQuotaModelShort === "function" ? rtQuotaModelShort(kind, model) : "";
+  rl = rtQuotaForModel(rl, kind, model);
+  if (!rl.windows.length) return [h("span", { class: "rt-rt-sum-item" }, "额度待确认")];
+  const row = (w) => {
     const tone = rtSummaryTone(w.usedPercent), word = RT_SUMMARY_TONE_WORD[tone];
     return h("span", { class: "rt-rt-sum-item", "data-tone": tone,
-      title: [`${w.label} 已用 ${w.usedPercent == null ? "未知" : `${Math.round(w.usedPercent)}%`}${word ? `（${word}）` : ""}`, w.resetsAt ? rtCountdown(w.resetsAt, "long") : ""].filter(Boolean).join("\n") },
-      h("span", { class: "rt-rt-sum-key" }, rtQuotaShortLabel(w.label)),
+      title: [`${rtQuotaWindowName(w)} 已用 ${w.usedPercent == null ? "未知" : `${Math.round(w.usedPercent)}%`}${word ? `（${word}）` : ""}`, w.resetsAt ? (!compact && w.group ? rtQuotaResetTime(w.resetsAt) : rtCountdown(w.resetsAt, "long")) : ""].filter(Boolean).join("\n") },
+      h("span", { class: "rt-rt-sum-key" }, [modelShort, rtQuotaShortLabel(w.label)].filter(Boolean).join(" ")),
       h("span", { class: "rt-rt-sum-value" }, w.usedPercent == null ? "?" : `${Math.round(w.usedPercent)}%`),
-      w.resetsAt ? rtResetIn(w.resetsAt, "tiny", "rt-rt-sum-reset") : null);
-  });
+      w.resetsAt ? rtResetIn(w.resetsAt, "tiny", "rt-rt-sum-reset", !compact && !!w.group) : null);
+  };
+  return compact ? rl.windows.map(row) : rtQuotaGroups(rl.windows).map(g => g.name ? h("span", { class: "rt-quota-group-strip" }, h("span", { class: "rt-quota-group-name" }, g.name), g.windows.map(row)) : g.windows.map(row)).flat();
 }
 /** 余额一行：服务商缩写 + 整数金额（只留非零的主余额，小数位让给计费时段标记）+ DeepSeek 的 1X / 0.5X；余额见底标告急，读不到不着色 */
 function rtSummaryBalanceNodes(balances) {
@@ -172,10 +179,10 @@ function rtRuntimesSummary() {
     const unavailable = !!d.state && d.state !== "executable";
     const lines = unavailable
       ? [h("span", { class: "rt-rt-sum-item", "data-tone": "bad" }, h("span", { class: "rt-rt-sum-value" }, "不可用"))]
-      : d.balances ? rtSummaryBalanceNodes(d.balances) : d.rateLimit ? rtSummaryQuotaNodes(d.rateLimit) : [h("span", { class: "rt-rt-sum-item rt-rt-sum-empty" }, "—")];
+      : d.balances ? rtSummaryBalanceNodes(d.balances) : d.rateLimit ? rtSummaryQuotaNodes(d.rateLimit, kind) : [h("span", { class: "rt-rt-sum-item rt-rt-sum-empty" }, "—")];
     // 方框整体的状态 = 最差的那一项：图标和描边跟着它变色
     const tones = unavailable ? ["bad"] : d.balances ? d.balances.slice(0, 2).map(({ balance: b }) => rtBalanceText(b).empty ? "bad" : b.status === "ok" ? "ok" : "")
-      : d.rateLimit ? d.rateLimit.windows.map((w) => rtSummaryTone(w.usedPercent)) : [""];
+      : d.rateLimit ? rtQuotaForModel(d.rateLimit, kind).windows.map((w) => rtSummaryTone(w.usedPercent)) : [""];
     const tone = tones.reduce((worst, t) => RT_SUMMARY_TONE_RANK[t] > RT_SUMMARY_TONE_RANK[worst] ? t : worst, "");
     const detail = [
       d.rateLimit ? `账户额度${d.rateLimit.stale ? "（非实时）" : ""}` : d.balances ? "账户余额" : "",
@@ -193,7 +200,7 @@ function rtRuntimesSummary() {
       typeof rtResetDot === "function" ? rtResetDot(kind, d.rateLimit) : null);
   });
   // 外层是容器查询的容器（容器查询只作用于它的后代），网格放在里面一层，窄列表时才能改列数
-  return h("div", { class: "rt-runtimes-summary", role: "group", "aria-label": "用哪个 runtime 新建会话（附账户额度与余额）" }, h("div", { class: "rt-rt-sum-grid" }, boxes));
+  return h("div", { class: "rt-runtimes-summary", role: "group", "aria-label": "用哪个 runtime 新建会话（附账户额度与余额）" }, h("div", { class: "rt-rt-sum-grid", "data-keep-scroll-x": "rt-runtimes-summary" }, boxes));
 }
 /**
  * 窗口已经过了重置时间、比例却还停在旧值（例如 100% 卡了好几天）：这块真的在屏幕上时补读一次额度，
@@ -314,10 +321,11 @@ function rtListBase() {
   const setFilter = (patch) => { Object.assign(f, patch); rtArchiveInvalidate(); if (ui.rt.showArchived) { rtRenderListOnly(); void rtArchiveLoad(); } else if (rtDirServes(f)) rtRenderListOnly(); else void rtLoadDir().then(rtRenderListOnly); };
   // 输入法组字中不筛；目录已拿全时本地过滤即时生效，否则仍按 250ms 合并请求
   const search = (q) => { clearTimeout(ui.rt.searchTimer); ui.rt.searchTimer = setTimeout(() => setFilter({ q }), !ui.rt.showArchived && rtDirServes({ ...f, q }) ? 0 : 250); };
-  const searchOpen = !!(ui.rt.searchOpen || f.q || (rtPhone.matches && f.runtime));
+  // 搜索收起时列表上方只留标题与图标：搜索框和运行时筛选行都随放大镜一起出现
+  const searchOpen = !!(ui.rt.searchOpen || f.q || f.runtime);
   const chipIcon = (id) => typeof piLogoSrc === "function" ? piLogoSrc(id) : `/logos/${id}.svg`;
   const chip = (v, label) => h("button", { type: "button", class: `rt-chip${f.runtime === v ? " active" : ""}`, "aria-pressed": String(f.runtime === v), onclick: () => setFilter({ runtime: v }) },
-    v === "codex" ? h("img", { src: chipIcon("codex"), alt: "" }) : v === "claude-code" ? h("img", { src: chipIcon("claudecode"), alt: "" }) : v === "pi" ? h("span", { class: "rt-chip-pi", "aria-hidden": "true" }, "π") : null, label);
+    v === "codex" ? h("img", { src: chipIcon("codex"), alt: "" }) : v === "claude-code" ? h("img", { src: chipIcon("claudecode"), alt: "" }) : v === "pi" ? h("span", { class: "rt-chip-pi", "aria-hidden": "true" }, "π") : v === "antigravity" ? h("img", { src: chipIcon("gemini"), alt: "" }) : null, label);
   const localEntries = rtArchiveDisplayEntries(d?.entries || [], false);
   const entries = f.q ? localEntries.filter(e => rtDirMatches(e, f.q)) : localEntries;
   rtReadSync(entries);
@@ -349,9 +357,13 @@ function rtListBase() {
     h("div", { class: "rt-list-head" }, rtListViewSwitch(live, archived),
       h("div", { class: "rt-head-actions" },
         h("button", { type: "button", class: "btn small rt-list-toggle", "aria-label": "收起会话列表", onclick: () => rtCloseList() }, "返回"),
-        h("button", { type: "button", class: `rt-icon-link${searchOpen ? " active" : ""}`, title: searchOpen ? "关闭搜索" : "搜索会话", "aria-label": searchOpen ? "关闭搜索" : "搜索会话", "aria-expanded": String(searchOpen), "aria-controls": "rt-search-box rt-runtime-filters", onclick: () => rtToggleSearch(!searchOpen, setFilter) }, rtSearchIcon()),
+        h("button", { type: "button", class: `rt-icon-link${searchOpen ? " active" : ""}`, title: searchOpen ? "关闭搜索" : "搜索会话", "aria-label": searchOpen ? "关闭搜索" : "搜索会话", "aria-expanded": String(searchOpen), "aria-controls": searchOpen ? "rt-search-box rt-runtime-filters" : null, onclick: () => rtToggleSearch(!searchOpen, setFilter) }, rtSearchIcon()),
         h("button", { type: "button", class: `rt-icon-link${scheduledCount ? " has-count" : ""}`, "aria-label": scheduledCount ? `预约发送消息，${scheduledCount} 条` : "预约发送消息", title: scheduledCount ? `预约发送消息（${scheduledCount} 条）` : "预约发送消息", onclick: rtScheduledOverview }, rtClockIcon(),
-          scheduledCount ? h("span", { class: "rt-schedule-count", "aria-hidden": "true" }, scheduledCount > 99 ? "99+" : String(scheduledCount)) : null))),
+          scheduledCount ? h("span", { class: "rt-schedule-count", "aria-hidden": "true" }, scheduledCount > 99 ? "99+" : String(scheduledCount)) : null),
+        // 桌面端：全局设置放在会话列表右上角最右（竖栏左下角的入口已撤）；手机在下面的状态区菜单里
+        h("button", { type: "button", class: `rt-icon-link rt-settings-link${document.querySelector(".nav-settings-button")?.classList.contains("has-capability-alert") ? " has-capability-alert" : ""}`, title: "设置", "aria-label": "设置", onclick: () => window.piOpenSettings?.() }, rtGearIcon()),
+        // 手机的状态区（夜间 / 设置 / 连接状态）：底栏没有「更多」了，入口在会话页头部
+        h("button", { type: "button", class: "rt-icon-link rt-status-link", "data-nav-more-trigger": "", title: "夜间、设置与连接状态", "aria-label": "夜间、设置与连接状态", onclick: () => window.navToggleStatus?.() }, window.navStatusIcon?.() || "⚙"))),
     // 搜索默认收起成图标；有搜索词时保持展开，看得出列表正在被筛选
     searchOpen ? h("div", { class: "rt-search-row", id: "rt-search-box" },
       h("input", { class: "rt-search", type: "search", placeholder: "搜索标题或目录…", "aria-label": "搜索会话", value: f.q, "data-key": "rt-search",
@@ -409,7 +421,7 @@ function rtListBase() {
       const onCancel = () => cleanup();
       const el = h("a", {
         class: `btn primary rt-new-btn${cur ? " current" : ""}`, href: rtNewModeHref(), "aria-current": cur ? "page" : null,
-        "aria-label": "＋ 新建会话", title: "新建会话（按住上滑进入待办记录）", draggable: "false",
+        "aria-label": "＋ 新建会话", title: rtNotesAvailable() ? "新建会话（快捷键：双击 Ctrl；按住上滑进入待办记录）" : "新建会话（快捷键：双击 Ctrl）", draggable: "false",
         // 长按时不要弹出浏览器自带的菜单（Android 的链接菜单、iOS 的链接预览）
         oncontextmenu: (ev) => ev.preventDefault(),
         onclick: (ev) => {
@@ -423,6 +435,8 @@ function rtListBase() {
         },
         onpointerdown: (ev) => {
           if (ev.pointerType === "mouse" && ev.button !== 0) return;
+          // 待办是可选应用：这个构建没带笔记模块时，按住上滑这个手势不启用，新建按钮只做新建。
+          if (!rtNotesAvailable()) return;
           cleanup(); suppressClick = false; preBuzzed = false; startY = ev.clientY; startX = ev.clientX;
           // 手指可能滑出这个小小的圆形按钮，移动与松手都放在 window 上听
           window.addEventListener("pointermove", onMove, true);
@@ -431,10 +445,11 @@ function rtListBase() {
           holdTimer = setTimeout(() => { holdTimer = null; holding = true; hint.textContent = "上滑进入待办"; el.classList.add("rt-new-holding"); }, HOLD_MS);
           buzzTimer = setTimeout(() => { buzzTimer = null; preBuzzed = true; buzz(HOLD_BUZZ); }, HOLD_MS - BUZZ_LEAD_MS);
         }
-      }, h("span", { class: "rt-new-plus", "aria-hidden": "true" }, "＋"), h("span", { class: "rt-new-text" }, "新建会话"), hint);
+      }, h("span", { class: "rt-new-plus", "aria-hidden": "true" }, "＋"), h("span", { class: "rt-new-text" }, "新建会话"), h("kbd", { class: "rt-new-keys", "aria-hidden": "true" }, "双击 Ctrl"), hint);
       return el;
     })() : null,
-    h("div", { class: "rt-chips", id: "rt-runtime-filters", role: "group", "aria-label": "按运行时筛选" }, chip("", "全部"), chip("codex", "Codex"), chip("claude-code", "Claude"), chip("pi", "Pi")),
+    // 运行时筛选跟着搜索一起出现 / 收起：不搜索时列表上方只留标题行，把高度让给会话
+    searchOpen ? h("div", { class: "rt-chips rt-strip", id: "rt-runtime-filters", role: "group", "aria-label": "按运行时筛选", "data-keep-scroll-x": "rt-runtime-filters" }, chip("", "全部"), RT_KINDS.map((k) => chip(k, RT_SHORT[k]))) : null,
     rtArchiveProgress(),
     rtArchiveFlash(),
     !showArchived && typeof rtBgJobsNode === "function" ? rtBgJobsNode() : null,
@@ -442,7 +457,7 @@ function rtListBase() {
     d && d.restricted ? h("p", { class: "muted small" }, d.restricted) : null,
     h("div", { class: "rt-items", "data-keep-scroll": "rt-items", onscroll: (ev) => rtArchiveScroll(ev.currentTarget) },
       showArchived ? rtArchivePageNodes(group) : !d ? h("p", { class: "muted small rt-pad" }, "加载中…")
-        : !shown.length ? h("p", { class: "muted small rt-pad" }, f.q || f.runtime ? "没有符合条件的会话" : showArchived ? "没有已归档的会话。" : "还没有会话。新建一个，和 Codex、Claude Code 或 Pi 对话。")
+        : !shown.length ? h("p", { class: "muted small rt-pad" }, f.q || f.runtime ? "没有符合条件的会话" : showArchived ? "没有已归档的会话。" : "还没有会话。新建一个，和 Codex、Claude Code、Pi 或 Antigravity 对话。")
           : rtGroupByWorkspace(shown).map(group),
       !showArchived && d && d.total > entries.length ? h("p", { class: "muted small rt-pad" }, `共 ${d.total} 项，已显示最近 ${entries.length} 项；用搜索缩小范围`) : null,
       // 会话列表到底之后先交代三个 runtime 的额度 / 余额，再看下面的今日日程与推荐
@@ -584,6 +599,7 @@ function rtLatestListEntry(excludeId) {
 function rtLeaveArchivedSession(id) {
   if (ui.view !== "rt" || rtId() !== id) return;
   const next = rtPhone.matches ? null : rtLatestListEntry(id);
+  if (next && typeof rtMarkDetailEntry === "function") rtMarkDetailEntry("list");
   location.replace(next?.href || "#/rt");
 }
 
@@ -678,6 +694,19 @@ function rtQuickActionBadge(e) {
     "aria-label": `推荐操作：${a.label}`
   }, rtMiniIcon(RT_MINI_PATHS.next, { className: "rt-item-quick-action-icon", size: 11, attrs: { "stroke-width": "1.6" } }), h("span", { class: "rt-item-quick-action-label" }, a.label));
 }
+/** 预约标签：会话里排着预约发送的消息时显示「预约 12:04」（非当天带日期），悬停看完整时间；点开会话可修改或撤销 */
+function rtScheduledBadge(e) {
+  if (!e.scheduledNext) return null;
+  const at = new Date(e.scheduledNext);
+  if (!Number.isFinite(at.getTime())) return null;
+  const now = new Date(), sameDay = at.toDateString() === now.toDateString();
+  const clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const text = sameDay ? clock : `${at.getMonth() + 1}/${at.getDate()} ${clock}`;
+  return h("span", {
+    class: "badge accent rt-item-scheduled", "data-rt-scheduled-badge": e.scheduledNext,
+    title: `预约发送：${rtScheduleLabel(e.scheduledNext)}（打开会话可修改或撤销）`, "aria-label": `预约发送于 ${rtScheduleLabel(e.scheduledNext)}`
+  }, rtMiniIcon(["M12 8v4l3 2", "M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0"], { className: "rt-item-scheduled-icon", size: 11 }), `预约 ${text}`);
+}
 /** 输入、发图、发送或退回草稿后只更新这一行的标签，不重绘列表（避免滚动和焦点跳动） */
 function rtSyncDraftBadge(id) {
   if (!id || typeof document === "undefined") return;
@@ -704,7 +733,7 @@ function rtSessionLinkIcon(e) {
   }, rtMiniIcon(RT_MINI_PATHS[aggregate ? "recommendation" : "note"], { size: 12 }));
 }
 /**
- * 会话行上只放一个状态标签：部署需要人 / 正在解决冲突 > 会话自身状态（运行中、被中断、失败…）> 部署进度 > 推荐操作。
+ * 会话行上只放一个状态标签：部署需要人 / 正在解决冲突 > 会话自身状态（运行中、被中断、失败…）> 部署进度 > 推荐操作 > 预约发送。
  * 草稿、外部写入不是状态，仍可并排显示。
  */
 function rtSessionStatusBadge(e, att) {
@@ -715,7 +744,7 @@ function rtSessionStatusBadge(e, att) {
   const quick = rtQuickActionBadge(e);
   // 部署成功后下一步是推荐操作（归档会话）：它出现时不再并排放一个「部署成功」
   if (e.deploy && !(quick && e.deploy.progress?.phase === "ready")) return rtDeployBadge(e.deploy);
-  return quick;
+  return quick || rtScheduledBadge(e);
 }
 function rtSessionListContent(e) {
   const unread = rtUnread(e), att = RT_ATTENTION[e.status], orderAt = rtTurnOrderAt(e), knownTime = !!orderAt;
@@ -734,13 +763,18 @@ function rtSessionListContent(e) {
           e.conflict ? badge("外部写入", "warn") : null))];
 }
 
-/** 触屏设备（手机）长按会话行 → 半屏确认 → 归档 / 恢复；有 hover 的鼠标设备仍用 hover 显示按钮 */
-const RT_HOLD_MS = 480;
-const RT_HOLD_SLOP = 10;
+/** 触屏设备（手机）左滑会话行露出归档入口，点入口再半屏确认；有 hover 的鼠标设备仍用 hover 显示按钮 */
+const RT_SWIPE_W = 84;
+const rtHoverNone = typeof window.matchMedia === "function" ? window.matchMedia("(hover: none)") : null;
+const rtNarrowForSwipe = typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 760px)") : null;
+/** 手机布局（窄屏）或触屏：行的左滑布局；宽屏鼠标设备保持 hover 小按钮 */
+function rtSwipeEnabled() {
+  try { return !!rtNarrowForSwipe?.matches || !!rtHoverNone?.matches; } catch { return false; }
+}
 
 /**
  * 手指按在某一行上的这段时间不能重绘整张列表：会话状态 / 目录刷新会 replaceWith 整个列表，
- * 手指下的那一行被换掉，后续 move / up 落到已摘除的节点上，长按 / 点按就悄悄丢了。
+ * 手指下的那一行被换掉，后续 move / up 落到已摘除的节点上，滑动 / 点按就悄悄丢了。
  * 这段时间的重绘先挂起，手指抬起后补一次；兜底超时防止 pointerup 丢失后列表一直不刷新。
  */
 let rtRowPressBusy = false, rtRowPressPending = false, rtRowPressGuard = 0, rtRowPressFlush = 0;
@@ -753,7 +787,7 @@ function rtRowPress(on) {
 }
 
 /**
- * 运行中 / 等待处理 / 停止中的会话不显示归档入口，长按时的提示要说清「现在为什么不能归档、先做什么」。
+ * 运行中 / 等待处理 / 停止中的会话没有归档入口，露出按钮后的提示要说清「现在为什么不能归档、先做什么」。
  */
 function rtArchiveBlockedNote(e) {
   switch (e && e.status) {
@@ -765,104 +799,127 @@ function rtArchiveBlockedNote(e) {
   }
 }
 
-/**
- * 半屏确认：从底部升起的 <dialog>（showModal，系统返回 / Esc / 点遮罩都能关）。
- * 确认后直接触发行里那颗归档 / 恢复按钮的点击，单聊 / 群聊 / 对比三种行各自的归档逻辑不用再复制一份。
- */
-function rtArchiveConfirmSheet(act) {
-  if (!act || act.disabled) return;
-  document.querySelectorAll(".rt-confirm-sheet").forEach((el) => el.remove());
-  const label = act.getAttribute("aria-label") || "";
-  const sep = label.indexOf("：");
-  const verb = sep > 0 ? label.slice(0, sep) : (act.textContent || "归档").trim();
-  const name = sep > 0 ? label.slice(sep + 1) : "";
-  const hint = act.title && act.title !== verb ? act.title : "";
-  const restore = act.classList.contains("restore");
-  const opened = Date.now();
-  const dialog = h("dialog", { class: "rt-confirm-sheet", "aria-labelledby": "rt-confirm-title" });
-  const close = () => { try { dialog.close(); } catch { /* 已关闭 */ } dialog.remove(); };
-  dialog.append(h("div", { class: "rt-confirm-panel" },
-    h("div", { class: "rt-confirm-grab", "aria-hidden": "true" }),
-    h("h3", { id: "rt-confirm-title", class: "rt-confirm-title" }, `${verb}？`),
-    name ? h("p", { class: "rt-confirm-name" }, name) : null,
-    hint ? h("p", { class: "muted small rt-confirm-hint" }, hint) : null,
-    h("div", { class: "rt-confirm-actions" },
-      h("button", { type: "button", class: `btn ${restore ? "primary" : "danger"} rt-confirm-ok`, onclick: () => { close(); act.click(); } }, `确认${(act.textContent || verb).trim()}`),
-      h("button", { type: "button", class: "btn rt-confirm-cancel", onclick: close }, "取消"))));
-  // 抬手时系统补发的那一下点击落在遮罩上也不能把刚弹出的确认关掉
-  dialog.addEventListener("click", (ev) => { if (ev.target === dialog && Date.now() - opened > 350) close(); });
-  dialog.addEventListener("close", () => dialog.remove());
-  document.body.append(dialog);
-  dialog.showModal();
-  // 焦点放在面板本身，不落到「确认」上（误按回车会直接归档），也不显示取消按钮的焦点环
-  dialog.tabIndex = -1;
-  dialog.focus({ preventScroll: true });
+/** 行滑开 / 收起：整行向左滑出 RT_SWIPE_W，露出背后那颗归档 / 恢复按钮 */
+function rtSwipeShift(li, item, open) {
+  if (!li || !item) return;
+  item.style.transform = open ? `translateX(-${RT_SWIPE_W}px)` : "";
+  li.classList.toggle("swipe-open", !!open);
+}
+
+/** 收起当前露出归档入口的行；exceptId 是要保留的那一行 */
+function rtSwipeClose(exceptId) {
+  const li = document.querySelector(".rt-li.swipe-open");
+  if (!li || li.dataset.id === exceptId) return;
+  rtSwipeShift(li, li.querySelector(".rt-item"), false);
+  if (ui.rt.swipeOpen === li.dataset.id) ui.rt.swipeOpen = null;
+}
+
+/** 收起这一行自己（点行内其它地方 / 点了不能归档的入口之后） */
+function rtSwipeCloseRow(li, item) {
+  rtSwipeShift(li, item, false);
+  if (ui.rt.swipeOpen === li.dataset.id) ui.rt.swipeOpen = null;
 }
 
 /**
- * 触屏会话行的长按操作：按住不动约半秒弹出半屏确认；手指移动（要滚动列表）、抬起、被系统取消都算放弃。
- * 长按触发后抬手补发的 click 要拦掉，否则会顺手打开这个会话。只对触摸指针生效，鼠标仍用 hover 按钮。
+ * 触屏会话行的左滑（Apple 式）：向左滑跟手露出右侧归档 / 恢复按钮，滑过一半松手就停住，点行内其它地方收起。
+ * 竖直方向的滑动仍然交给列表滚动；滑开之后抬手补发的 click 要拦掉，否则会顺手打开这个会话。
+ * 只对触摸指针接管，鼠标设备仍用 hover 小按钮。当前滑开的行记在 ui.rt.swipeOpen，列表重绘后仍是滑开的。
  */
-function rtHoldRow(li, act, note) {
-  let timer = 0, pid = null, x = 0, y = 0, fired = false, touching = false, dragger = null;
-  const restoreDrag = () => { dragger?.setAttribute("draggable", "true"); dragger = null; };
-  const extra = (ev) => { if (ev.pointerId !== pid && ev.pointerType === "touch") cancel(); };
-  const cancel = () => { document.removeEventListener("pointerdown", extra, true); clearTimeout(timer); timer = 0; pid = null; li.classList.remove("pressing"); restoreDrag(); rtRowPress(false); };
-  const fire = () => {
-    if (!timer) return;
-    timer = 0; fired = true;
-    li.classList.remove("pressing");
-    try { navigator.vibrate?.(act ? 14 : 10); } catch { /* 不支持震动 */ }
-    if (act) rtArchiveConfirmSheet(act);
-    // 运行中 / 等待处理 / 停止中的会话没有归档入口：长按不能没反应，要说清现在为什么不能归档
-    else if (note) window.piToast?.(note, { tone: "warn", attrs: { "data-rt-hold-note": "" } });
+function rtSwipeRow(li, item) {
+  let pid = null, startX = 0, startY = 0, base = 0, cur = 0, axis = "", dragged = false, touching = false, dragger = null;
+  const isOpen = () => li.classList.contains("swipe-open");
+  const restoreDrag = () => { if (dragger) { dragger.setAttribute("draggable", "true"); dragger = null; } };
+  const reset = () => { pid = null; axis = ""; li.classList.remove("swiping"); restoreDrag(); rtRowPress(false); };
+  const shift = (value) => { cur = Math.max(-RT_SWIPE_W, Math.min(0, value)); item.style.transform = cur ? `translateX(${cur}px)` : ""; };
+  const settle = (open) => {
+    rtSwipeShift(li, item, open);
+    if (open) ui.rt.swipeOpen = li.dataset.id;
+    else if (ui.rt.swipeOpen === li.dataset.id) ui.rt.swipeOpen = null;
+    if (open) { try { navigator.vibrate?.(10); } catch { /* 不支持震动 */ } }
   };
   li.addEventListener("pointerdown", (ev) => {
-    touching = ev.pointerType === "touch";
-    // 不看 isPrimary：三指截图等系统手势吞掉抬起事件后它会一直是 false，长按就再也不响应；改成「别的手指也按着就不算长按」
-    if (!touching || window.piOtherTouchDown?.(ev)) return;
-    fired = false;
-    li.classList.add("rt-touch");
-    cancel();
-    pid = ev.pointerId; x = ev.clientX; y = ev.clientY;
-    li.classList.add("pressing");
+    dragged = false;
+    const touch = ev.pointerType === "touch";
+    touching = touch;
+    // 不看 isPrimary：三指截图等系统手势吞掉抬起事件后它会一直是 false，改成「别的手指也按着就不算滑动」
+    if (touch && window.piOtherTouchDown?.(ev)) return;
+    // 只有左滑布局的行（手机 / 触屏）接管横向手势；宽屏鼠标设备仍然用 hover 小按钮
+    if (!touch && !li.classList.contains("rt-swipeable")) return;
+    // 触屏上也可能先是鼠标、之后才用手指：第一次触摸时补上左滑布局
+    li.classList.add("rt-swipeable");
+    reset();
+    pid = ev.pointerId; startX = ev.clientX; startY = ev.clientY; axis = "";
+    base = cur = isOpen() ? -RT_SWIPE_W : 0;
+    // 同时只留一行滑开
+    rtSwipeClose(li.dataset.id);
     rtRowPress(true);
-    // 行里的链接是可拖动的（桌面拖进分类）：安卓上长按它会被系统当成拖拽起手，抛 pointercancel 把我们的计时清掉、只剩一下系统震动
+    // 行里的链接是可拖动的（桌面拖进分类）：手指按着时先关掉，否则安卓会把横滑当成拖拽起手
     dragger = li.querySelector('a[draggable="true"]');
     dragger?.setAttribute("draggable", "false");
-    timer = setTimeout(fire, RT_HOLD_MS);
-    // 按住期间又落下别的手指（三指截图手势）：不是长按，放弃
-    document.addEventListener("pointerdown", extra, true);
   });
   li.addEventListener("pointermove", (ev) => {
-    if (ev.pointerId !== pid || !timer) return;
-    if (Math.hypot(ev.clientX - x, ev.clientY - y) > RT_HOLD_SLOP) cancel();
+    if (ev.pointerId !== pid) return;
+    const dx = ev.clientX - startX, dy = ev.clientY - startY;
+    if (!axis) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      // 竖滑留给列表滚动：这次手势不接管，move 不拦
+      if (Math.abs(dy) >= Math.abs(dx)) { reset(); return; }
+      axis = "x";
+      li.classList.add("swiping");
+      try { li.setPointerCapture(ev.pointerId); } catch { /* 合成事件没有活动指针 */ }
+    }
+    ev.preventDefault(); dragged = true;
+    shift(base + dx);
   });
   const end = (ev) => {
     if (ev.pointerId !== pid) return;
-    cancel();
-    if (fired) setTimeout(() => { fired = false; }, 400);
+    const horizontal = axis === "x";
+    reset();
+    if (horizontal) settle(cur < -RT_SWIPE_W / 2);
   };
   li.addEventListener("pointerup", end);
   li.addEventListener("pointercancel", end);
   li.addEventListener("click", (ev) => {
-    // 确认时程序触发的归档按钮点击不拦（它在补发 click 的 400ms 窗口内也可能出现）
-    if (!fired || (ev.target instanceof Element && ev.target.closest(".rt-item-act"))) return;
-    fired = false; ev.preventDefault(); ev.stopPropagation();
+    // 拖动结束浏览器还会补一次 click：拦掉它，别顺手打开会话
+    if (dragged) { dragged = false; ev.preventDefault(); ev.stopPropagation(); return; }
+    if (!isOpen()) return;
+    // 归档 / 恢复按钮自己处理这次点击（它还要弹半屏确认）
+    if (ev.target instanceof Element && ev.target.closest(".rt-item-act")) return;
+    ev.preventDefault(); ev.stopPropagation();
+    settle(false);
   }, true);
-  // 长按会触发系统菜单 / 链接拖拽：触摸时都拦掉，只留我们的确认
-  // 系统的长按（contextmenu）先于我们的计时到达时就地接管：手指没动过，说明就是长按
-  li.addEventListener("contextmenu", (ev) => { if (!touching) return; ev.preventDefault(); fire(); });
+  // 触摸时不要弹系统菜单 / 起系统拖拽：横滑只留给我们
+  li.addEventListener("contextmenu", (ev) => { if (touching) ev.preventDefault(); });
   li.addEventListener("dragstart", (ev) => { if (touching) { ev.preventDefault(); ev.stopPropagation(); } }, true);
 }
 
-/** 会话列表行：包一层 <li>；有归档 / 恢复入口的行接上触屏长按，单聊 / 群聊 / 对比三种行共用 */
+/** 会话列表行：包一层 <li>；触屏接左滑，单聊 / 群聊 / 对比三种行共用 */
 function rtSessionRow(id, item, act, note) {
-  const li = h("li", { class: "rt-li", "data-id": id }, item, act);
-  // 没有归档入口但有原因（运行中……）时也接长按，只是反馈换成长按提示而不是确认半屏
-  if (act || note) rtHoldRow(li, act, note);
+  // 触屏上从一开始就是左滑布局；列表重绘 / 切换视图时，滑开的行接着用左滑布局恢复成滑开态
+  const swipe = rtSwipeEnabled() || ui.rt.swipeOpen === id;
+  /** 运行中 / 等待处理 / 停止中的会话没有归档入口：按钮照样露出，点它说清现在为什么不能归档 */
+  const blocked = !act && note ? h("button", {
+    type: "button", class: "rt-item-act archive blocked", title: note, "aria-label": `归档：${note}`,
+    onclick: (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      rtSwipeCloseRow(li, item);
+      window.piToast?.(note, { tone: "warn", attrs: { "data-rt-archive-note": "" } });
+    }
+  }, "归档") : null;
+  const li = h("li", { class: `rt-li${swipe ? " rt-swipeable" : ""}`, "data-id": id }, item, act || blocked);
+  if (act || blocked) rtSwipeRow(li, item);
+  if (swipe && (act || blocked) && ui.rt.swipeOpen === id) rtSwipeShift(li, item, true);
   return li;
 }
+
+/** 会话行上的横向手势归左滑归档：手机一级页「左右滑切换应用」要在这里让路 */
+function rtRowSwipeClaims(target, dx) {
+  if (!(target instanceof Element)) return false;
+  const li = target.closest(".rt-li");
+  // 左滑露出归档；已经滑开的行，右滑是把它收回去
+  return !!li && (dx < 0 || li.classList.contains("swipe-open"));
+}
+(window.piAppSwipeClaimers = window.piAppSwipeClaimers || []).push(rtRowSwipeClaims);
 
 function rtListItem(e, a) {
   if (rtArchiveBusy(e.id)) return null;
@@ -872,8 +929,8 @@ function rtListItem(e, a) {
   const unread = rtUnread(e);
   const busy = ["creating", "running", "waiting-input", "stopping"].includes(e.status);
   const canArchive = a && a.control && !busy;
-  const canHold = a && a.control;
-  const note = canHold && busy ? rtArchiveBlockedNote(e) || "会话正在运行，停止后才能归档" : "";
+  const canSwipe = a && a.control;
+  const note = canSwipe && busy ? rtArchiveBlockedNote(e) || "会话正在运行，停止后才能归档" : "";
   const item = h("a", { class: `rt-item${current ? " active" : ""}${unread ? " unread" : ""}`, href: e.href, draggable: e.archived ? "false" : "true",
     ondragstart: ev => {
       if (e.archived || !ev.dataTransfer) { ev.preventDefault(); return; }
@@ -881,11 +938,12 @@ function rtListItem(e, a) {
       ev.dataTransfer.setData(RT_SESSION_DRAG_TYPE, e.id);
     },
     ondragend: () => { rtDraggedSession = null; document.querySelectorAll(".rt-reference-drop").forEach(el => el.classList.remove("rt-reference-drop")); },
-    "aria-current": current ? "page" : null, onclick: () => { ui.rt.listOpen = false; } },
+    "aria-current": current ? "page" : null, onclick: () => { ui.rt.listOpen = false; if (typeof rtMarkDetailEntry === "function") rtMarkDetailEntry("list"); } },
     rtSessionListContent(e));
   const act = canArchive ? h("button", {
     type: "button", class: `rt-item-act ${e.archived ? "restore" : "archive"}`, title: e.archived ? "恢复到列表（不会恢复已删除的 worktree）" : e.worktreeBranch ? "归档并删除 worktree，未提交、未合并改动将丢弃" : "归档", "aria-label": `${e.archived ? "恢复" : "归档"}：${e.title}`,
     disabled: rtArchiveBusy(e.id),
+    // 点左滑露出的入口直接归档（完成后列表里收起 + 顶部提示可撤销）
     onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); void rtArchive(e, !e.archived, ev.currentTarget); }
   }, rtArchiveBusy(e.id) ? (e.archived ? "恢复中…" : "归档中…") : e.archived ? "恢复" : "归档") : null;
   return rtSessionRow(e.id, item, act, note);
@@ -896,7 +954,7 @@ function rtCenter() {
     h("button", { type: "button", class: "btn rt-list-toggle", onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"),
     h("span", { class: "rt-empty-icon", "aria-hidden": "true" }, rtMiniIcon(["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", "M8.5 10h.01M12 10h.01M15.5 10h.01"], { size: 28 })),
     h("h2", {}, "多运行时对话"),
-    h("p", { class: "muted" }, "在 Codex、Claude Code 和 Pi 上开对话、续聊、停止与审批。会话按工作目录分组，用完可以归档。"),
+    h("p", { class: "muted" }, "在 Codex、Claude Code、Pi 和 Antigravity 上开对话、续聊、停止与审批。会话按工作目录分组，用完可以归档。"),
     h("a", { class: "btn primary rt-empty-cta", href: rtNewModeHref(), onclick: () => { if (typeof rtMarkNewEntry === "function") rtMarkNewEntry("list"); } }, "＋ 新建会话"),
     h("p", { class: "muted small" }, "可以开单聊，或者拉几个 Agent 建一个群聊；群聊里 @ 多人的那一轮可以切到对比视图。本机已有的历史会话在列表右上角的「更多 → 设置」里查看。"));
   return rtDetailCenter();

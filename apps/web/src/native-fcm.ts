@@ -1,11 +1,19 @@
 import { readFileSync } from 'node:fs';
-import { createSign } from 'node:crypto';
+import { createHash, createSign } from 'node:crypto';
+export const NATIVE_FCM_MAX_TTL_SECONDS = 30 * 60;
 export class FcmFailure extends Error { constructor(readonly unregistered=false){super('FCM delivery rejected');} }
+export function fcmCollapseKey(data:Record<string,string>):string|undefined {
+ if(data.kind==='reminder'||!data.sessionId)return undefined;
+ const direct=`session:${data.sessionId}`;
+ return direct.length<=64?direct:`session:${createHash('sha256').update(data.sessionId).digest('hex').slice(0,32)}`;
+}
 export async function sendFcm(project:string,accessToken:string,token:string,data:Record<string,string>,fetcher:typeof fetch=fetch,authorized:()=>boolean=()=>true):Promise<void>{
  if(!/^[a-z][a-z0-9-]{4,62}$/.test(project)||!authorized())throw new FcmFailure();
  const remaining=Number(data.expiresAt)-Date.now();
  if(!Number.isFinite(remaining)||remaining<=0)throw new FcmFailure();
- const response=await fetcher(`https://fcm.googleapis.com/v1/projects/${project}/messages:send`,{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json'},body:JSON.stringify({message:{token,data,android:{priority:'high',ttl:`${Math.min(604800,Math.ceil(remaining/1000))}s`,restricted_package_name:'fund.harness.piagent'}}})});
+ const collapseKey=fcmCollapseKey(data);
+ const android:Record<string,string>={priority:'high',ttl:`${Math.min(NATIVE_FCM_MAX_TTL_SECONDS,Math.ceil(remaining/1000))}s`,restricted_package_name:'fund.harness.piagent',...(collapseKey?{collapse_key:collapseKey}:{})};
+ const response=await fetcher(`https://fcm.googleapis.com/v1/projects/${project}/messages:send`,{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{authorization:`Bearer ${accessToken}`,'content-type':'application/json'},body:JSON.stringify({message:{token,data,android}})});
  const text=await response.text();if(text.length>65536)throw new FcmFailure();
  const result=JSON.parse(text) as {name?:string;error?:{details?:Array<{errorCode?:string}>}};
  if(!response.ok||result.error||typeof result.name!=='string'||!result.name.startsWith(`projects/${project}/messages/`)||result.name.endsWith('/'))throw new FcmFailure(result.error?.details?.some(d=>d.errorCode==='UNREGISTERED'));

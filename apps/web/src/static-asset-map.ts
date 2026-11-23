@@ -1,4 +1,6 @@
 export const STATIC: Record<string, string> = {
+  "/open-source-release.css": "open-source-release.css",
+  "/open-source-release.js": "open-source-release.js",
   "/communications.js": "communications.js",
   "/communications-ai.js": "communications-ai.js",
   "/communications.css": "communications.css",
@@ -35,6 +37,8 @@ export const STATIC: Record<string, string> = {
   "/logos.js": "logos.js",
   "/nav-settings.js": "nav-settings.js",
   "/app-swipe.js": "app-swipe.js",
+  "/session-drawer.js": "session-drawer.js",
+  "/session-island.js": "session-island.js",
   "/host-stats.js": "host-stats.js",
   "/settings.js": "settings.js",
   "/version-share.js": "version-share.js",
@@ -56,7 +60,7 @@ export const STATIC: Record<string, string> = {
   "/room-page.js": "room-page.js",
   "/room.js": "room.js",
   "/styles.css": "styles.css",
-  // 站点图标与 PWA 清单（主屏图标用 pi 官方 logo）
+  // 站点图标与 PWA 清单（主屏图标是合己 heji 的 app icon）
   "/favicon.svg": "favicon.svg",
   "/manifest.webmanifest": "manifest.webmanifest",
   "/sw.js": "sw.js",

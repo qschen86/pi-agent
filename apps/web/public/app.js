@@ -780,21 +780,41 @@ function routeRemember(hidden) {
   if (!hidden && (document.visibilityState === 'hidden' || !document.hasFocus())) return;
   routeSave(hidden);
 }
-/** 冷启动时若地址没有 hash，回到上一次切到后台前的页面。普通刷新与首次进入保持原行为。 */
+/*
+ * 一级 tab：每次进入 App 回到上次退出时所在的 tab（不分时长，只记 tab、不记里面的二级页）。
+ * 会话 / 待办 / 产物等一级入口各记一个根地址；设置、统计等不是 tab 的页面不覆盖它。
+ */
+const TAB_RESTORE_KEY = 'pi-agent:last-tab:v1';
+// 记忆 / 资源已经搬进设置（#/settings/memory、#/settings/resources），不再是可恢复的一级 tab。
+const TAB_RESTORE_VIEWS = ['rt', 'notes', 'artifacts', 'ledger', 'communications', 'web-x'];
+function tabRemember(tab) {
+  if (!TAB_RESTORE_VIEWS.includes(tab)) return;
+  try { localStorage.setItem(TAB_RESTORE_KEY, tab); } catch { /* 存储不可用时只影响下次恢复 */ }
+}
+function tabRestorable() {
+  try {
+    const tab = localStorage.getItem(TAB_RESTORE_KEY);
+    return TAB_RESTORE_VIEWS.includes(tab) ? `#/${tab}` : '';
+  } catch { return ''; }
+}
+/** 冷启动时若地址没有 hash，回到上一次切到后台前的页面（没有就回到上次的 tab）。普通刷新与首次进入保持原行为。 */
 function restoreLaunchRoute() {
   if (/^[a-f0-9]{32}$/.test(new URLSearchParams(location.search).get("shareId") || "") || new URLSearchParams(location.search).has("shareError")) { location.hash = "#/notes"; return; }
-  if (!routeStandalone()) return;
+  const standalone = routeStandalone();
+  // 桌面 PWA 与 Android 客户端是「App」；浏览器标签页以地址栏为准。
+  if (!standalone && !window.piAndroidShell?.available) return;
   if (location.hash && location.hash !== '#' && location.hash !== '#/') return;
   let navigationType = '';
   try { navigationType = performance.getEntriesByType?.('navigation')?.[0]?.type || ''; } catch { /* 老浏览器没有 Navigation Timing */ }
   // 刷新会保留原来的 hash；能从 reload 辨别时不要用更旧的记录覆盖它。
   if (navigationType === 'reload') return;
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(ROUTE_RESTORE_KEY) || 'null'); } catch { return; }
-  if (!saved || saved.hidden !== true || !routeRestorable(saved.hash)) return;
-  if (!(Date.now() - Number(saved.at) < ROUTE_RESTORE_TTL)) return;
-  try { history.replaceState(null, '', saved.hash); } catch { location.replace(saved.hash); }
-  routeSave(false);
+  try { saved = JSON.parse(localStorage.getItem(ROUTE_RESTORE_KEY) || 'null'); } catch { /* 记录损坏：只用上次的 tab */ }
+  const deep = standalone && saved && saved.hidden === true && routeRestorable(saved.hash) && Date.now() - Number(saved.at) < ROUTE_RESTORE_TTL;
+  const target = deep ? saved.hash : tabRestorable();
+  if (!target) return;
+  try { history.replaceState(null, '', target); } catch { location.replace(target); }
+  if (deep) routeSave(false);
 }
 document.addEventListener('visibilitychange', () => routeRemember(document.visibilityState === 'hidden'));
 window.addEventListener('pagehide', () => routeSave(routeRememberHidden));
@@ -853,13 +873,20 @@ function route() {
   else if (rt) { ui.view = "rt"; if (ui.rt.id !== (rt[1] || null) || previousView !== "rt") rtSelect(rt[1] || null); }
   else if (hash === "#/runtimes") { ui.view = "runtimes"; ui.rt.settingsDraft = null; }
   else if (settingsRoute) {
-    const wanted = settingsRoute[1] || "home", extra = settingsRoute[2] || null;
-    if (!["home", "capabilities", "navigation", "login", "runtimes", "cache", "version", "errorstats", "codexreset"].includes(wanted) || (extra && !(wanted === "version" && (extra === "all" || extra === "installs")))) { location.replace("#/settings"); return; }
+    const raw = settingsRoute[1] || "home", extra = settingsRoute[2] || null;
+    // 旧地址转到合并后的页：错误统计 / Codex Reset → 定时任务；安装历史挪到「平台 APP 版本」下面。
+    const alias = { errorstats: "scheduled", codexreset: "scheduled" }[raw];
+    if (alias) { location.replace(`#/settings/${alias}`); return; }
+    if (raw === "version" && extra === "installs") { location.replace("#/settings/appversion/installs"); return; }
+    if (!["home", "capabilities", "navigation", "cache", "apps", "resources", "runtimes", "runtimeupdates", "login", "memory", "scheduled", "version", "appversion"].includes(raw) || (extra && !((raw === "version" && extra === "all") || (raw === "appversion" && extra === "installs")))) { location.replace("#/settings"); return; }
+    const wanted = raw;
     if (previousView !== "settings") {
       ui.settings.returnHash = previousHash || "#/rt";
       // 每次从其它页面回到设置都重新读一次部署历史：先显示本机存的上次快照，再后台同步最新，避免空白等待。
       ui.settings.authLoaded = false;
       ui.settings.rtLoaded = false;
+      ui.settings.resourcesLoaded = false;
+      ui.settings.appsLoaded = false;
       ui.settings.deployments = null;
       ui.settings.deployAttempted = false;
       ui.settings.deployStale = false;
@@ -873,6 +900,7 @@ function route() {
     ui.settings.section = wanted;
     ui.settings.extra = extra;
   }
+  // 外部资源主要入口已接进设置（#/settings/resources）；旧的 #/resources 仍然能直接打开同一个页面。
   else if (hash === "#/resources") { ui.view = "resources"; }
   // 统计应用：#/stats、#/stats/<cost|sessions|deploys>?m=&focus=；返回键回到进来之前的页面
   else if (/^#\/stats(?:\/(?:cost|sessions|deploys))?(?:\?[\w=&%.-]*)?$/.test(hash)) {
@@ -882,20 +910,30 @@ function route() {
   }
   else if (/^#\/communications(?:\/contact\/[^/]+)?$/.test(hash)) { ui.view = "communications"; }
   else if (hash === "#/ledger") { ui.view = "ledger"; }
+  else if (hash === "#/open-source-release" && window.piRouteModules?.has("open-source-release")) { ui.view = "open-source-release"; }
   else if (hash === "#/web-x") { ui.view = "web-x"; }
   else if (artifactEval) { ui.view = "artifacts"; ui.artifactGame = null; ui.artifactEval = { suite: artifactEval[1], case: artifactEval[2], compare: artifactEval[3] ? artifactEval[3].split("+") : null }; }
-  else if (hash === "#/memory" || hash === "#/memory/settings" || hash === "#/memory/architecture" || /^#\/memory\/t\/[\w-]+$/.test(hash)) { ui.view = "memory"; }
+  // 记忆设置已合并进设置页（#/settings/memory）：旧地址转过去。#/memory 本身保留，会话里的记忆出处链接和架构页还用它。
+  else if (hash === "#/memory/settings") { location.replace("#/settings/memory"); return; }
+  else if (hash === "#/memory" || hash === "#/memory/architecture" || /^#\/memory\/t\/[\w-]+$/.test(hash)) { ui.view = "memory"; }
   else if (artifact) { ui.view = "artifacts"; ui.artifactEval = null; ui.artifactGame = artifact[1] && artifact[1] !== "evals" ? { category: artifact[1], id: artifact[2] } : null; }
   else if (relationRoute) { try { ui.relationRootKey=decodeURIComponent(relationRoute[1]); } catch { location.replace("#/notes"); return; } ui.view="note-relations"; }
   else if (hash === "#/notes" || /^#\/notes\/widget\/\d{4}-\d{2}-\d{2}(?:\/n-[A-Za-z0-9_-]+)?$/.test(hash) || notesManagement) { ui.view = "notes"; }
   else { location.replace(HOME_ROUTE); return; }
+  // 可选应用被关闭（设置 → 应用）：它的页面不再可达，直接回到首页，不留空白页。
+  if (window.piApps?.blocksView(ui.view)) { location.replace(HOME_ROUTE); return; }
   const tab = ui.view === "note-relations" ? "notes" : ui.view.startsWith("rt") || ui.view === "runtimes" ? "rt" : ui.view;
   // Record real entry, including cold/deep links; native owns timestamps and deduplication.
   if (window.piAndroidShell?.available && (!ui.currentHash || tab !== previousView) &&
-      ["rt", "resources", "notes", "artifacts", "ledger", "communications", "memory", "web-x"].includes(tab)) {
+      ["rt", "resources", "notes", "artifacts", "ledger", "communications", "memory", "web-x", "open-source-release"].includes(tab)) {
     void window.piAndroidShell.call("widget.appVisit", { id: tab }).catch(() => {});
   }
+  if (typeof rtRefreshDetailOrigin === "function") {
+    const detailId = ui.view === "rt" ? (ui.rt?.id || null) : null;
+    if (!detailId || ui.currentHash !== hash) rtRefreshDetailOrigin(detailId, previousView, previousHash);
+  }
   ui.currentHash = hash;
+  if (typeof tabRemember === 'function') tabRemember(tab);
   // 会话应用最后停留的地址：新建页 / 群聊 / 对比页不能靠 ui.rt.id 还原（那里可能还是上一个单聊会话）。
   if (ui.rt && ["rt", "rt-new", "rt-room", "rt-room-new", "rt-compare"].includes(ui.view)) ui.rt.lastChatHash = hash;
   routeRemember(false);
@@ -910,10 +948,15 @@ function route() {
   if (ui.view !== "rt-room" && typeof roomStop === "function") roomStop();
   if (!["rt-room", "rt-room-new"].includes(ui.view) && typeof roomDeactivate === "function") roomDeactivate();
   if (ui.view !== "rt-compare" && typeof rtcStop === "function") rtcStop();
+  if (ui.view !== "open-source-release" && window.piRouteModules?.has("open-source-release") && window.piRouteModules.state("open-source-release") === "ready") window.piRouteModules.module("open-source-release").deactivate();
   if (ui.view !== "communications" && window.piRouteModules?.has("communications") && window.piRouteModules.state("communications") === "ready") window.piRouteModules.module("communications").deactivate();
   if (ui.view !== "notes" && typeof noteDeactivate === "function") noteDeactivate();
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === tab));
+  window.navNoteVisit?.(tab);
+  // 手机会话列表：会话不在底栏里，底栏选中的是进入会话前的应用（session-drawer.js），点别的入口直接切过去
+  const shownTab = tab === "rt" && rtPhone.matches && ui.view === "rt" && !ui.rt?.id ? (window.piSessionDrawer?.originView?.() || tab) : tab;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === shownTab));
   syncNavMore();
+  window.navSyncActive?.();
   window.scrollTo(0, 0);
   ui.pageError = ""; ui.pageLoading = true;
   if (typeof rtSyncPageEffects === 'function') rtSyncPageEffects();
@@ -1126,6 +1169,7 @@ function renderMain() {
       : ui.view === "artifacts" ? (typeof renderArtifacts === "function" ? renderArtifacts() : h("div", { class: "empty" }, "加载中…"))
       : ui.view === "communications" ? renderRouteFeature("communications", () => h("div", {class:"empty"}, "正在打开通讯录…"))
       : ui.view === "ledger" ? renderRouteFeature("ledger", () => typeof renderLedger === "function" ? renderLedger() : h("div", { class: "empty" }, "加载中…"))
+      : ui.view === "open-source-release" ? renderRouteFeature("open-source-release", () => h("div", { class: "empty" }, "加载中…"))
       : ui.view === "web-x" ? renderRouteFeature("web-x", () => h("div", { class: "empty" }, "加载中…"))
       : ui.view === "stats" ? renderRouteFeature("stats", () => h("div", { class: "empty" }, "加载中…"))
       : ui.view === "memory" ? renderRouteFeature("memory", () => h("div", { class: "empty" }, "加载中…"))
@@ -1423,6 +1467,7 @@ function connect() {
 
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   // PC 恢复对话应用上次页面；手机一级入口始终进入应用主页。
+  if (t.dataset.view === "rt" && typeof rtMarkDetailEntry === "function") rtMarkDetailEntry("nav");
   location.hash = t.dataset.view === "rt" && !rtPhone.matches
     ? (ui.rt?.lastChatHash || (ui.rt && ui.rt.id ? `#/rt/${ui.rt.id}` : "#/rt"))
     : `#/${t.dataset.view}`;

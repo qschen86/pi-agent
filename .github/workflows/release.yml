@@ -1,121 +1,54 @@
-name: Publish pi-agent (Homebrew)
-
-# Push a tag such as v0.1.0 (it must equal v + the root package.json version) and the release is built and
-# uploaded from GitHub's network instead of the maintainer's Mac. Homebrew Tap updates are a separate, later step.
+name: Build and verify open-source candidate
 on:
   push:
-    tags:
-      - "v*"
-
+    branches: ['release-candidate/**']
 permissions:
-  contents: write
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
+  contents: read
 jobs:
-  release:
-    # Apple Silicon, and the same macOS floor as the Formula (depends_on macos: :sequoia).
+  candidate:
     runs-on: macos-15
-    timeout-minutes: 90
-
+    timeout-minutes: 35
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v6
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
         with:
-          node-version: "24"
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
           cache: npm
-
-      - name: Tag must match the package version
+      - name: Install dependencies and run Homebrew tests
+        run: |
+          test "$(uname -m)" = arm64
+          npm ci --ignore-scripts
+          npm run test:homebrew
+          npx --no-install playwright install chromium
+      - name: Prepare fixed release inputs
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(node -p "require('./package.json').version")"
-          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match package.json version v${VERSION}" >&2
-            exit 1
-          fi
-          # Published assets are never overwritten.
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; refusing to overwrite it" >&2
-            exit 1
-          fi
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Test
-        run: npm run test:homebrew
-
-      # build-inputs.json pins these two packages; the builder rejects any other name or version.
-      - name: Prepare Pi package and its dependency tree
+          pi="$(node -p "const p=require('./apps/homebrew/build-inputs.json').pi;p.name+'@'+p.version")"
+          pi_name="${pi%@*}"
+          npm_version="$(node -p "require('./apps/homebrew/build-inputs.json').npm.version")"
+          mkdir -p "$RUNNER_TEMP/pi" "$RUNNER_TEMP/npm"
+          (cd "$RUNNER_TEMP/pi" && npm init -y >/dev/null && npm install --ignore-scripts --no-audit --no-fund "$pi" && npm audit signatures)
+          (cd "$RUNNER_TEMP/npm" && npm pack "npm@$npm_version" --silent && tar -xzf "npm-$npm_version.tgz")
+          python3 scripts/prepare-homebrew-image-sources.py --output "$RUNNER_TEMP/image-sources"
+          node scripts/build-homebrew-release.mjs --pi-source "$RUNNER_TEMP/pi/node_modules/$pi_name" --npm-source "$RUNNER_TEMP/npm/package" --image-sources "$RUNNER_TEMP/image-sources" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/release"
+      - name: Install exact candidate on a clean runner and test over HTTP
         shell: bash
         run: |
           set -euo pipefail
-          PI_VERSION="$(node -p "require('./apps/homebrew/build-inputs.json').pi.version")"
-          PI_NAME="$(node -p "require('./apps/homebrew/build-inputs.json').pi.name")"
-          mkdir -p "$RUNNER_TEMP/pi-source"
-          cd "$RUNNER_TEMP/pi-source"
-          npm init -y >/dev/null
-          npm install --ignore-scripts --no-audit --no-fund "${PI_NAME}@${PI_VERSION}"
-          # Registry signatures cover the whole tree; a version number alone is not provenance.
-          npm audit signatures
-          echo "PI_SOURCE=$RUNNER_TEMP/pi-source/node_modules/${PI_NAME}" >> "$GITHUB_ENV"
-
-      - name: Prepare npm package
-        shell: bash
-        run: |
-          set -euo pipefail
-          NPM_VERSION="$(node -p "require('./apps/homebrew/build-inputs.json').npm.version")"
-          mkdir -p "$RUNNER_TEMP/npm-pack"
-          cd "$RUNNER_TEMP/npm-pack"
-          npm pack "npm@${NPM_VERSION}" --silent
-          tar -xzf "npm-${NPM_VERSION}.tgz"
-          echo "NPM_SOURCE=$RUNNER_TEMP/npm-pack/package" >> "$GITHUB_ENV"
-
-      # Pinned URLs from apps/homebrew/licenses/image-library-sources.json; the script never executes upstream code.
-      - name: Fetch image library sources
-        run: python3 scripts/prepare-homebrew-image-sources.py --output "$RUNNER_TEMP/image-sources"
-
-      - name: Build release
-        run: |
-          node scripts/build-homebrew-release.mjs \
-            --pi-source "$PI_SOURCE" \
-            --npm-source "$NPM_SOURCE" \
-            --image-sources "$RUNNER_TEMP/image-sources" \
-            --repository "$GITHUB_REPOSITORY" \
-            --output "$RUNNER_TEMP/release"
-
-      - name: Verify checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/release"
-          shasum -a 256 -c SHA256SUMS
-          ls -l
-
-      # Not --clobber: an existing release was already rejected above, and a race fails here instead of overwriting.
-      - name: Publish GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # gh needs the repository checkout for --verify-tag, so stay in the workspace and pass asset paths.
-          R="$RUNNER_TEMP/release"
-          gh release create "${GITHUB_REF_NAME}" \
-            "$R/pi-agent-${VERSION}-macos-arm64.tar.gz" \
-            "$R/pi-agent-${VERSION}-source.tar.gz" \
-            "$R/pi-agent-${VERSION}-image-library-sources.tar.gz" \
-            "$R/pi-agent.rb" "$R/INSTALL.md" "$R/SHA256SUMS" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "pi-agent ${VERSION}" \
-            --generate-notes
+          (cd "$RUNNER_TEMP/release" && shasum -a 256 -c SHA256SUMS)
+          node scripts/verify-release-candidate.mjs "$RUNNER_TEMP/release" "$RUNNER_TEMP/evidence"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-candidate
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-evidence
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: error
+          retention-days: 14

@@ -18,17 +18,424 @@ async function rtRecoverClaudeLogin(gen) {
   }
 }
 
+/* ------------------------------ 可视化连接与登录向导（无 CLI） ------------------------------ */
+
+const RT_AUTH_META = {
+  codex: {
+    title: "Codex（ChatGPT / OpenAI）",
+    hint: "在浏览器完成 OpenAI 官方授权，授权通过后会自动回传并完成校验，无需操作终端。",
+    codePlaceholder: "",
+  },
+  "claude-code": {
+    title: "Claude Code（Anthropic）",
+    hint: "在浏览器打开 Claude 官方页授权；若页面自动完成登录将直接通过，若显示授权码可直接粘贴提交。",
+    codePlaceholder: "粘贴 Claude 页面显示的授权码",
+  },
+  antigravity: {
+    title: "Antigravity（Google AI Pro）",
+    hint: "在浏览器用 Google 账号完成授权，然后将回调页上的授权码（或跳转后的完整网址）粘贴到这里。",
+    codePlaceholder: "粘贴授权码或 https://antigravity.google/oauth-callback?…",
+  },
+  pi: {
+    title: "Pi（API Key）",
+    hint: "填写模型服务商的 API Key，平台将直连官方只读接口验证并隔离保存在本机。",
+    codePlaceholder: "",
+  },
+};
+
+function rtAuthState() {
+  return ui.rt.authModal || (ui.rt.authModal = {
+    open: false,
+    kind: null,
+    busy: "",
+    error: "",
+    flow: null,
+    code: "",
+    copied: false,
+    networkKey: "",
+    networkResult: null,
+    apiProvider: "deepseek",
+    apiKey: "",
+    pollTimer: null,
+  });
+}
+
+function rtStopAuthPoll() {
+  const m = ui.rt.authModal;
+  if (m?.pollTimer) { clearTimeout(m.pollTimer); m.pollTimer = null; }
+}
+
+async function rtLoadAuthCaps(force = false) {
+  if (!ui.rt.access?.canEditSettings) return;
+  if (ui.rt.authCapsLoading) return;
+  if (!force && ui.rt.authCaps) return;
+  ui.rt.authCapsLoading = true;
+  try {
+    ui.rt.authCaps = await api("/api/runtime-auth/capabilities");
+  } catch {
+    ui.rt.authCaps = { available: false, isolatedCredentials: false, runtimes: {} };
+  } finally {
+    ui.rt.authCapsLoading = false;
+    if (ui.view === "runtimes" || ui.view === "settings") renderMain();
+  }
+}
+
+function rtOpenAuthModal(kind) {
+  rtStopAuthPoll();
+  const m = rtAuthState();
+  m.open = true;
+  m.kind = kind;
+  m.busy = "";
+  m.error = "";
+  m.flow = null;
+  m.code = "";
+  m.copied = false;
+  m.networkKey = "";
+  m.networkResult = null;
+  m.apiProvider = "deepseek";
+  m.apiKey = "";
+  renderMain();
+  void rtLoadAuthCaps(true);
+}
+
+async function rtCloseAuthModal(cancelFlow = false) {
+  rtStopAuthPoll();
+  const m = rtAuthState();
+  const kind = m.kind, flowId = m.flow?.flowId;
+  const active = m.flow && ["starting", "awaiting-auth", "submitting"].includes(m.flow.phase);
+  m.open = false;
+  m.kind = null;
+  m.busy = "";
+  m.error = "";
+  m.code = "";
+  m.apiKey = "";
+  renderMain();
+  if (cancelFlow && kind && active) {
+    try { await api(`/api/runtime-auth/${kind}/cancel`, { method: "POST", body: JSON.stringify({ flowId }) }); } catch { /* ignore */ }
+  }
+}
+
+function rtScheduleAuthPoll() {
+  rtStopAuthPoll();
+  const m = rtAuthState();
+  if (!m.open || !m.kind || !m.flow?.flowId) return;
+  if (!["starting", "awaiting-auth", "submitting", "verifying"].includes(m.flow.phase)) return;
+  m.pollTimer = setTimeout(async () => {
+    m.pollTimer = null;
+    if (!m.open || !m.kind || !m.flow?.flowId) return;
+    try {
+      const res = await api(`/api/runtime-auth/${m.kind}/status?flowId=${encodeURIComponent(m.flow.flowId)}`);
+      if (res?.flow) m.flow = res.flow;
+      if (m.flow?.phase === "succeeded") {
+        await Promise.allSettled([rtLoadProfiles(), rtLoadAuthCaps(true)]);
+        announce(`${RT_KIND[m.kind]} 连接已通过`);
+        renderMain();
+        return;
+      }
+      if (m.flow?.phase === "failed" || m.flow?.phase === "cancelled") {
+        if (m.flow.error) m.error = m.flow.error;
+        renderMain();
+        return;
+      }
+    } catch { /* 下轮重试 */ }
+    renderMain();
+    rtScheduleAuthPoll();
+  }, 1800);
+}
+
+function rtAuthModal() {
+  const m = ui.rt.authModal;
+  if (!m?.open || !m.kind) return null;
+  const kind = m.kind;
+  const meta = RT_AUTH_META[kind] || { title: RT_KIND[kind], hint: "" };
+  const cap = ui.rt.authCaps?.runtimes?.[kind] || {
+    managedInstall: false,
+    requiresNetworkGate: false,
+    installed: true,
+    enabled: true,
+    isolatedCredentials: !!ui.rt.authCaps?.isolatedCredentials,
+    supportsApiKey: kind === "pi" || kind === "codex",
+    loginMode: kind === "pi" ? "api-key" : kind === "codex" ? "callback" : kind === "antigravity" ? "code-paste" : "hybrid",
+  };
+  const profile = (ui.rt.profiles || []).find((x) => x.runtimeKind === kind);
+  const needsNetwork = !!cap.requiresNetworkGate;
+  const networkPassed = !needsNetwork || !!m.networkResult?.decision?.allowed;
+  const needsInstall = !!cap.managedInstall && !cap.installed;
+  const installed = !needsInstall;
+  const flow = m.flow;
+  const flowRunning = !!(flow && ["starting", "awaiting-auth", "submitting", "verifying"].includes(flow.phase));
+  const succeeded = flow?.phase === "succeeded";
+
+  const runNetworkCheck = async () => {
+    m.busy = "network"; m.error = ""; renderMain();
+    try {
+      m.networkResult = await api(`/api/runtime-auth/${kind}/network-check`, {
+        method: "POST",
+        body: JSON.stringify(m.networkKey.trim() ? { apiKey: m.networkKey.trim() } : {}),
+      });
+      m.networkKey = "";
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const runInstall = async () => {
+    m.busy = "install"; m.error = ""; renderMain();
+    try {
+      const res = await api(`/api/runtime-auth/${kind}/install`, { method: "POST", body: "{}" });
+      if (res?.capabilities) ui.rt.authCaps = { available: true, ...res.capabilities };
+      else await rtLoadAuthCaps(true);
+      await rtLoadProfiles().catch(() => {});
+      announce(`${RT_KIND[kind]} 组件已安装`);
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const startLogin = async () => {
+    m.busy = "start"; m.error = ""; m.copied = false; m.code = ""; renderMain();
+    try {
+      m.flow = await api(`/api/runtime-auth/${kind}/start`, { method: "POST", body: "{}" });
+      if (m.flow?.authUrl) window.open(m.flow.authUrl, "_blank", "noopener,noreferrer");
+      if (m.flow?.phase === "failed") m.error = m.flow.error || m.flow.message;
+      else rtScheduleAuthPoll();
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const submitCode = async (ev) => {
+    ev?.preventDefault?.();
+    if (!m.flow?.flowId || !m.code.trim() || m.busy) return;
+    m.busy = "submit"; m.error = ""; renderMain();
+    try {
+      m.flow = await api(`/api/runtime-auth/${kind}/submit`, {
+        method: "POST",
+        body: JSON.stringify({ flowId: m.flow.flowId, code: m.code.trim() }),
+      });
+      m.code = "";
+      if (m.flow?.phase === "succeeded") {
+        await Promise.allSettled([rtLoadProfiles(), rtLoadAuthCaps(true)]);
+        announce(`${RT_KIND[kind]} 连接已通过`);
+      } else {
+        rtScheduleAuthPoll();
+      }
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const submitPiKey = async (ev) => {
+    ev?.preventDefault?.();
+    if (!m.apiKey.trim() || m.busy) return;
+    m.busy = "submit"; m.error = ""; renderMain();
+    try {
+      let current = m.flow;
+      if (!current?.flowId || current.phase === "failed" || current.phase === "cancelled") {
+        current = await api(`/api/runtime-auth/${kind}/start`, { method: "POST", body: "{}" });
+        m.flow = current;
+      }
+      m.flow = await api(`/api/runtime-auth/${kind}/submit`, {
+        method: "POST",
+        body: JSON.stringify({ flowId: current.flowId, provider: m.apiProvider, apiKey: m.apiKey.trim() }),
+      });
+      m.apiKey = "";
+      if (m.flow?.phase === "succeeded") {
+        await Promise.allSettled([rtLoadProfiles(), rtLoadAuthCaps(true)]);
+        announce("Pi API Key 已保存并验证通过");
+      } else if (m.flow?.error) {
+        m.error = m.flow.error;
+      }
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const verifyNow = async () => {
+    m.busy = "verify"; m.error = ""; renderMain();
+    try {
+      m.flow = await api(`/api/runtime-auth/${kind}/verify`, {
+        method: "POST",
+        body: JSON.stringify(m.flow?.flowId ? { flowId: m.flow.flowId } : {}),
+      });
+      if (m.flow?.phase === "succeeded") {
+        await Promise.allSettled([rtLoadProfiles(), rtLoadAuthCaps(true)]);
+        announce(`${RT_KIND[kind]} 连接已通过`);
+      } else if (m.flow?.error) {
+        m.error = m.flow.error;
+      }
+    } catch (e) { m.error = e.message; }
+    m.busy = ""; renderMain();
+  };
+
+  const cancelFlow = async () => {
+    rtStopAuthPoll();
+    if (m.flow?.flowId) {
+      try { await api(`/api/runtime-auth/${kind}/cancel`, { method: "POST", body: JSON.stringify({ flowId: m.flow.flowId }) }); } catch { /* ignore */ }
+    }
+    m.flow = null; m.code = ""; m.error = ""; renderMain();
+  };
+
+  const copyAuthUrl = async () => {
+    if (!m.flow?.authUrl) return;
+    try {
+      await navigator.clipboard.writeText(m.flow.authUrl);
+      m.copied = true; renderMain();
+      setTimeout(() => { if (ui.rt.authModal) { ui.rt.authModal.copied = false; renderMain(); } }, 2000);
+    } catch { m.error = "复制失败，请右键「打开官方登录页」复制链接"; renderMain(); }
+  };
+
+  let stepNo = 1;
+  const steps = [];
+
+  if (needsNetwork) {
+    const netReport = m.networkResult?.report;
+    const netLabels = { region: "支持地区", connectivity: "官方连通性", networkType: "IP 类型" };
+    steps.push(h("section", { class: `rt-auth-step${networkPassed ? " is-done" : " is-active"}` },
+      h("div", { class: "rt-auth-step-head" },
+        h("span", { class: "rt-auth-num" }, networkPassed ? "✓" : String(stepNo)),
+        h("h3", {}, "网络与地区检查"),
+        badge(networkPassed ? "已通过" : "必检项", networkPassed ? "ok" : "warn")),
+      h("div", { class: "rt-auth-row" },
+        h("input", {
+          type: "password", autocomplete: "off", placeholder: "ipapi.is API Key（已保存可留空）",
+          "aria-label": "ipapi.is API Key", "data-key": "rt-auth-net-key",
+          value: m.networkKey, disabled: !!m.busy,
+          oninput: (ev) => { m.networkKey = ev.target.value; },
+        }),
+        h("button", { type: "button", class: `btn${networkPassed ? "" : " primary"}`, disabled: !!m.busy, onclick: runNetworkCheck },
+          m.busy === "network" ? "检查中…" : networkPassed ? "重新检查" : "检查网络")),
+      netReport ? h("dl", { class: "kv rt-auth-kv" },
+        h("dt", {}, "出口国家"), h("dd", {}, netReport.exit?.countryCode || "未确认"),
+        ...Object.entries(netLabels).flatMap(([k, lbl]) => {
+          const st2 = netReport.checks?.[k]?.status;
+          return [h("dt", {}, lbl), h("dd", { class: st2 === "passed" ? "rt-auth-ok" : "warn-text" }, st2 === "passed" ? (k === "networkType" ? "非机房" : "通过") : st2 === "failed" ? "未通过" : "无法确认")];
+        })) : h("p", { class: "muted small" }, "核对出口地区与非机房类型后再安装组件或发起官方登录。")));
+    stepNo++;
+  }
+
+  if (cap.managedInstall) {
+    steps.push(h("section", { class: `rt-auth-step${installed ? " is-done" : networkPassed ? " is-active" : " is-locked"}` },
+      h("div", { class: "rt-auth-step-head" },
+        h("span", { class: "rt-auth-num" }, installed ? "✓" : String(stepNo)),
+        h("h3", {}, `安装 ${RT_SHORT[kind]} 组件`),
+        badge(installed ? "已安装" : "待安装", installed ? "ok" : "warn")),
+      installed
+        ? h("p", { class: "muted small" }, "组件已安装到实例私有目录并通过校验，不会影响宿主机全局配置。")
+        : [
+            h("p", { class: "muted small" }, "自动下载并校验哈希后安装到实例隔离目录，装完即可启用，无需重启服务。"),
+            h("div", { class: "rt-auth-actions" },
+              h("button", { type: "button", class: "btn primary", disabled: !!m.busy || !networkPassed, onclick: runInstall },
+                m.busy === "install" ? "正在安装组件…" : `安装 ${RT_SHORT[kind]} 组件`)),
+          ]));
+    stepNo++;
+  }
+
+  // 登录步骤
+  const loginReady = networkPassed && installed;
+  const needsCode = flow && (flow.mode === "code-paste" || flow.mode === "hybrid");
+  steps.push(h("section", { class: `rt-auth-step${succeeded ? " is-done" : loginReady ? " is-active" : " is-locked"}` },
+    h("div", { class: "rt-auth-step-head" },
+      h("span", { class: "rt-auth-num" }, succeeded ? "✓" : String(stepNo)),
+      h("h3", {}, kind === "pi" ? "配置 API Key" : "网页官方登录"),
+      badge(succeeded ? "已连接" : flowRunning ? "进行中" : "待完成", succeeded ? "ok" : flowRunning ? "accent" : "warn")),
+    succeeded
+      ? h("div", { class: "rt-auth-success" },
+          h("strong", {}, `✓ ${RT_KIND[kind]} 已连接就绪`),
+          h("p", { class: "small" }, [flow.identitySummary, flow.modelCount ? `检测到 ${flow.modelCount} 个可用模型` : ""].filter(Boolean).join(" · ") || "账号验证已通过，可以立即新建会话。"))
+      : kind === "pi"
+        ? h("form", { class: "rt-auth-form", onsubmit: submitPiKey },
+            h("p", { class: "muted small" }, meta.hint),
+            h("div", { class: "rt-auth-row" },
+              h("select", { "aria-label": "模型服务商", value: m.apiProvider, disabled: !!m.busy, onchange: (ev) => { m.apiProvider = ev.target.value; } },
+                h("option", { value: "deepseek", selected: m.apiProvider === "deepseek" }, "DeepSeek")),
+              h("input", {
+                type: "password", autocomplete: "off", placeholder: "输入你的 API Key",
+                "aria-label": "API Key", "data-key": "rt-auth-pi-key",
+                value: m.apiKey, disabled: !!m.busy,
+                oninput: (ev) => { m.apiKey = ev.target.value; const btn = document.querySelector("[data-key='rt-auth-pi-submit']"); if (btn) btn.disabled = !!m.busy || !m.apiKey.trim(); },
+              }),
+              h("button", { type: "submit", class: "btn primary", "data-key": "rt-auth-pi-submit", disabled: !!m.busy || !m.apiKey.trim() }, m.busy === "submit" ? "验证中…" : "验证并保存")))
+        : !flowRunning
+          ? [
+              h("p", { class: "muted small" }, meta.hint),
+              !cap.installed && !cap.managedInstall
+                ? h("p", { class: "warn-text small" }, `当前机器尚未检测到 ${RT_KIND[kind]} 可执行文件。`)
+                : null,
+              h("div", { class: "rt-auth-actions" },
+                h("button", { type: "button", class: "btn primary", "data-key": "rt-auth-start", disabled: !!m.busy || !loginReady || (!cap.installed && !cap.managedInstall), onclick: startLogin },
+                  m.busy === "start" ? "正在准备链接…" : "开始官方登录"),
+                profile?.state === "needs-login" || profile?.lastAuthFailure
+                  ? h("button", { type: "button", class: "btn", disabled: !!m.busy, onclick: verifyNow }, m.busy === "verify" ? "检查中…" : "已登录？立即检查")
+                  : null),
+            ]
+          : [
+              h("div", { class: "rt-auth-live", role: "status" },
+                h("span", { class: "rt-auth-pulse", "aria-hidden": "true" }),
+                h("span", {}, flow.phase === "verifying" ? "授权已收到，正在验证账号与模型…" : flow.phase === "submitting" ? "正在提交授权回执…" : "等待你在浏览器完成官方授权…")),
+              h("p", { class: "muted small" }, flow.message),
+              flow.authUrl ? h("div", { class: "rt-auth-actions" },
+                h("a", { class: "btn primary", href: flow.authUrl, target: "_blank", rel: "noopener noreferrer" }, "打开官方登录页 ↗"),
+                h("button", { type: "button", class: "btn", onclick: copyAuthUrl }, m.copied ? "✓ 已复制链接" : "复制登录链接"),
+                h("button", { type: "button", class: "btn", disabled: !!m.busy, onclick: cancelFlow }, "取消")) : null,
+              needsCode ? h("form", { class: "rt-auth-code-form", onsubmit: submitCode },
+                h("label", { class: "small muted", for: "rt-auth-code-input" }, flow.mode === "code-paste" ? "授权完成后，粘贴授权码或回调网址：" : "若页面给出授权码请粘贴到这里（自动完成时无需填写）："),
+                h("div", { class: "rt-auth-row" },
+                  h("input", {
+                    id: "rt-auth-code-input", type: "text", autocomplete: "off", spellcheck: "false",
+                    placeholder: meta.codePlaceholder || "粘贴授权码", "data-key": "rt-auth-code",
+                    value: m.code, disabled: !!m.busy || flow.phase === "verifying",
+                    oninput: (ev) => { m.code = ev.target.value; const btn = document.querySelector("[data-key='rt-auth-code-submit']"); if (btn) btn.disabled = !!m.busy || !m.code.trim(); },
+                  }),
+                  h("button", { type: "submit", class: "btn primary", "data-key": "rt-auth-code-submit", disabled: !!m.busy || !m.code.trim() || flow.phase === "verifying" }, m.busy === "submit" ? "提交中…" : "提交"))) : null,
+              h("div", { class: "rt-auth-fallback" },
+                h("button", { type: "button", class: "btn-link small", disabled: !!m.busy, onclick: verifyNow }, m.busy === "verify" ? "检查中…" : "已完成浏览器授权？立即检查连接")),
+            ]));
+
+  return h("div", {
+    class: "rt-auth-overlay",
+    role: "presentation",
+    onclick: (ev) => { if (ev.target === ev.currentTarget) void rtCloseAuthModal(false); },
+    onkeydown: (ev) => { if (ev.key === "Escape") void rtCloseAuthModal(false); },
+  },
+    h("div", { class: "rt-auth-dialog", role: "dialog", "aria-modal": "true", "aria-label": `连接 ${RT_KIND[kind]}` },
+      h("header", { class: "rt-auth-head" },
+        h("div", { class: "rt-auth-title" },
+          h("span", { class: `rt-glyph ${kind}`, "aria-hidden": "true" }, RT_GLYPH[kind]),
+          h("div", {},
+            h("h2", {}, `连接 ${meta.title}`),
+            h("p", { class: "muted small" }, cap.isolatedCredentials ? "实例强隔离凭据 · 仅本机 127.0.0.1 可操作" : "网页托管官方授权 · 仅本机 127.0.0.1 可操作"))),
+        h("button", { type: "button", class: "btn small rt-auth-close", "aria-label": "关闭", onclick: () => void rtCloseAuthModal(false) }, "✕")),
+      h("div", { class: "rt-auth-body" },
+        m.error ? h("p", { class: "field-error", role: "alert" }, m.error) : null,
+        steps),
+      h("footer", { class: "rt-auth-foot" },
+        succeeded
+          ? h("button", { type: "button", class: "btn primary", onclick: () => void rtCloseAuthModal(false) }, "完成并返回")
+          : h("button", { type: "button", class: "btn", onclick: () => void rtCloseAuthModal(true) }, flowRunning ? "取消登录并关闭" : "关闭"))));
+}
+
 /* ------------------------------ 运行时配置 ------------------------------ */
+
+const RT_CONFIG_TABS = [
+  ["profiles", "rt-sec-profiles", "运行时"],
+  ["settings", "rt-sec-settings", "设置与授权"],
+  ["usage", "rt-sec-usage", "用量"],
+  ["history", "rt-sec-history", "本机历史"],
+];
 
 /**
  * 运行时配置面板。options.embedded 用在系统设置的「运行时配置」一行：
  * 设置页已经有自己的标题和返回，这里不再重复一个标题层级与「← 返回会话」。
+ * 手机端（≤760px）顶部 4 个子 Tab 分页切换；桌面端平铺各区块并用同一个导航条锚点跳转。
  */
 function renderRuntimes(options = {}) {
   const embedded = options.embedded === true;
   const a = ui.rt.access;
+  if (a?.canEditSettings && !ui.rt.authCaps && !ui.rt.authCapsLoading) void rtLoadAuthCaps();
+  if (ui.rt.pendingAuthKind && a?.canEditSettings) {
+    const targetKind = ui.rt.pendingAuthKind;
+    ui.rt.pendingAuthKind = null;
+    queueMicrotask(() => rtOpenAuthModal(targetKind));
+  }
   const profiles = ui.rt.profiles;
   const probingAll = ui.rt.busy === "probe-all";
+  const activeTab = RT_CONFIG_TABS.some(([k]) => k === ui.rt.configTab) ? ui.rt.configTab : "profiles";
   const probeAll = async () => {
     ui.rt.busy = "probe-all"; ui.rt.error = ""; renderMain();
     const results = await Promise.allSettled(RT_KINDS.map((k) => api(`/api/runtime-profiles/${k}/probe`, { method: "POST", body: "{}" })));
@@ -38,27 +445,56 @@ function renderRuntimes(options = {}) {
     announce(failed.length ? "部分运行时检查失败" : "全部运行时检查完成");
     ui.rt.busy = ""; renderMain();
   };
-  const jump = (id, label) => h("a", { href: embedded ? `#/settings/runtimes` : `#/runtimes`, onclick: (ev) => { ev.preventDefault(); document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }); } }, label);
+  const jump = (key, id, label) => {
+    const on = activeTab === key;
+    return h("a", {
+      href: embedded ? "#/settings/runtimes" : "#/runtimes",
+      role: "tab",
+      class: `rt-config-tab${on ? " active on" : ""}`,
+      "aria-selected": String(on),
+      "data-rt-tab": key,
+      onclick: (ev) => {
+        ev.preventDefault();
+        ui.rt.configTab = key;
+        renderMain();
+        if (!window.matchMedia?.("(max-width: 760px)").matches) {
+          document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      },
+    }, label);
+  };
   const summary = `主机 ${ui.rt.host ? ui.rt.host.label : "本机"} · 认证由各 runtime 自己维护，平台只读脱敏身份摘要 · 检查连接不执行模型任务`;
   const probeAllBtn = a && a.control ? h("button", { type: "button", class: "btn", disabled: !!ui.rt.busy, onclick: probeAll }, probingAll ? "检查中…" : "全部检查") : null;
-  return h("div", { class: `rt-config${embedded ? " rt-config-embedded" : ""}` },
+  return h("div", { class: `rt-config${embedded ? " rt-config-embedded" : ""}`, "data-rt-config-tab": activeTab },
     embedded ? null : h("p", { class: "rt-config-back" }, h("a", { href: "#/rt" }, "← 返回会话")),
     embedded
       ? h("div", { class: "rt-config-head" }, h("div", {}, h("p", { class: "muted small" }, summary)), probeAllBtn)
       : h("div", { class: "rt-config-head" },
           h("div", {}, h("h1", {}, "运行时"), h("p", { class: "muted small" }, summary)),
           probeAllBtn),
-    h("nav", { class: "rt-config-nav", "aria-label": "页内导航" }, jump("rt-sec-profiles", "运行时"), jump("rt-sec-settings", "设置与授权"), jump("rt-sec-usage", "用量"), jump("rt-sec-history", "本机历史")),
+    h("nav", { class: "rt-config-nav inpage-tabs", role: "tablist", "aria-label": "页内导航" }, RT_CONFIG_TABS.map(([k, id, label]) => jump(k, id, label))),
     rtAccessNote(),
     ui.rt.error ? h("p", { class: "field-error", role: "alert" }, ui.rt.error) : null,
-    h("div", { class: "rt-profiles", id: "rt-sec-profiles" }, RT_KINDS.map((k) => rtProfileCard(k, profiles ? profiles.find((p) => p.runtimeKind === k) : null, a))),
-    rtSettingsCard(a),
-    rtUsageCard(),
-    rtHistoryCard(a));
+    h("div", { class: "rt-profiles rt-config-pane", id: "rt-sec-profiles", "data-rt-pane": "profiles", "data-rt-pane-active": String(activeTab === "profiles") },
+      RT_KINDS.map((k) => rtProfileCard(k, profiles ? profiles.find((p) => p.runtimeKind === k) : null, a))),
+    rtSettingsCard(a, activeTab === "settings"),
+    rtUsageCard(activeTab === "usage"),
+    rtHistoryCard(a, activeTab === "history"),
+    rtAuthModal());
+}
+
+function rtProfileDefaultPermission(kind, p) {
+  const options = p?.permissionOptions?.length ? p.permissionOptions : (p?.permissions ? [p.permissions] : []);
+  const saved = ui.rt.settings?.defaultSessionByRuntime?.[kind]?.permissionMode;
+  const builtin = typeof rtDefaultPermission === "function" ? rtDefaultPermission(kind) : (p?.permissions?.id || options[0]?.id || "");
+  const activeId = (saved && options.some((x) => x.id === saved)) ? saved : (options.some((x) => x.id === builtin) ? builtin : (options[0]?.id || builtin));
+  const active = options.find((x) => x.id === activeId) || p?.permissions || { id: activeId, label: activeId || "默认", detail: "" };
+  return { options, activeId, active, saved: saved || "" };
 }
 
 function rtProfileCard(kind, p, a) {
   const probing = ui.rt.busy === `probe-${kind}` || ui.rt.busy === "probe-all";
+  const permBusy = ui.rt.busy === `perm-${kind}`;
   const probe = async (relogged) => {
     ui.rt.busy = `probe-${kind}`; ui.rt.error = ""; renderMain();
     try { await api(`/api/runtime-profiles/${kind}/probe`, { method: "POST", body: JSON.stringify(relogged === true ? { reloggedIn: true } : {}) }); await rtLoadProfiles(); announce(`${RT_KIND[kind]} 检查完成`); }
@@ -71,19 +507,87 @@ function rtProfileCard(kind, p, a) {
     catch (e) { ui.rt.error = `${RT_KIND[kind]} 额度：${e.message}`; }
     ui.rt.busy = ""; renderMain();
   };
+  const perm = p ? rtProfileDefaultPermission(kind, p) : null;
+  const savePerm = async (nextMode) => {
+    if (!p || !perm) return;
+    const cur = ui.rt.settings?.defaultSessionByRuntime?.[kind];
+    const sel = typeof rtSelectableModels === "function" ? rtSelectableModels(kind, p) : { models: p.models || [] };
+    let model = cur?.model ?? "";
+    let effort = cur?.effort ?? "";
+    if (model && !sel.models.some((m) => m.id === model)) { model = ""; effort = ""; }
+    if (effort) {
+      const mo = typeof rtModelOption === "function" ? rtModelOption(p, model) : p.models?.find((m) => m.id === model);
+      if (!(mo?.efforts || []).includes(effort)) effort = "";
+    }
+    ui.rt.busy = `perm-${kind}`; ui.rt.error = ""; renderMain();
+    try {
+      ui.rt.settings = await api(`/api/runtime-profiles/${kind}/session-defaults`, {
+        method: "PUT",
+        body: JSON.stringify({ defaults: { model, effort, permissionMode: nextMode } }),
+      });
+      if (ui.rt.settingsDraft) ui.rt.settingsDraft.defaultSessionByRuntime = ui.rt.settings.defaultSessionByRuntime;
+      if (typeof rtWriteCache === "function") rtWriteCache();
+      const label = perm.options.find((x) => x.id === nextMode)?.label || nextMode;
+      announce(`${RT_KIND[kind]} 默认权限已改为 ${label}`);
+    } catch (e) {
+      ui.rt.error = `${RT_KIND[kind]} 默认权限：${e.message}`;
+    }
+    ui.rt.busy = ""; renderMain();
+  };
   const [st, sk] = p ? RT_PROFILE_STATE[p.state] || [p.state, ""] : ["未检查", "warn"];
-  const channel = p ? (p.transport === "app-server-stdio" ? "Codex app-server（stdio，平台自管进程）" : p.transport === "pi-rpc" ? "Pi RPC（本地进程）" : "Claude Agent SDK（本地进程）") : "";
+  const channel = p ? (p.transport === "app-server-stdio" ? "Codex app-server（stdio，平台自管进程）" : p.transport === "pi-rpc" ? "Pi RPC（本地进程）" : p.transport === "acp-stdio" ? "Antigravity ACP（stdio，本地进程）" : "Claude Agent SDK（本地进程）") : "";
+  const authCaps = ui.rt.authCaps;
+  const authCap = authCaps?.available ? authCaps.runtimes?.[kind] : null;
+  const canVisualAuth = !!(a && a.canEditSettings && authCap);
+  const needsInstall = !!(authCap?.managedInstall && !authCap.installed);
+  const needsLogin = !p || p.state === "needs-login" || p.state === "not-installed" || !!p.lastAuthFailure;
+  const visualAuthLabel = needsInstall
+    ? "启用并连接"
+    : kind === "pi"
+      ? (p?.state === "executable" ? "更换 Key" : "配置 API Key")
+      : (p?.state === "executable" && !p?.lastAuthFailure ? "重新登录" : "网页登录");
+  const visualAuthPrimary = needsInstall || needsLogin;
+  const friendlyReason = (() => {
+    if (!p) return "";
+    if (canVisualAuth && needsInstall && p.state === "not-installed") {
+      return "尚未启用此运行时，点击「启用并连接」可在界面中完成网络检查、组件安装与官方登录。";
+    }
+    if (canVisualAuth && (p.state === "needs-login" || p.lastAuthFailure)) {
+      return kind === "pi"
+        ? "尚未配置可用的模型 API Key，点击「配置 API Key」即可验证并隔离保存。"
+        : "尚未登录或登录已过期，点击「网页登录」即可在浏览器完成官方授权，无需打开终端。";
+    }
+    return p.stateReason;
+  })();
   return h("section", { class: "card rt-profile", "aria-label": RT_KIND[kind] },
     h("div", { class: "rt-profile-head" }, h("span", { class: `rt-glyph ${kind}`, "aria-hidden": "true" }, RT_GLYPH[kind]), h("h2", {}, RT_KIND[kind]), badge(st, sk),
       a && a.control ? h("button", { type: "button", class: "btn small", disabled: probing || !!ui.rt.busy, onclick: () => probe(false) }, probing ? "检查中…" : "检查") : null),
-    !p ? h("p", { class: "muted small" }, "还没有检查过。检查会在服务进程环境里查找 runtime、核对协议能力与登录状态，不执行模型任务。") : [
-      h("p", { class: `rt-profile-reason small${sk === "ok" ? " muted" : " warn-text"}` }, p.stateReason),
-      a && a.control && p.lastAuthFailure ? h("button", { type: "button", class: "btn small primary", disabled: probing, onclick: () => probe(true) }, "已重新登录，重新检查") : null,
+    !p ? [
+      h("p", { class: "muted small" }, canVisualAuth ? "还没有检查过。可以直接在网页完成连接与授权，或先点「检查」核对当前状态。" : "还没有检查过。检查会在服务进程环境里查找 runtime、核对协议能力与登录状态，不执行模型任务。"),
+      canVisualAuth ? h("div", { class: "rt-profile-cta" },
+        h("button", { type: "button", class: `btn small${visualAuthPrimary ? " primary" : ""}`, "data-key": `rt-visual-auth-${kind}`, disabled: !!ui.rt.busy, onclick: () => rtOpenAuthModal(kind) }, visualAuthLabel)) : null,
+    ] : [
+      h("p", { class: `rt-profile-reason small${sk === "ok" ? " muted" : " warn-text"}` }, friendlyReason),
+      canVisualAuth ? h("div", { class: "rt-profile-cta" },
+        h("button", { type: "button", class: `btn small${visualAuthPrimary ? " primary" : ""}`, "data-key": `rt-visual-auth-${kind}`, disabled: !!ui.rt.busy, onclick: () => rtOpenAuthModal(kind) }, visualAuthLabel)) : null,
+      a && a.control && p.lastAuthFailure && !canVisualAuth ? h("button", { type: "button", class: "btn small primary", disabled: probing, onclick: () => probe(true) }, "已重新登录，重新检查") : null,
       rtQuotaWarning(p),
       h("dl", { class: "kv rt-facts" },
         h("dt", {}, "账号"), h("dd", { title: p.identity ? `${p.identity.authMode} · 来源 ${p.identity.source}` : "" }, p.identity ? p.identity.summary : "未知"),
         h("dt", {}, "版本"), h("dd", {}, `${p.binaryVersion || "未知"}${p.sdkVersion ? ` · SDK ${p.sdkVersion}` : ""}`),
-        h("dt", {}, "权限"), h("dd", { title: p.permissions.detail }, p.permissions.label),
+        h("dt", {}, "默认权限"), h("dd", { class: "rt-default-perm" },
+          a && a.control && perm.options.length > 1
+            ? h("div", { class: "rt-default-perm-row" },
+                h("select", {
+                  class: "rt-default-perm-select",
+                  "aria-label": `${RT_KIND[kind]} 默认权限`,
+                  "data-key": `rt-default-perm-${kind}`,
+                  disabled: permBusy || !!ui.rt.busy,
+                  onchange: (ev) => savePerm(ev.target.value),
+                }, perm.options.map((opt) => h("option", { value: opt.id, selected: opt.id === perm.activeId }, opt.label))),
+                permBusy ? h("span", { class: "muted small" }, "保存中…") : null)
+            : h("span", { title: perm.active.detail }, perm.active.label),
+          perm.active.detail ? h("span", { class: `rt-default-perm-note small${perm.activeId === "full-access" || perm.activeId === "bypassPermissions" ? " warn-text" : " muted"}` }, perm.active.detail) : null),
         h("dt", {}, "检查"), h("dd", { title: rtTime(p.checkedAt) }, rtAgo(p.checkedAt))),
       h("div", { class: "rt-profile-sec" }, p.models.length ? rtModelAllowlist(kind, p, a) : [h("h3", {}, "模型"), h("p", { class: "muted small" }, "未读取到")]),
       h("div", { class: "rt-profile-sec rt-rl" },
@@ -95,11 +599,11 @@ function rtProfileCard(kind, p, a) {
           h("dt", {}, "位置"), h("dd", { class: "mono small" }, p.binaryPath || "—"),
           h("dt", {}, "通道"), h("dd", { class: "small" }, channel),
           h("dt", {}, "身份"), h("dd", { class: "small" }, p.identity ? `${p.identity.authMode} · ${p.identity.derivation === "stable-account-id" ? "稳定账号 ID" : "持久身份分区（无稳定账号 ID）"} · 来源 ${p.identity.source}` : "未知"),
-          h("dt", {}, "权限"), h("dd", { class: "small" }, p.permissions.detail),
+          h("dt", {}, "权限"), h("dd", { class: "small" }, perm.active.detail || p.permissions.detail),
           h("dt", {}, "检查于"), h("dd", { class: "small" }, rtTime(p.checkedAt))),
-        h("table", { class: "rt-table" }, h("tbody", {}, Object.entries(p.capabilities).map(([k, c2]) => h("tr", {},
-          h("td", {}, RT_CAP[k] || k), h("td", {}, badge({ supported: "支持", unsupported: "不支持", unknown: "未知" }[c2.status] || c2.status, c2.status === "supported" ? "ok" : c2.status === "unsupported" ? "bad" : "warn")),
-          h("td", { class: "small muted" }, c2.reason))))),
+        h("table", { class: "rt-table rt-cap-table" }, h("tbody", {}, Object.entries(p.capabilities).map(([k, c2]) => h("tr", {},
+          h("td", { class: "rt-cap-name" }, RT_CAP[k] || k), h("td", { class: "rt-cap-status" }, badge({ supported: "支持", unsupported: "不支持", unknown: "未知" }[c2.status] || c2.status, c2.status === "supported" ? "ok" : c2.status === "unsupported" ? "bad" : "warn")),
+          h("td", { class: "rt-cap-reason small muted" }, c2.reason))))),
         p.configSummary?.length ? h("ul", { class: "small" }, p.configSummary.map((l) => h("li", {}, l))) : null)
     ]);
 }
@@ -171,7 +675,7 @@ function rtModelAllowlist(kind, p, a) {
 }
 
 /** 本机已有历史（只读）：从多运行时对话列表里剥离出来，在这里按工作目录查看 */
-function rtHistoryCard(a) {
+function rtHistoryCard(a, active = true) {
   const hist = ui.rt.history;
   const load = async () => {
     ui.rt.history = { loading: true };
@@ -181,10 +685,10 @@ function rtHistoryCard(a) {
     renderMain();
   };
   const notes = hist && hist.notes ? Object.entries(hist.notes).filter(([, x]) => x.error || (x.notes && x.notes.length)).map(([k, x]) => `${RT_KIND[k]}：${x.error || x.notes.join("；")}`) : [];
-  return h("section", { class: "card rt-history-card", id: "rt-sec-history" },
+  return h("section", { class: "card rt-history-card rt-config-pane", id: "rt-sec-history", "data-rt-pane": "history", "data-rt-pane-active": String(active) },
     h("div", { class: "rt-profile-head" }, h("h2", {}, "本机历史（只读）"),
       a && !a.history ? null : h("button", { type: "button", class: "btn small", disabled: !!(hist && hist.loading), onclick: load }, hist && hist.entries ? "刷新" : "查看历史会话")),
-    h("p", { class: "muted small" }, "授权目录里 Codex / Claude Code / Pi 已有的本机会话，只能查看，不能续聊。授权范围在上方「设置与授权」里调整。"),
+    h("p", { class: "muted small" }, "授权目录里 Codex / Claude Code / Pi / Antigravity 已有的本机会话，只能查看，不能续聊。授权范围在上方「设置与授权」里调整。"),
     a && !a.history ? h("p", { class: "muted small" }, "当前入口没有开启历史查看") : null,
     !hist ? null : hist.loading ? h("p", { class: "muted small" }, "加载中…") : hist.error ? h("p", { class: "field-error" }, hist.error) : [
       notes.length ? h("p", { class: "muted small" }, notes.join("；")) : null,
@@ -199,15 +703,24 @@ function rtHistoryCard(a) {
     ]);
 }
 
-function rtUsageCard() {
+function rtUsageCard(active = true) {
   const u = ui.rt.usageSummary;
   const fmt = (x) => x ? `${rtNum(x.input)} / ${rtNum(x.output)}（${x.requests} 次）` : "—";
-  return h("section", { class: "card", id: "rt-sec-usage" },
+  const cell = (label, x) => h("td", { "data-label": label, ...(x ? {} : { "data-empty": "true" }) }, fmt(x));
+  return h("section", { class: "card rt-usage-card rt-config-pane", id: "rt-sec-usage", "data-rt-pane": "usage", "data-rt-pane-active": String(active) },
     h("h2", {}, "用量汇总（近 14 天）"),
     !u ? h("p", { class: "muted small" }, ui.rt.usageError || "加载中…") : [
-      u.days.length ? h("table", { class: "rt-table" },
-        h("thead", {}, h("tr", {}, h("th", {}, `日期（${u.timeZone}）`), h("th", {}, "Claude Code 输入 / 输出"), h("th", {}, "Codex 输入 / 输出"), h("th", {}, "Pi 输入 / 输出"))),
-        h("tbody", {}, u.days.map((d) => h("tr", {}, h("td", {}, d.day), h("td", {}, fmt(d.byRuntime["claude-code"])), h("td", {}, fmt(d.byRuntime.codex)), h("td", {}, fmt(d.byRuntime.pi)))))) : h("p", { class: "muted small" }, "这段时间没有可按日期归属的用量"),
+      u.days.length ? h("div", { class: "rt-table-wrap rt-usage-wrap", "data-keep-scroll-x": "rt-usage-table" }, h("table", { class: "rt-table rt-usage-table" },
+        h("thead", {}, h("tr", {}, h("th", {}, `日期（${u.timeZone}）`), h("th", {}, "Claude Code 输入 / 输出"), h("th", {}, "Codex 输入 / 输出"), h("th", {}, "Pi 输入 / 输出"), h("th", {}, "Antigravity 输入 / 输出"))),
+        h("tbody", {}, u.days.map((d) => {
+          const any = RT_KINDS.some((k) => !!d.byRuntime[k]);
+          return h("tr", { ...(any ? {} : { "data-all-empty": "true" }) },
+            h("td", { class: "rt-usage-day" }, d.day),
+            cell("Claude Code", d.byRuntime["claude-code"]),
+            cell("Codex", d.byRuntime.codex),
+            cell("Pi", d.byRuntime.pi),
+            cell("Antigravity", d.byRuntime.antigravity));
+        })))) : h("p", { class: "muted small" }, "这段时间没有可按日期归属的用量"),
       u.unattributed.length ? h("p", { class: "small" }, "不分日期（只有会话累计值）：", u.unattributed.map((x) => `${RT_KIND[x.runtimeKind]} ${x.sessions} 个会话，合计 ${rtNum(x.total)} tokens`).join("；")) : null,
       h("ul", { class: "muted small" }, u.notes.map((n) => h("li", {}, n)))
     ]);
@@ -216,7 +729,8 @@ function rtUsageCard() {
 const RT_HIST_NOTE = {
   codex: "经 Codex app-server 的 thread/list、thread/read 读取；历史用量从授权根内的 rollout 文件末尾回退读取。不读取认证文件或 Desktop 私有数据库。",
   "claude-code": "经 Claude Agent SDK 的 listSessions、getSessionMessages 读取。撤销授权清理平台缓存，不删除原文件。",
-  pi: "只读解析授权项目的 Pi 原生会话记录；撤销授权清理平台索引，不删除原文件。"
+  pi: "只读解析授权项目的 Pi 原生会话记录；撤销授权清理平台索引，不删除原文件。",
+  antigravity: "经 agy acp 的 session/list、session/load 读取；回放只含消息与工具调用，不含 token 用量。撤销授权清理平台缓存，不删除原文件。"
 };
 
 /**
@@ -237,15 +751,18 @@ function rtMaxRunningPicker(s) {
     " 个", ui.rt.busy === "max-running" ? h("span", { class: "muted" }, " 保存中…") : null);
 }
 
-function rtSettingsCard(a) {
+function rtSettingsCard(a, active = true) {
   const s = ui.rt.settings;
   if (!s) return null;
+  // 服务端总会给全部 runtime；快照缺某一项时补默认，不让一个缺项把整页设置画崩
+  for (const k of RT_KINDS) (s.history ||= {})[k] ||= { enabled: false, roots: [] };
   const editable = a && a.canEditSettings;
   const own = (k, src) => src.workspaceRootsByRuntime && src.workspaceRootsByRuntime[k] != null;
+  const paneAttrs = { class: "card rt-settings rt-config-pane", id: "rt-sec-settings", "data-rt-pane": "settings", "data-rt-pane-active": String(active) };
   if (!editable) {
     // 对外入口只读：直接给结论，不铺一页禁用的输入框
     const paths = (arr) => arr.length ? h("span", { class: "mono small" }, arr.join("、")) : h("span", { class: "muted small" }, "无");
-    return h("section", { class: "card rt-settings", id: "rt-sec-settings" },
+    return h("section", paneAttrs,
       h("div", { class: "rt-sec-head" }, h("h2", {}, "设置与授权"), h("span", { class: "muted small" }, a && a.control ? "并发上限可以在这里改；其余只读，在本机入口（127.0.0.1）修改" : "只读 · 在本机入口（127.0.0.1）修改")),
       h("dl", { class: "kv rt-facts" },
         h("dt", {}, "目录根"), h("dd", { title: "允许新建会话的工作目录根" }, paths(s.workspaceRoots)),
@@ -274,7 +791,7 @@ function rtSettingsCard(a) {
     ui.rt.busy = ""; renderMain();
   };
   const area = (key, value, oninput, extra = {}) => h("textarea", { rows: String(Math.min(4, Math.max(2, value.length + 1))), "data-key": key, value: lines(value), oninput: (ev) => { oninput(parse(ev.target.value)); touched(); }, ...extra });
-  return h("section", { class: "card rt-settings", id: "rt-sec-settings" },
+  return h("section", paneAttrs,
     h("div", { class: "rt-sec-head" }, h("h2", {}, "设置与授权"), h("span", { class: "muted small" }, "只在本机入口可改")),
     h("div", { class: "rt-settings-top" },
       h("label", { class: "rt-field" }, "允许新建会话的工作目录根（每行一个绝对路径）",

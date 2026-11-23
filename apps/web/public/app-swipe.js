@@ -3,8 +3,9 @@
  * 手机底部导航的一级页：在页面上左右滑 = 切到底栏里的上一个 / 下一个应用。
  *
  * 只在 body.nav-bottom（手机一级页）生效；顺序就是底栏上直接展示的入口顺序，
- * 收在「更多」里的不参与；唯一的例外是 AI浏览器（nav-settings.js 标 data-swipe-only，不占底栏）：
- * 它排在所有入口最左边、会话的左侧，在会话页右滑拉出，在它上面左滑回会话；到头了（第一个再往右 / 最后一个再往左）不循环，只做小幅阻尼回弹。
+ * 收在「更多」里的不参与；会话不在这个顺序里：它是盖在所有应用上方的一层，由 session-drawer.js 的下拉 / 上推进出。
+ * 到头了（第一个再往右 / 最后一个再往左）不循环，只做小幅阻尼回弹。
+ * 若有入口标了 data-swipe-only（不占底栏、只能滑出的页），它排在所有入口最左边。
  *
  * 页面里自己有「子 tab」且左右滑能切子 tab 的区域（例如待办页的 笔记 / 待办 / 日程，「今天」卡片的 人 / Agent），
  * 先让子 tab 滑：它在这个方向上还有下一项就归它；滑到头、这个方向没有下一项了，才轮到应用层切换。
@@ -20,12 +21,12 @@
   const RATIO = 1.5;        // 横向位移至少是纵向的 1.5 倍才算横滑，其余留给页面滚动
   const MIN_DX = 64;        // 松手时横向位移至少这么多才切换
   const EDGE = 24;          // 屏幕左右边缘，留给系统返回手势
-  const IGNORE = "input, textarea, select, [contenteditable], pre, table, canvas, iframe, dialog, [popover], .rt-lightbox, .image-zoom, .notes-new-fab, .rt-new-btn, [data-no-app-swipe]";
-  const OVERLAYS = "dialog[open], .rt-lightbox, .image-zoom, #nav-more:not([hidden]), body.notes-sheet-open";
+  const IGNORE = "input, textarea, select, [contenteditable], pre, table, canvas, iframe, dialog, [popover], .rt-auth-overlay, .rt-lightbox, .image-zoom, .notes-new-fab, .rt-new-btn, [data-no-app-swipe]";
+  const OVERLAYS = "dialog[open], .rt-auth-overlay, .rt-lightbox, .image-zoom, #nav-more:not([hidden]), body.notes-sheet-open";
 
   const claimers = (window.piAppSwipeClaimers = window.piAppSwipeClaimers || []);
   const tabs = () => [...document.querySelectorAll("#phone-bottom-nav .tabs > .tab[data-view]:not([hidden]):not([data-offline])")];
-  /** 滑动顺序：不占底栏的「只能滑出」页（AI浏览器）在最左边，后面是底栏入口。 */
+  /** 滑动顺序：不占底栏的「只能滑出」页（会话）在最左边，后面是底栏入口。 */
   const order = () => { const side = document.querySelector("#phone-bottom-nav .tab[data-swipe-only]"); return side ? [side, ...tabs()] : tabs(); };
   const claimed = (target, dx, dy) => claimers.some((fn) => { try { return !!fn(target, dx, dy); } catch { return false; } });
   const horizontalScroller = (target, main) => {
@@ -195,6 +196,8 @@
     if (multi && g?.dragging && mainEl()) springBack();
     if (busy || ev.pointerType !== "touch" || multi) return;
     if (!document.body.classList.contains("nav-bottom")) return;
+    // 会话列表里底栏选中的是「来源应用」（只是标记），左右滑不切应用：上下滑才是会话层的进出。
+    if (document.body.classList.contains("rt-phone-list")) return;
     const target = ev.target;
     const main = mainEl();
     if (!(target instanceof Element) || !main || !main.contains(target)) return;
@@ -250,5 +253,5 @@
     swallowUntil = 0; ev.preventDefault(); ev.stopPropagation();
   }, true);
 
-  window.piAppSwipe = { go, tabs, busy: () => busy };
+  window.piAppSwipe = { go, tabs, order, busy: () => busy };
 })();

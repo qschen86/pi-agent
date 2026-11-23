@@ -5,7 +5,7 @@
  * （第一个对外域名，没有就用请求自身的源）。
  * 该入口的 Caddy 会把 Host 改写成备用主机，所以它不必出现在 PI_AGENT_WEB_PUBLIC_HOSTS 里。
  */
-export const DEFAULT_PREFERRED_ORIGIN = "https://gui-backup-cn.harness.fund";
+export const DEFAULT_PREFERRED_ORIGIN = "https://console.example.com";
 
 export function preferredOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
   const raw = (env["PI_AGENT_PREFERRED_ORIGIN"] ?? DEFAULT_PREFERRED_ORIGIN).trim();

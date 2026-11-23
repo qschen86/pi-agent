@@ -1,3 +1,4 @@
+import { appData } from '../../../app-data.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -266,7 +267,7 @@ export class PipelineService {
     if (this.running) throw new PipelineError('busy', '流水线正在运行，稍后再试');
     const choice = parseScopeChoice(input);
     const { domain, project, sub, module } = choice;
-      
+
     const release = this.store.acquire(this.now().getTime());
     if (!release) throw new PipelineError('busy', '别的进程正在运行流水线，稍后再试');
     try {
@@ -682,4 +683,4 @@ export class PipelineService {
   stop(): void { this.stopped = true; clearTimeout(this.timer); clearTimeout(this.catchUp); for (const t of this.retryTimers) clearTimeout(t); this.retryTimers.clear(); }
 }
 
-export const pipelineRoot = (ledgerDir: string): string => join(ledgerDir, 'memory-public');
+export const pipelineRoot = (ledgerDir: string): string => appData(ledgerDir, 'memory').path('memory-public');

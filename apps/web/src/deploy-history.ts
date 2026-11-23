@@ -53,6 +53,10 @@ export interface DeployHistoryEntry {
   runtimeKind: DeployRuntime;
   /** 写下这条记录的部署控制器版本（脚本内容哈希前 7 位）；旧日志没有记录，为 undefined */
   controller?: string;
+  requestId?: string;
+  deployedSha?: string;
+  /** 部署耗时（毫秒）：从开始准备到上线完成，扣掉等待会话的时间；有流程存档时由部署接口补上 */
+  durationMs?: number;
 }
 
 export interface DeployActiveEntry {
@@ -152,6 +156,8 @@ export function parseDeployHistoryLine(line: string, index = 0): DeployHistoryEn
     subject: clean(rest[1] ?? ""),
     runtimeKind: runtimeOf(clean(rest[2] ?? "")),
     ...(clean(rest[3] ?? "") ? { controller: clean(rest[3] ?? "") } : {}),
+    ...(clean(rest[4] ?? "") ? { requestId: clean(rest[4] ?? "") } : {}),
+    ...(/^[a-f0-9]{7,40}$/i.test(rest[5] ?? "") ? { deployedSha: rest[5] } : {}),
   };
 }
 

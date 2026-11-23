@@ -58,6 +58,34 @@ export const BUILTIN_PROVIDER_ENV: Readonly<Record<string, readonly string[]>> =
 /** settings.json 里会让 pi 加载代码或额外资源的字段：不带进沙箱。 */
 export const CODE_LOADING_SETTINGS: readonly string[] = Object.freeze(["packages", "extensions", "skills", "prompts", "themes"]);
 
+/**
+ * DeepSeek 会话的上下文压缩默认值。
+ *
+ * DeepSeek 原生窗口是 100 万 token，pi 默认只留 16K 给回复，自动压缩要涨到约 98 万才触发，等于没开：
+ * 长会话每一步都重放十几万到三十几万 token 的上下文（近 14 天约 2/3 的估算金额花在 128K 以上的请求上）。
+ * 这里按「窗口 − reserveTokens」把触发线放到约 15 万，压缩时保留最近 4 万 token 原文。
+ * reserveTokens 同时是摘要输出的上限（取 0.8 倍与模型最大输出的较小者），85 万不会让摘要变长，只是上限。
+ * 用户自己的 settings.json 里写了同名项就以用户的为准；评测装配不加，保持固定行为。
+ */
+export const PI_DEEPSEEK_COMPACTION = Object.freeze({ reserveTokens: 850_000, keepRecentTokens: 40_000 });
+const DEEPSEEK_COMPACTION_MODELS: readonly string[] = Object.freeze(["deepseek-flash", "deepseek-v4-pro"]);
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/** 在用户的 compaction 设置之下叠一层平台默认值（模型级覆盖，key 为 provider/modelId）。 */
+function withDeepSeekCompaction(user: unknown, model: string | undefined): Record<string, unknown> {
+  const base = isRecord(user) ? user : {};
+  const userOverrides = isRecord(base["modelOverrides"]) ? base["modelOverrides"] : {};
+  const overrides: Record<string, unknown> = { ...userOverrides };
+  for (const id of new Set([...DEEPSEEK_COMPACTION_MODELS, ...(model ? [model] : [])])) {
+    const key = `deepseek/${id}`;
+    overrides[key] = { ...PI_DEEPSEEK_COMPACTION, ...(isRecord(userOverrides[key]) ? userOverrides[key] : {}) };
+  }
+  return { ...base, modelOverrides: overrides };
+}
+
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 export interface PiRuntimeLayout {
@@ -114,7 +142,7 @@ export function defaultPiConfigDir(env: NodeJS.ProcessEnv = process.env): string
  */
 export function preparePiRuntime(
   root: string,
-  options: { sourceAgentDir?: string; provider?: string; model?: string } = {}
+  options: { sourceAgentDir?: string; provider?: string; model?: string; /** 给 DeepSeek 会话叠加平台的压缩默认值（评测装配不要开） */ compactionDefaults?: boolean } = {}
 ): PreparedPiRuntime {
   const layout: PiRuntimeLayout = {
     root,
@@ -135,6 +163,7 @@ export function preparePiRuntime(
 
   // settings：去掉会加载代码的字段
   const safeSettings = Object.fromEntries(Object.entries(settings).filter(([k]) => !CODE_LOADING_SETTINGS.includes(k)));
+  if (options.compactionDefaults && provider === "deepseek") safeSettings["compaction"] = withDeepSeekCompaction(safeSettings["compaction"], options.model);
   if (Object.keys(safeSettings).length > 0) {
     writeFileSync(join(layout.agentDir, "settings.json"), JSON.stringify(safeSettings, null, 2), { mode: 0o600 });
     carried.settingsKeys = Object.keys(safeSettings).sort();

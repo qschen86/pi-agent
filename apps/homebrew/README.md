@@ -1,24 +1,26 @@
-# pi-agent Homebrew 发行
+# 合己 heji Homebrew 发行（包名 pi-agent）
+
+对客名称是「合己」（英文 heji）；命令行、Homebrew 配方与数据目录仍沿用 pi-agent，改名属于另一次带数据迁移的改动。
 
 首发为 Apple Silicon Mac 的本机浏览器工作台。用户自行持有电脑、模型账号与数据；不接入维护者的线上实例。Homebrew 配方要求 macOS 15 或以上及 Node 24，具体系统支持以干净设备验收为准。初始化检查至少 16GiB 内存、40GB 可用空间和 Seatbelt。
 
 ## 当前状态
 
-本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。现已提供公开预发布版：源码仓库 https://github.com/qschen86/pi-agent，Tap https://github.com/qschen86/homebrew-pi-agent。
+本目录复用原本机原型的配置向导和业务适配，新增 Homebrew 命令、实例锁与发行构建。只使用 Homebrew 分发。公开仓库与 Tap 未发布之前，下列安装步骤为目标流程，不代表已有公开下载。
 
 ## 安装与使用
 
-用户执行：
+维护者在公开仓库发布版本及配方后，用户执行（替换 OWNER/TAP 为实际发布名称）：
 
 ```sh
-brew tap qschen86/pi-agent
-brew install qschen86/pi-agent/pi-agent
+brew tap OWNER/TAP
+brew install OWNER/TAP/pi-agent
 brew services start pi-agent
 pi-agent status
 pi-agent open
 ```
 
-向导帮助设置本机管理员密码并连接自己的模型账号。API Key 安装保存后直接进入会话应用：自动开启一个欢迎会话，由助手自我介绍并引导完成第一个自定义工作台任务；Codex / Claude Code 仍在向导内完成首次任务。模型调用可能产生供应商费用。Codex / Claude 为可选组件，按向导检查并由用户自己授权。
+向导帮助设置本机管理员密码、连接自己的模型账号并完成首次任务。模型调用可能产生供应商费用。Codex / Claude 为可选组件，按向导检查并由用户自己授权。
 
 | 命令 | 行为 |
 | --- | --- |
@@ -32,9 +34,33 @@ pi-agent open
 
 服务生命周期由 `brew services start/stop/restart pi-agent` 管理，使用普通用户权限。第一阶段没有接入向导的自动启动开关；该开关不会创建额外 LaunchAgent。暂不支持 Linux、手机连接或公网访问。
 
-Homebrew 服务日志位于其前缀下的 `var/log/pi-agent.log`。向导操作失败时，日志会记录时间、接口、状态码与脱敏后的原因（API Key、令牌和长串凭据均以 `[redacted]` 替代）。`status` 不输出启动令牌；无法确认身份时不要把实例视作已停服。
+Homebrew 服务日志位于其前缀下的 `var/log/pi-agent.log`。`status` 不输出启动令牌；无法确认身份时不要把实例视作已停服。
 
 卸载软件前先停止服务；Formula 不删除实例数据。升级恢复链路尚待后续实现，当前候选版本不应直接用于唯一的生产数据副本。
+
+## 应用与数据
+
+pi-agent 由若干个应用组成，分三类：
+
+- **基础应用**：会话与运行时、群聊、记忆、产物、登录与设备、通知、设置与缓存、外部资源与用量，以及部署队列、诊断、错误统计。始终开启，不能关闭。
+- **可选应用**：独立的功能，可以在「设置 → 应用」里开或关。**默认只开基础应用**，可选应用要自己打开。当前版本带的可选应用是「笔记、待办与日程」。关闭只是隐藏入口、拒绝请求、停掉后台任务，**不会删除任何数据**，重新打开后原样恢复。
+- **私有应用**：只服务维护者个人的应用，不包含在发行包里。
+
+数据和程序是分开的。程序在 Homebrew 前缀里，随升级替换；你的数据都在实例目录里，每个应用一个子目录：
+
+```
+~/Library/Application Support/pi-agent/instance/data/
+  .data-layout          布局标记（apps = 每个应用一个子目录）
+  apps/
+    runtime-sessions/   会话与运行时的数据
+    memory/             记忆
+    notes/              笔记与待办（打开该应用后才有）
+    …                   其余基础应用各自一个目录
+```
+
+- 备份：停止服务后复制整个实例目录即可；`apps/<应用>/` 可以单独备份或清理。
+- 卸载软件不会删除实例目录，数据由你自己决定是否保留。
+- 实例目录里的数据永远不会进入发行包或源码包；发行包由维护者在构建前运行「公开前扫描」，确认不含个人信息。
 
 ## 维护者构建
 
@@ -67,8 +93,8 @@ node scripts/build-homebrew-release.mjs \
 
 ## 验收边界
 
-公开仓库已通过独立 GitHub Mac ARM 运行器的真实 Homebrew 安装、Formula 测试、后台服务启动/重启/停止、卸载保留数据标记及重新安装。本机也已完成同一套检查并成功打开默认浏览器。执行记录见 https://github.com/qschen86/pi-agent/actions/runs/43820423908；真实模型任务、系统注销登录及跨版本升级恢复仍待验收。
+本机命令和结构烟测不能代替干净 Mac 的 Homebrew 安装、后台服务重启、真实模型任务或跨版本升级验收。执行记录见 ACCEPTANCE.md。正式发布前必须补齐未验证项。
 
 ## 来源与许可证
 
-向导、本机服务和核心打包适配由 apps/homebrew 维护，公开发行采用 Homebrew。自有代码沿用该原型的 MIT LICENSE，第三方依赖保持各自许可。图像库的对应源码附件与载荷必须一并发布。
+向导、本机服务和核心打包适配源自会话 rt-141635bd18a644d5 的 macOS 本机原型，迁移后由本目录维护；应用打包与磁盘映像逻辑不纳入本渠道。自有代码沿用该原型的 MIT LICENSE，第三方依赖保持各自许可。图像库的对应源码附件与载荷必须一并发布。

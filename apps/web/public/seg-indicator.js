@@ -84,6 +84,7 @@
     ['.relation-tabs', '.entry-relations', '.relation-content'],
     ['.note-iteration-tabs', '.note-iteration-card', '.note-iteration-panel:not([hidden])'],
     ['.rt-memory-tabs', '.rt-memory-card', ':scope > :not(.rt-card-head)'],
+    ['.rt-config-nav', '.rt-config', ':scope > .rt-config-pane[data-rt-pane-active="true"]'],
     ['.rtc-lane-tabs', '.rtc-side, .room-round', '.rtc-cards, .room-round-cards'],
     ['.rt-tabs', '.rtc-page, .rt-center, .room-round', ':scope > :not(:has(.rt-tabs)):not(.rt-tabs)'],
     // 产物保留已有跟手 / 动画实现，这里只补应用级仲裁，不安装第二套手势。

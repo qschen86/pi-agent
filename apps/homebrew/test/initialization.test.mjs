@@ -25,8 +25,20 @@ test('new installation is private, local, empty, and does not claim acceptance',
   assert.equal(verifyPassword(input.password, record), true);
   assert.equal(verifyPassword('incorrect', record), false);
   assert.equal(JSON.stringify(config).includes(input.model.apiKey), false);
-  const billing = JSON.parse(readFileSync(join(input.root, 'data/runtime-billing.json'), 'utf8'));
-  assert.deepEqual(billing, { pi: { mode: 'api' }, codex: { mode: 'api' }, 'claude-code': { mode: 'api' } });
+  assert.equal(readFileSync(join(input.root, 'data/.data-layout'), 'utf8'), 'apps\n');
+  const billing = JSON.parse(readFileSync(join(input.root, 'data/apps/shell/runtime-billing.json'), 'utf8'));
+  assert.deepEqual(billing, { pi: { mode: 'api' }, codex: { mode: 'api' }, 'claude-code': { mode: 'api' }, antigravity: { mode: 'api' } });
+  assert.deepEqual(config.enabledRuntimes, ['pi']);
+  assert.equal(existsSync(join(input.root, 'credentials/antigravity')), true);
+});
+test('antigravity initialization isolates credentials directory and records enabledRuntimes', t => {
+  const input = { ...fixture(t), runtimeKind: 'antigravity', model: undefined };
+  initializeInstallation(input);
+  const config = readInstallation(input.root);
+  assert.equal(config.runtimeKind, 'antigravity');
+  assert.deepEqual(config.enabledRuntimes, ['antigravity']);
+  assert.deepEqual(config.onboarding, { component: 'pending', login: 'pending' });
+  assert.equal(statSync(join(input.root, 'credentials/antigravity')).mode & 0o777, 0o700);
 });
 test('existing data survives repeated initialization attempts', t => {
   const input = fixture(t); initializeInstallation(input);
