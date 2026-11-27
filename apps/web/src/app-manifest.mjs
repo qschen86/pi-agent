@@ -53,8 +53,8 @@ export const APPS = [
   },
   {
     id: 'auth', name: '登录与设备配对', tier: 'core',
-    api: ['auth'], pages: ['/device-pair', '/login'], views: [], routeModules: [], assets: [], sources: [],
-    data: ['auth-sessions.json', 'auth-sessions.json.mutex.sqlite', 'auth-sessions.json.pairs.json', 'auth-sessions.json.pairs.json.mutex.sqlite', 'device-pairs.json']
+    api: ['auth', 'remote-connect'], pages: ['/device-pair', '/login'], views: [], routeModules: [], assets: [], sources: [],
+    data: ['auth-sessions.json', 'auth-sessions.json.mutex.sqlite', 'auth-sessions.json.pairs.json', 'auth-sessions.json.pairs.json.mutex.sqlite', 'device-pairs.json', 'remote-connect.json', 'remote-connect.json.mutex.sqlite']
   },
   {
     id: 'notifications', name: '通知', tier: 'core',
@@ -86,7 +86,7 @@ export const APPS = [
   },
   {
     id: 'deploy-ops', name: '部署队列、诊断与错误统计', tier: 'core',
-    api: ['diagnostics', 'error-stats'], pages: [], views: [], routeModules: [], assets: [], sources: [],
+    api: ['diagnostics', 'error-stats', 'verify'], pages: [], views: [], routeModules: [], assets: [], sources: [],
     data: ['diagnostics/', 'repair-backups', 'v34-repair-backups'],
     dataReads: ['runtime-sessions:runtime']
   },

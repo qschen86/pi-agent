@@ -182,10 +182,15 @@ export interface SessionBinding {
    */
   quickAction?: QuickActionBadge;
   /**
-   * 最终推荐操作（输入框上方的快捷回复）：一轮结束时服务端算好并存在这里，随会话详情 / 实时同步一起到手机，
+   * 最终推荐操作（输入框上方或回合收束卡片里的快捷回复）：一轮结束时服务端算好并存在这里，随会话详情 / 实时同步一起到手机，
    * 打开会话不用再请求。eventKey 是它所属的那条消息；新一轮开始、归档时清掉。只做展示，不改 bindingRevision。
    */
   quickReplies?: StoredQuickReplies;
+  /**
+   * 历史轮次的一句话结论摘要（按助手消息 eventKey 索引，最多保留最近 50 轮）：
+   * 供「回合收束卡片」在回看历史轮次时直接展示，不随新一轮清掉，避免重开会话重复计费。只做展示，不改 bindingRevision。
+   */
+  turnSummaries?: Record<string, StoredTurnSummary>;
   /** 本会话已自动触发「重新部署」的次数：服务端累计，最多 AUTO_REDEPLOY_LIMIT 次；手动点击不计入。 */
   autoRedeployCount?: number;
   observation: ObservationStatus;
@@ -194,6 +199,18 @@ export interface SessionBinding {
   conflict?: { detectedAt: string; reason: string; evidence: string };
   /** 最后一次与原生记录核对的指纹（Codex updatedAt/turn 数；Claude 文件大小/末条 uuid） */
   nativeFingerprint?: { value: string; checkedAt: string; streamedKeys?: string[] };
+  /**
+   * 缓存变冷后的接续：长上下文会话空闲超过缓存保留时间后，续聊会把整段上下文重写一遍，
+   * 所以改成新开一个会话接着做。from 在新会话上、to 在被归档的旧会话上；worktree 随之转给新会话。
+   */
+  handoff?: {
+    from?: { platformSessionId: string; title: string; transcriptPath?: string };
+    to?: { platformSessionId: string; title: string };
+    at: string;
+    reason: "quota-resume" | "manual";
+    idleMs?: number;
+    contextTokens?: number;
+  };
   archived?: boolean;
   /** 归档时刻（恢复时清掉）：当天会话统计据此区分「今天归档」 */
   archivedAt?: string;
@@ -342,6 +359,68 @@ export interface ProjectedEvent {
   injection?: PlatformInjection;
   /** 强约束记忆的回合结束校验结果：侧栏卡片点开可查看 */
   enforcement?: PlatformEnforcement;
+  /** 本轮上下文缓存命中统计：挂在 turn-status 结束行上，点开看首调 / 整轮 / 热窗与前缀明细 */
+  cacheStats?: TurnCacheStats;
+  /** 本轮结束时的上下文占用与分类占比估算：挂在 turn-status 结束行上，默认收起展示总量，点开看堆叠占比条 */
+  contextStats?: TurnContextStats;
+}
+
+export interface TurnContextBreakdownPart {
+  key: "tool" | "system" | "chat" | "reasoning";
+  label: string;
+  /** 百分比（整数 0–100，各项相加 = 100） */
+  percent: number;
+  /** 按实测总上下文折算的估算 tokens */
+  tokens: number;
+}
+
+export interface TurnContextStats {
+  /** 本轮结束时实测上下文总 tokens */
+  totalTokens: number;
+  /** 模型上下文窗口上限（已知模型或 runtime 直报；未知时省略） */
+  windowTokens?: number;
+  /** 相对上一轮结束时的上下文增量（可正可负） */
+  deltaTokens?: number;
+  /** 相对窗口的占用比例（0..1，有 windowTokens 时存在） */
+  usageRatio?: number;
+  /** 水位状态：≥85% bad，≥70% warn，其余 neutral */
+  tone: "neutral" | "warn" | "bad";
+  /** 总量来源：reported=runtime 直报 contextTokens，last-request=最近一次请求总输入 */
+  source: "reported" | "last-request";
+  /** 各部分估算占比（基于本会话截至本轮的事件字符权重，按 totalTokens 归一化） */
+  parts: TurnContextBreakdownPart[];
+}
+
+export interface TurnCacheStats {
+  /** 折叠行主徽章展示的命中率（第 ≥2 轮测到首调时为首调命中率，否则为本轮整轮命中率） */
+  primaryRate: number;
+  primaryKind: "first-call" | "turn";
+  tone: "ok" | "warn" | "bad" | "neutral";
+  /** 折叠行紧凑标签（如「缓存 96.9%」「整轮 83.7%」「缓存 0.0% · 异常」） */
+  badgeLabel: string;
+  firstCall?: {
+    hitRate: number;
+    cachedIn: number;
+    totalIn: number;
+    uncachedIn: number;
+    source: string;
+  };
+  turnTotal?: {
+    hitRate: number;
+    cachedIn: number;
+    totalIn: number;
+  };
+  warm?: boolean;
+  idleMs?: number;
+  warmWindowMs?: number;
+  prevContextTokens?: number;
+  expectedMinHitRate?: number;
+  severity: "ok" | "degraded" | "severe" | "skipped";
+  skipReason?: string;
+  prefixChanged?: boolean;
+  prefixChangedFields?: string[];
+  summary: string;
+  detail: string;
 }
 
 /** §7 用量口径 */
@@ -358,6 +437,10 @@ export interface UsageRecord {
   output?: number;
   reasoningOutput?: number;
   total?: number;
+  /** 这次请求（或这一轮最后一次请求）带上的上下文大小：只用来判断缓存冷了之后续跑贵不贵，不参与任何求和 */
+  contextTokens?: number;
+  /** runtime 直报的模型上下文窗口上限（如 Antigravity usage_update.size、Codex modelContextWindow） */
+  contextWindow?: number;
   semantics: string;
   sourceRef: string;
   /** 单请求 ID（只有它存在时 delta 才求和） */
@@ -458,6 +541,26 @@ export interface ApprovalRequest {
 /** 服务端保存的新建会话默认配置；空串 = 该项用运行时默认。只在浏览器里没有「最近一次的选择」时兜底。 */
 export interface SessionDefaults { model: string; effort: string; permissionMode: string }
 
+/** 新建会话最近一次选择（按运行时）：文件夹、上次 runtime、模型/强度/审批；各端共用一份，localStorage 仅作缓存。 */
+export interface RuntimeDraftPref {
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  explicit?: Partial<Record<"model" | "effort" | "permissionMode", boolean>>;
+}
+
+export interface RuntimeNewSessionPreferences {
+  version: 1;
+  piPermissionPolicyVersion?: 1;
+  antigravityPermissionPolicyVersion?: 1;
+  lastRuntimeKind?: RuntimeKind;
+  lastWorkspace?: string;
+  drafts: Partial<Record<RuntimeKind, RuntimeDraftPref>>;
+  updatedAt?: string;
+}
+
+export interface QuotaLowPromptPref { off?: boolean; snoozeUntil?: string }
+
 export interface RuntimeSettings {
   /** 新建会话允许的工作目录根 */
   workspaceRoots: string[];
@@ -467,6 +570,13 @@ export interface RuntimeSettings {
   enabledModelsByRuntime?: Partial<Record<RuntimeKind, string[]>>;
   /** 新建会话默认配置（手动在运行时对比表「支持模型」一行里设置）；浏览器里没有最近一次的选择时用它 */
   defaultSessionByRuntime?: Partial<Record<RuntimeKind, SessionDefaults>>;
+  /** 新建会话最近一次选择（文件夹、上次 runtime、逐运行时模型/强度/审批），跟随账号保存在服务端，各设备与各线路共用 */
+  newSessionPreferences?: RuntimeNewSessionPreferences;
+  /**
+   * 额度余量 <3% 时发送前的提醒：off = 该运行时永久不再提醒；snoozeUntil = 本周期内（到该窗口重置前）不再提醒。
+   * 跟随账号保存在服务端，各设备共用同一份。
+   */
+  quotaLowPromptByRuntime?: Partial<Record<RuntimeKind, QuotaLowPromptPref>>;
   /** 历史只读授权：按项目根目录限定（空 = 未授权） */
   /** originators：只列这些创建方的会话（Codex 原生记录的 originator，如 Codex Desktop）；空 = 不限 */
   history: Record<RuntimeKind, { enabled: boolean; roots: string[]; originators?: string[] }>;
@@ -476,6 +586,8 @@ export interface RuntimeSettings {
   publicHistory: boolean;
   /** 宿主配置的共享账号调用上限（1–8，初始2），同时限制单个profile；项目不能自行提高。 */
   maxRunningPerProfile: number;
+  /** 缓存变冷后的长上下文会话改为新开会话接续：enabled 默认开；thresholdTokens 默认 20 万 */
+  cacheHandoff?: { enabled?: boolean; thresholdTokens?: number };
   updatedAt?: string;
 }
 
@@ -525,10 +637,22 @@ export interface DirectoryEntry {
 export interface StoredQuickReplies {
   eventKey: string;
   replies: Array<{ label: string; text: string; action?: "deploy" | "archive" }>;
+  /** 本轮一句话结论（deepseek-flash 异步生成，前端卡片标明「摘要」） */
+  headline?: string;
+  /** 仅当助手明确提出待拍板/确认事项时存在（宁漏勿误） */
+  decision?: string;
   /** 最近一轮带部署结果通知时的结果（失败时前端据此判断是否自动重新部署） */
   deployment?: "success" | "failed";
   /** 部署失败通知里的提交（自动重新部署据此判断提交有没有变化） */
   deploymentSha?: string;
+  at: string;
+}
+
+export interface StoredTurnSummary {
+  eventKey: string;
+  turnNo?: number;
+  headline: string;
+  decision?: string;
   at: string;
 }
 

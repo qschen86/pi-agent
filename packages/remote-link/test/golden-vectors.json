@@ -1,0 +1,47 @@
+{
+  "hostStaticPriv": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+  "hostStaticPub": "d89e3bad79437dbed9f843418304f460ff05c7fe81fe4a9577a804cb9367ff66",
+  "clientStaticPriv": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+  "clientStaticPub": "34e42d4af5ef94a07a3a84201b889d4cd1a743cb27b11b6a10438a8feb8e5847",
+  "initEphemeralPriv": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+  "respEphemeralPriv": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+  "psk": "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+  "ikpsk2": {
+    "m1PayloadHex": "7b226465766963654e616d65223a22506978656c54657374227d",
+    "m2PayloadHex": "7b226f6b223a747275657d",
+    "m1Hex": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c55604d5b383d7e513f1067e4c7886e386c3b300cd121cd5cc9f3f1c118e9df5979834424a44888637f372b024c1550612d18944db3c76cef33f20b17659f111be384ce1780c914f42fb144d321b4456a9fd52a8776ae499ee6c1",
+    "m2Hex": "23b7bb8c91ae008711fb12846780bcdf1e065f821bdfec49f57e7c7dcd4c48231ba94ff7661fd730382a426d6a70cf58ad3f3507b027cbfe9712d8",
+    "handshakeHashHex": "02c04c9fc7918d1777eb997d0f8c2d0ab48bdd994ed5a0d083b979c8555d2fd9",
+    "safetyCode": "702982",
+    "c2sPlaintextHex": "68656c6c6f2d66726f6d2d616e64726f69642d746f2d6d6163",
+    "c2sCiphertextHex": "335cb06cfc44d8ba3c7a09df8f5f52c3292bdedc31778e2853c7d91819198e0eb7a68d57da6ed13df2",
+    "s2cPlaintextHex": "68656c6c6f2d66726f6d2d6d61632d746f2d616e64726f6964",
+    "s2cCiphertextHex": "697524d821ad31fe5e11232d70d0ae5ed27eb07dadd81f296086744b45fe7178513741369469e3df93"
+  },
+  "ik": {
+    "m1Hex": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1cf9571a24ae2364cb40b710b4e21adbca20d1a4f74e79156c524811edf9c8f67c7107440f1706b109412bef7797dc60d99127573b61f731890e06a01958f94883",
+    "m2Hex": "23b7bb8c91ae008711fb12846780bcdf1e065f821bdfec49f57e7c7dcd4c48236b4dabe623ffec8afc0035d3aef331ec",
+    "handshakeHashHex": "a71159acb93f1acdc399bdd0732683f6d863dffad86745bd5fa10e2b46cfaaf1",
+    "safetyCode": "141398",
+    "c2sCiphertextHex": "40fabd1686359b5d3ac4f7a472e983c0c4aa6954f8d1a048f6a1790a7f25b36ae2398d454a0e558908"
+  },
+  "qr": {
+    "expiresAt": 1795400600000,
+    "relayUrl": "wss://relay-cn.example.com",
+    "hostName": "Heji-MacBook",
+    "encoded": "heji-pair:AQAAAaIGNwnA2J47rXlDfb7Z-ENBgwT0YP8Fx_6B_kqVd6gEy5Nn_2aQkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2urwAbAAx3c3M6Ly9yZWxheS1jbi5oYXJuZXNzLmZ1bmRIZWppLU1hY0Jvb2tyonxlCmhNMw"
+  },
+  "ticket": {
+    "roomSeedHex": "a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4",
+    "period": 20780,
+    "credential": "I4tGF0f7f1ozpifgQFX71BYnZFLuqvtdjxvQU71RC3Y",
+    "roomId": "nt8mjan6BLrmtUrpxqLC7isjhc4_gxEtYqgy3i0DMHc"
+  },
+  "mux": {
+    "frameHex": "0101000100000001000000257b226d6574686f64223a22474554222c2270617468223a222f6170692f6865616c7468227d",
+    "streamId": 1,
+    "type": 1,
+    "flags": 1,
+    "payloadHex": "7b226d6574686f64223a22474554222c2270617468223a222f6170692f6865616c7468227d"
+  }
+}

@@ -42,12 +42,28 @@ export function mountDevicePairRoutes(app: Hono, auth: AuthSessions, file: strin
     if (!pair) throw new PairingError(410, 'PAIR_EXPIRED');
     return c.html(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接 Android · pi-agent</title><link rel="stylesheet" href="/styles.css"><main class="login-page"><form class="login-card" method="post" action="/api/auth/device-pairs/${pair.pairId}/approve"><h1>连接 Android 设备</h1><p>设备：${escapeHtml(pair.deviceName)}</p><p>请核对手机显示的六位码：</p><h2>${pair.userCode}</h2><p>仅在你本人刚刚发起连接，且手机核对码相同时批准。设备可获得当前实例允许的公网读取和控制权限，可在登录会话中吊销。</p><button type="submit">核对一致，批准连接</button><p>批准后返回手机完成连接。配对五分钟后过期。</p></form></main></html>`);
   }));
-  app.post('/api/auth/device-pairs/:id/approve', c => run(c, () => {
+  // 批准、拒绝、列待批准请求都只认「本人登录的浏览器」：设备令牌、跨站请求一律不行。
+  const requireBrowser = (c: Context, needSameOrigin: boolean) => {
     const origin = c.req.header('origin'), host = c.req.header('host');
     let same = false;
     try { const url = new URL(origin ?? ''); same = url.host === host && (url.protocol === 'https:' || (url.protocol === 'http:' && /^(localhost|127\.0\.0\.1):\d+$/.test(host ?? ''))); } catch { /* absent origin is not approval */ }
+    // 部分浏览器同源 POST 会带 Origin: null，此时以浏览器不可伪造的 Sec-Fetch-Site 为准。
+    if (!same && (origin === undefined || origin === 'null') && c.req.header('sec-fetch-site') === 'same-origin') same = true;
     const browser = auth.check(getCookie(c, 'pi_agent_session'));
-    if (!same || !browser || browser.kind === 'device' || c.req.header('authorization') !== undefined) throw new PairingError(403, 'PAIR_BROWSER_REQUIRED');
+    if ((needSameOrigin && !same) || !browser || browser.kind === 'device' || c.req.header('authorization') !== undefined) throw new PairingError(403, 'PAIR_BROWSER_REQUIRED');
+    return browser;
+  };
+  app.get('/api/auth/device-pairs/pending', c => run(c, () => {
+    requireBrowser(c, false);
+    return c.json({ pairs: pairs.pending() });
+  }));
+  app.post('/api/auth/device-pairs/:id/reject', c => run(c, () => {
+    requireBrowser(c, true);
+    pairs.reject(c.req.param('id'));
+    return c.json({ ok: true });
+  }));
+  app.post('/api/auth/device-pairs/:id/approve', c => run(c, () => {
+    const browser = requireBrowser(c, true);
     pairs.approve(c.req.param('id'), browser.id);
     if ((c.req.header('accept') ?? '').includes('text/html')) return c.html('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已批准 · pi-agent</title><p>已批准设备连接，请返回手机。</p></html>');
     return c.json({ ok: true });

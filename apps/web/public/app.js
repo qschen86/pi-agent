@@ -609,6 +609,7 @@ async function requestJsonOnce(path, options = {}) {
       if (!res.ok) {
         const err = new Error(body.error || `请求失败（${res.status}）`);
         err.code = body.code;
+        err.details = body.details;
         err.status = res.status;
         err.issues = Array.isArray(body.issues) ? body.issues : [];
         // 503 / 429 可能带 Retry-After（秒或 HTTP 日期）：重试前按它等，别贴着限流再打一次。
@@ -878,7 +879,7 @@ function route() {
     const alias = { errorstats: "scheduled", codexreset: "scheduled" }[raw];
     if (alias) { location.replace(`#/settings/${alias}`); return; }
     if (raw === "version" && extra === "installs") { location.replace("#/settings/appversion/installs"); return; }
-    if (!["home", "capabilities", "navigation", "cache", "apps", "resources", "runtimes", "runtimeupdates", "login", "memory", "scheduled", "version", "appversion"].includes(raw) || (extra && !((raw === "version" && extra === "all") || (raw === "appversion" && extra === "installs")))) { location.replace("#/settings"); return; }
+    if (!["home", "capabilities", "remote", "navigation", "cache", "apps", "resources", "runtimes", "runtimeupdates", "login", "memory", "scheduled", "version", "appversion"].includes(raw) || (extra && !((raw === "version" && extra === "all") || (raw === "appversion" && extra === "installs") || (raw === "runtimeupdates" && ["pi", "claude-code", "codex", "antigravity"].includes(extra))))) { location.replace("#/settings"); return; }
     const wanted = raw;
     if (previousView !== "settings") {
       ui.settings.returnHash = previousHash || "#/rt";
@@ -938,8 +939,8 @@ function route() {
   if (ui.rt && ["rt", "rt-new", "rt-room", "rt-room-new", "rt-compare"].includes(ui.view)) ui.rt.lastChatHash = hash;
   routeRemember(false);
   window.piStartup?.target?.(hash, ui.view === "rt" ? (ui.rt?.id ? "single" : "list") : ui.view === "rt-room" ? "room" : "other");
-  // 「创建中」详情页只属于新建页这个地址；离开后不留着，免得下次点新建会话又看到它
-  if (ui.view !== "rt-new" && ui.rt?.launch?.req) ui.rt.launch = null;
+  // 「创建中」详情页只属于新建页或 PC 首页即用工作台；离开后不留着，免得下次点新建会话又看到它
+  if (ui.view !== "rt-new" && !(ui.view === "rt" && !ui.rt?.id) && ui.rt?.launch?.req) ui.rt.launch = null;
   document.querySelector(".layout").classList.toggle("rt-mode", ui.view === "rt" || ui.view === "rt-new" || ui.view === "rt-compare" || ui.view === "rt-room" || ui.view === "rt-room-new");
   document.body.classList.toggle("settings-mode", ui.view === "settings");
   document.body.classList.toggle("stats-mode", ui.view === "stats");
@@ -953,10 +954,7 @@ function route() {
   if (ui.view !== "notes" && typeof noteDeactivate === "function") noteDeactivate();
   window.navNoteVisit?.(tab);
   // 手机会话列表：会话不在底栏里，底栏选中的是进入会话前的应用（session-drawer.js），点别的入口直接切过去
-  const shownTab = tab === "rt" && rtPhone.matches && ui.view === "rt" && !ui.rt?.id ? (window.piSessionDrawer?.originView?.() || tab) : tab;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === shownTab));
-  syncNavMore();
-  window.navSyncActive?.();
+  syncActiveNavTab(tab);
   window.scrollTo(0, 0);
   ui.pageError = ""; ui.pageLoading = true;
   if (typeof rtSyncPageEffects === 'function') rtSyncPageEffects();
@@ -964,6 +962,15 @@ function route() {
   renderMain(); navigationMark("target-shell");
   refresh({ main: true });
 }
+
+function syncActiveNavTab(explicitTab) {
+  const tab = explicitTab || (ui.view === "note-relations" ? "notes" : ui.view?.startsWith("rt") || ui.view === "runtimes" ? "rt" : ui.view);
+  const shownTab = tab === "rt" && typeof rtPhone !== "undefined" && rtPhone.matches && ui.view === "rt" && !ui.rt?.id ? (window.piSessionDrawer?.originView?.() || tab) : tab;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === shownTab));
+  if (typeof syncNavMore === "function") syncNavMore();
+  window.navSyncActive?.();
+}
+window.syncActiveNavTab = syncActiveNavTab;
 
 /* ------------------------------ 数据刷新 ------------------------------ */
 
@@ -1142,8 +1149,8 @@ function renderMain() {
   if (composing || pointerHeld) { renderDeferred = true; return; }
   clearTimeout(renderMain.todayTimer);
   renderMain.todayTimer = null;
-  // 抬指后卡片仍在提交切换，等待动画收尾再重建页面。
-  if (ui.view === "rt" && document.querySelector("#notes-today.is-sliding")) {
+  // 触摸按住、横滑或抬指后卡片仍在提交切换，等待动画收尾再重建页面。
+  if (ui.view === "rt" && document.querySelector("#notes-today.is-sliding, #notes-today-body[data-today-touch], #notes-today-body[data-today-leaving]")) {
     renderMain.todayTimer = setTimeout(renderMain, 200);
     return;
   }

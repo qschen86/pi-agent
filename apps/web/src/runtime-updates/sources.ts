@@ -5,12 +5,15 @@
  * - Codex：GitHub `releases/latest`（非 prerelease 的最新一版，tag rust-vX.Y.Z）+ releases.atom 里近期的稳定版条目；
  *   不用 releases 列表接口（alpha 版太多，一页就是几 MB，会超时）。所以 Codex 的更新记录从首次检测起逐日积累。
  *   ChatGPT.app 内置的 CLI 一般是 alpha，不算稳定版。
+ * - Antigravity（agy）：闭源二进制，没有 npm / GitHub。最新版取安装脚本用的发布清单 manifests/<平台>.json 的 version；
+ *   更新日志先读已装的 `agy changelog`（离线、与已装版本同源），已装版本之后的版本再从公开页 antigravity.google/docs/changelog 补；
+ *   两处都常比清单晚一两天出现，清单里有而日志里没有的版本补一条无正文的占位。
  * 稳定版 = 版本号不带 alpha / beta / rc。GitHub 匿名接口每小时 60 次，每天只查一次足够；设了 GITHUB_TOKEN 就带上。
  */
-import { compareVersions, isStableVersion, parseReleasesAtom, parseSectionedChangelog, parseVersion } from "./versions.js";
+import { compareVersions, isStableVersion, parseAgyChangelog, parseAgyChangelogPage, parseReleasesAtom, parseSectionedChangelog, parseVersion } from "./versions.js";
 
-export type UpdateKind = "pi" | "claude-code" | "codex";
-export const UPDATE_KINDS: UpdateKind[] = ["pi", "claude-code", "codex"];
+export type UpdateKind = "pi" | "claude-code" | "codex" | "antigravity";
+export const UPDATE_KINDS: UpdateKind[] = ["pi", "claude-code", "codex", "antigravity"];
 
 export interface ReleaseInfo { version: string; publishedAt?: string; url?: string; notes: string }
 export interface SourceResult { latest: string; releases: ReleaseInfo[] }
@@ -19,8 +22,17 @@ export type FetchText = (url: string, init?: { headers?: Record<string, string> 
 export const SOURCES: Record<UpdateKind, { label: string; npm?: string; homepage: string }> = {
   pi: { label: "Pi", npm: "@earendil-works/pi-coding-agent", homepage: "https://github.com/earendil-works/pi/releases" },
   "claude-code": { label: "Claude Code（Agent SDK）", npm: "@anthropic-ai/claude-agent-sdk", homepage: "https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md" },
-  codex: { label: "Codex", homepage: "https://github.com/openai/codex/releases" }
+  codex: { label: "Codex", homepage: "https://github.com/openai/codex/releases" },
+  antigravity: { label: "Antigravity", homepage: "https://antigravity.google/docs/changelog" }
 };
+
+export const AGY_MANIFEST_BASE = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
+/** 安装脚本里的平台名；linux 的 musl 版本平台不区分（服务端只跑在 macOS / 常见 Linux 上） */
+export function agyPlatform(platform: string = process.platform, arch: string = process.arch): string {
+  const a = arch === "arm64" ? "arm64" : arch === "x64" ? "amd64" : "";
+  if (!a || (platform !== "darwin" && platform !== "linux")) throw new Error(`Antigravity 暂不支持这个平台：${platform}/${arch}`);
+  return `${platform}_${a}`;
+}
 
 const NOTES_LIMIT = 12_000;
 const KEEP_STABLE = 80;
@@ -48,7 +60,35 @@ function fromGithub(list: GhRelease[], tagPattern: RegExp): ReleaseInfo[] {
     });
 }
 
-export async function fetchSource(kind: UpdateKind, fetchText: FetchText, githubToken?: string): Promise<SourceResult> {
+export interface FetchSourceExtras {
+  /** 已装 agy 的 `agy changelog` 输出；读不到（没装、超时）就当空 */
+  agyChangelog?: () => Promise<string>;
+}
+
+async function fetchAntigravity(fetchText: FetchText, extras: FetchSourceExtras): Promise<SourceResult> {
+  const manifest = await getJson<{ version?: string }>(fetchText, `${AGY_MANIFEST_BASE}/${agyPlatform()}.json`);
+  const latest = manifest.version;
+  if (!latest || !isStableVersion(latest)) throw new Error(`Antigravity 发布清单里的版本号不是稳定版：${String(latest)}`);
+  const [local, page] = await Promise.all([
+    (extras.agyChangelog?.() ?? Promise.resolve("")).catch(() => ""),
+    getText(fetchText, SOURCES.antigravity.homepage).catch(() => "")
+  ]);
+  const merged = new Map<string, ReleaseInfo>();
+  const add = (version: string, notes: string, publishedAt?: string) => {
+    if (merged.has(version) || !isStableVersion(version) || compareVersions(version, latest) > 0) return;
+    merged.set(version, { version, ...(publishedAt ? { publishedAt } : {}), url: SOURCES.antigravity.homepage, notes: notes.slice(0, NOTES_LIMIT) });
+  };
+  const pageReleases = parseAgyChangelogPage(page);
+  const dates = new Map(pageReleases.flatMap((r) => r.publishedAt ? [[r.version, r.publishedAt] as const] : []));
+  for (const r of parseAgyChangelog(local)) add(r.version, r.notes, dates.get(r.version));
+  for (const r of pageReleases) add(r.version, r.notes, r.publishedAt);
+  if (!merged.has(latest)) merged.set(latest, { version: latest, url: SOURCES.antigravity.homepage, notes: "" });
+  const releases = [...merged.values()].sort((a, b) => compareVersions(b.version, a.version)).slice(0, KEEP_STABLE);
+  return { latest, releases };
+}
+
+export async function fetchSource(kind: UpdateKind, fetchText: FetchText, githubToken?: string, extras: FetchSourceExtras = {}): Promise<SourceResult> {
+  if (kind === "antigravity") return fetchAntigravity(fetchText, extras);
   let releases: ReleaseInfo[];
   let latest: string | undefined;
   if (kind === "codex") {

@@ -7,7 +7,7 @@
  * - 资源：模型、搜索、抓取、配音的凭据状态、用量与余额。
  * - 统计：消耗、会话、部署的趋势与拆解（独立应用，用链接进入）。
  * - 自迭代 / 定时任务：每晚错误统计与 Codex Reset 扫描。
- * - 版本：运行时版本（Pi / Claude Code / Codex 新稳定版）/ 平台前端版本（线上版本与部署历史）/ 平台 APP 版本（只在 Android 客户端里出现）。
+ * - 版本：运行时版本（Pi / Claude Code / Codex / Antigravity 新稳定版）/ 平台前端版本（线上版本与部署历史）/ 平台 APP 版本（只在 Android 客户端里出现）。
  * - 登录管理：登录会话列表、吊销、退出其他登录、退出登录。
  * 旧地址（#/settings/errorstats、#/settings/codexreset）由 app.js 重定向到合并后的定时任务页；
  * 安装历史挪到 #/settings/appversion/installs，旧的 #/settings/version/installs 转过去。
@@ -28,6 +28,7 @@
   // 单项组的条目名 = 组名；show 返回 false 的条目不进目录，地址也回到目录（平台 APP 版本只在 Android 客户端里有）。
   const SECTIONS = [
     { id: "capabilities", group: "general", label: "通用能力", hint: capabilityHint },
+    { id: "remote", group: "general", label: "链接设备", hint: remoteHint },
     { id: "navigation", group: "general", label: "产物区", hint: navigationHint },
     { id: "apps", group: "general", label: "应用", hint: appsHint },
     { id: "runtimes", group: "general", label: "运行时", hint: runtimesHint },
@@ -86,6 +87,24 @@
     if (!view.apps.length) return "只有基础应用";
     return `${view.apps.filter((app) => app.enabled).length} / ${view.apps.length} 个可选应用已开启`;
   }
+  function remoteHint() {
+    const nativeConn = state().nativeConn;
+    if (nativeConn) {
+      const activeRoute = Array.isArray(nativeConn.routes) ? nativeConn.routes.find((item) => item.active) : null;
+      if (activeRoute) {
+        const kind = activeRoute.type === "public_domain" ? "自有域名" : activeRoute.type === "custom_relay" ? "自建中继" : "公共中继";
+        return `当前线路：${kind}（${activeRoute.label}）`;
+      }
+      return nativeConn.active === "remote"
+        ? `当前线路：加密中继${nativeConn.remoteHostName ? `（${nativeConn.remoteHostName}）` : ""}`
+        : `当前线路：自有域名${nativeConn.publicHost ? `（${nativeConn.publicHost}）` : ""}`;
+    }
+    const r = state().remote;
+    if (!r) return "扫码配对手机，端到端加密访问";
+    if (!r.enabled) return "未开启";
+    const activeCount = (r.devices || []).filter((d) => !d.revokedAt).length;
+    return `${r.connectionLabel || "离线"} · ${activeCount} 台已配对设备`;
+  }
   function loginHint() {
     const a = state().auth;
     if (!a) return "登录会话与退出登录";
@@ -124,7 +143,7 @@
         h("p", { class: "muted small" }, "会话、群聊、记忆、产物和设置是基础应用，始终开启。下面是可选应用：关闭后入口和功能隐藏、后台任务停止，已有数据都保留，随时可以重新打开。"))),
       s.appsError ? h("p", { class: "field-error", role: "alert" }, s.appsError,
         h("button", { type: "button", class: "btn small", onclick: () => { s.appsError = ""; void loadApps(); } }, "重试")) : null,
-      !view && !s.appsError ? h("p", { class: "muted small" }, "正在读取应用列表…") : null,
+      !view && !s.appsError ? skeletonRows(3, "正在读取应用列表…") : null,
       view && !view.apps.length ? h("p", { class: "muted small" }, "这个版本没有可开关的可选应用。") : null);
     const rows = (view?.apps || []).map((app) => {
       const busy = s.appsBusy === app.id;
@@ -402,20 +421,50 @@
 
   /** #/settings/appversion/installs：Android 客户端的安装历史明细页（卡片里只放摘要和入口）。 */
   function installsRoute() { return section() === "appversion" && state().extra === "installs"; }
+  /** #/settings/runtimeupdates/<kind>：某个 runtime 的详情二级页。 */
+  function ruDetailRoute() {
+    if (section() !== "runtimeupdates" || !state().extra) return null;
+    const data = state().runtimeUpdates;
+    return (data?.runtimes || []).find((r) => r.kind === state().extra) || null;
+  }
   function installsSection() {
     const page = window.piAndroidShell?.installsPage?.();
     return page ? [page] : [h("section", { class: "card settings-card" }, h("p", { class: "muted small" }, "安装历史只在 Android 客户端里可用。"))];
   }
 
   function settingsHeader() {
-    const detail = phone.matches && section() !== "home";
+    const home = section() === "home";
+    const detail = phone.matches && !home;
     const item = SECTIONS.find((item) => item.id === section());
-    // 平台 APP 版本 → 安装历史是设置里的下一层页面：任何屏幕上返回都回到「平台 APP 版本」，标题就是页面本身。
+    // 平台 APP 版本 → 安装历史、运行时版本 → 单个组件都是设置里的下一层页面：返回都回到上一层，标题就是页面本身。
     const sub = installsRoute();
+    const ru = ruDetailRoute();
+    // 手机上设置整体是二级页（不挂底栏）：首页也留一只返回图标，回到进设置前的页面。
+    const backTarget = sub ? "#/settings/appversion" : ru ? "#/settings/runtimeupdates" : detail ? "#/settings" : backHref();
+    const backLabel = sub ? "返回平台 APP 版本" : ru ? "返回运行时版本" : detail ? "返回设置" : "返回上一页";
+    // 返回只留一个图标（不再带「返回」文字），标题紧跟其后左对齐，和页面正文同一条基线。
     return h("header", { class: "settings-app-head page-navigation-head" },
-      section() !== "home" ? h("a", { class: "settings-back", href: sub ? "#/settings/appversion" : detail ? "#/settings" : backHref(), "aria-label": sub ? "返回平台 APP 版本" : detail ? "返回设置" : "返回上一页" }, "‹ 返回") : null,
+      (!home || phone.matches) ? h("a", { class: "settings-back", href: backTarget, "aria-label": backLabel, title: "返回" }, backIcon()) : null,
       h("div", { class: "settings-app-title" },
-        h("h1", {}, sub ? "安装历史" : detail ? item.label : "系统设置")));
+        h("h1", {}, sub ? "安装历史" : ru ? ru.label.replace(/（.*?）/g, "") : detail ? item.label : "系统设置")));
+  }
+
+  /** 返回图标：SVG 要从 SVG 命名空间建，createElement 建出来的不算图形。 */
+  function backIcon() {
+    const box = document.createElement("span");
+    box.className = "settings-back-icon";
+    box.setAttribute("aria-hidden", "true");
+    box.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>';
+    return box;
+  }
+
+  /** 统一的读取占位：先按最终尺寸铺行，数据到了原地替换（PB-004）。 */
+  function skeletonRows(count = 3, label = "正在读取…") {
+    return h("div", { class: "settings-skeleton", role: "status", "aria-label": label },
+      ...Array.from({ length: count }, () => h("div", { class: "settings-skeleton-row" },
+        h("span", { class: "settings-skeleton-stack" },
+          h("i", { class: "settings-skeleton-line main" }),
+          h("i", { class: "settings-skeleton-line sub" })))));
   }
 
   function settingsNav() {
@@ -536,9 +585,36 @@
     const activate = current.querySelector('[data-orientation-activate]');
     if (activate) { activate.hidden = !window.piOrientation.canActivate(); activate.disabled = window.piOrientation.activating(); }
   });
+  function turnSummaryEnabled() {
+    if (typeof window.piTurnSummaryMode?.enabled === 'function') return !!window.piTurnSummaryMode.enabled();
+    try { return localStorage.getItem('pi-agent:turn-summary-mode:v1') === '1'; } catch { return false; }
+  }
+  function setTurnSummaryEnabled(on) {
+    if (typeof window.piTurnSummaryMode?.setEnabled === 'function') return window.piTurnSummaryMode.setEnabled(!!on);
+    try {
+      if (on) localStorage.setItem('pi-agent:turn-summary-mode:v1', '1');
+      else localStorage.removeItem('pi-agent:turn-summary-mode:v1');
+    } catch { /* 忽略 */ }
+    window.dispatchEvent(new CustomEvent('pi-turn-summary-mode-change', { detail: { enabled: !!on } }));
+    return !!on;
+  }
+  function turnSummarySection() {
+    return h('section', { class: 'card settings-card', 'data-turn-summary-settings': '' },
+      h('div', { class: 'settings-switch-row' }, h('h2', {}, '会话回合汇总模式'),
+        h('input', {
+          type: 'checkbox', role: 'switch', class: 'settings-switch', 'aria-label': '会话回合汇总模式',
+          checked: turnSummaryEnabled(),
+          onchange: event => { setTurnSummaryEnabled(event.currentTarget.checked); }
+        })),
+      h('p', { class: 'muted small' }, '仅保存在本设备，默认关闭。开启后，单聊里的长回复、带产出物或待决定的回合会在顶部汇总为结论卡片，完整正文默认折叠、一键可看；关闭时保持原有消息流展示。'));
+  }
+  window.addEventListener('pi-turn-summary-mode-change', () => {
+    const checkbox = document.querySelector('[data-turn-summary-settings] input[role="switch"]');
+    if (checkbox) checkbox.checked = turnSummaryEnabled();
+  });
   function capabilitiesSection() {
     const notificationPanel = window.sessionNotifications?.panel?.();
-    const cards = [orientationSection(), notificationPanel || h('section', { class: 'card settings-card' }, '通知设置正在加载，请稍后重试。'), clipboardSection(), photosSection()].filter(Boolean);
+    const cards = [turnSummarySection(), orientationSection(), notificationPanel || h('section', { class: 'card settings-card' }, '通知设置正在加载，请稍后重试。'), clipboardSection(), photosSection()].filter(Boolean);
     return cards;
   }
 
@@ -590,7 +666,7 @@
   }
   function modulePlaceholder(label, loading) {
     return h("section", { class: "card settings-card", "data-settings-embed-loading": "" },
-      h("p", { class: "muted small", role: "status" }, loading ? `正在加载${label}…` : `${label}还没有加载。刷新页面后再试。`));
+      loading ? skeletonRows(3, `正在加载${label}…`) : h("p", { class: "muted small", role: "status" }, `${label}还没有加载。刷新页面后再试。`));
   }
 
   // 外部资源：主导航里的「资源」搬进设置，内容和 #/resources 是同一份（嵌入模式去掉它自己的页头）。
@@ -666,7 +742,7 @@
       h("p", { class: "muted small" }, "每次登录一个服务端会话：30 天到期、7 天不用自动失效，可以单独吊销。")));
     const error = s.authError ? h("p", { class: "field-error", role: "alert" }, s.authError,
       h("button", { type: "button", class: "btn small", onclick: () => { s.authLoaded = false; s.authError = ""; renderMain(); } }, "重试")) : null;
-    if (!a) return h("section", { class: "card settings-card", "data-login-settings": "" }, head, error || h("p", { class: "muted small" }, "正在读取登录会话…"));
+    if (!a) return h("section", { class: "card settings-card", "data-login-settings": "" }, head, error || skeletonRows(3, "正在读取登录会话…"));
     if (!a.enabled || !a.public) return h("section", { class: "card settings-card", "data-login-settings": "" }, head,
       error, h("p", { class: "muted small" }, "当前入口没有启用登录，没有可管理的登录会话。"));
     return h("section", { class: "card settings-card", "data-login-settings": "" },
@@ -812,7 +888,7 @@
     const status = running ? "统计中，跑完会自动出现在下面的历史里…"
       : last ? `上次统计 ${beijing(last.startedAt)}（北京时间）· 入库 ${last.added ?? 0} 条 · 新建待办 ${(last.created || []).length} 条` : "还没有统计记录。第一次会回填过去 30 天的数据。";
     const list = !data
-      ? [h("div", { class: "settings-run-empty", role: "status" }, s.errorStatsError || "读取中…")]
+      ? [s.errorStatsError ? h("div", { class: "settings-run-empty", role: "status" }, s.errorStatsError) : skeletonRows(3)]
       : runs.length ? runs.map(runItem) : [h("div", { class: "settings-run-empty" }, "还没有统计记录。点上面的「立即统计」跑第一轮。")];
     return h("div", { class: "settings-errorstats" },
       h("section", { class: "card settings-card" },
@@ -832,10 +908,18 @@
   }
 
   /* ------------------------------ 运行时更新 ------------------------------ */
+  /*
+   * 页面分两级（docs/requirements/runtime-version-updates）：
+   * - 一级 #/settings/runtimeupdates：每个组件一行，只回答「有没有新版、推不推荐升」；
+   * - 二级 #/settings/runtimeupdates/<kind>：结论 + 点开才看收益 / 风险，再往下才是步骤与版本记录。
+   * 检测沿用服务端：每天 09:00 + 手动；检测到更新后服务端自动分析，页面只轮询进度（分析要几十秒，接口不再同步等）。
+   */
   const RU_VERDICT = { upgrade: ["建议升级", "ok"], wait: ["建议观望", "warn"], skip: ["暂不升级", "bad"] };
   const RU_LEVEL = { high: "高", medium: "中", low: "低" };
   const RU_TRIGGER = { manual: "手动", schedule: "定时", "catch-up": "补跑" };
+  const RU_AUTO_ENTRY = { scheduled: "已安排", started: "已开始", done: "已完成", failed: "失败", cancelled: "已取消" };
   const ruDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v).slice(5) : v ? beijing(v) : "");
+  const ruWorking = (data) => !!data?.running || (data?.analyzing || []).length > 0;
   async function loadRuntimeUpdates() {
     const s = state();
     if (s.ruLoading) return;
@@ -846,7 +930,10 @@
     s.ruLoading = false;
     clearTimeout(s.ruPoll); s.ruPoll = 0;
     if (wasRunning && !s.runtimeUpdates?.running) window.dispatchEvent(new Event("pi-runtime-updates-change"));
-    if (s.runtimeUpdates?.running && ui.view === "settings") s.ruPoll = setTimeout(() => { if (ui.view === "settings" && section() === "runtimeupdates") void loadRuntimeUpdates(); }, 2500);
+    // 检测或分析还在跑：接着轮询，跑完自动刷新（等价于以前同步接口的等待，但不会撞上网关超时）
+    if (ruWorking(s.runtimeUpdates) && ui.view === "settings" && section() === "runtimeupdates") {
+      s.ruPoll = setTimeout(() => { if (ui.view === "settings" && section() === "runtimeupdates") void loadRuntimeUpdates(); }, 2500);
+    }
     if (ui.view === "settings") renderMain();
   }
   async function runRuntimeUpdateCheck() {
@@ -859,14 +946,32 @@
     await loadRuntimeUpdates();
     window.dispatchEvent(new Event("pi-runtime-updates-change"));
   }
+  /** 重新分析：接口立即返回，进度靠轮询；失败原因从概览里读（服务端会记下来）。 */
   async function analyzeRuntimeUpdate(kind, force) {
     const s = state();
     s.ruAnalyzing = { ...(s.ruAnalyzing || {}), [kind]: true }; s.ruAnalyzeError = { ...(s.ruAnalyzeError || {}), [kind]: "" }; renderMain();
     try { await api(`/api/runtime-updates/${kind}/analyze`, { method: "POST", body: JSON.stringify({ force: force === true }) }); }
-    catch (error) { s.ruAnalyzeError = { ...s.ruAnalyzeError, [kind]: error?.message || "分析失败，请重试" }; }
+    catch (error) { s.ruAnalyzeError = { ...s.ruAnalyzeError, [kind]: error?.message || "分析没能开始，请重试" }; }
     s.ruAnalyzing = { ...s.ruAnalyzing, [kind]: false };
-    s.ruOpen = { ...(s.ruOpen || {}), [`analysis-${kind}`]: true };
     await loadRuntimeUpdates();
+  }
+  async function setAutoUpgrade(enabled) {
+    const s = state();
+    s.ruAutoBusy = true; renderMain();
+    try { await api("/api/runtime-updates/auto-upgrade", { method: "POST", body: JSON.stringify({ enabled }) }); }
+    catch (error) { s.ruMessage = error?.message || "操作失败，请重试"; }
+    s.ruAutoBusy = false;
+    await loadRuntimeUpdates();
+    window.dispatchEvent(new Event("pi-runtime-updates-change"));
+  }
+  async function cancelAutoUpgrade(kind) {
+    const s = state();
+    s.ruAutoBusy = true; renderMain();
+    try { await api(`/api/runtime-updates/${kind}/auto-upgrade`, { method: "POST", body: "{}" }); }
+    catch (error) { s.ruMessage = error?.message || "没能取消，请重试"; }
+    s.ruAutoBusy = false;
+    await loadRuntimeUpdates();
+    window.dispatchEvent(new Event("pi-runtime-updates-change"));
   }
   async function ignoreRuntimeUpdate(kind, undo) {
     const s = state();
@@ -876,7 +981,7 @@
     await loadRuntimeUpdates();
     window.dispatchEvent(new Event("pi-runtime-updates-change"));
   }
-  const RU_EXECUTOR = { pi: ["Claude Code", "Pi"], "claude-code": ["Pi", "Claude Code"] };
+  const RU_EXECUTOR = { pi: ["Claude Code", "Pi"], "claude-code": ["Pi", "Claude Code"], antigravity: ["Claude Code", "Antigravity"] };
   /** 运行时配置限定了可选模型、而默认模型没勾选时，升级会话要显式选一个已勾选的模型（优先新建默认配置里的，其次第一个）；返回 "" 表示沿用默认。 */
   async function ruExecutorModel(kind) {
     const [{ profiles }, settings] = await Promise.all([api("/api/runtime-profiles"), api("/api/runtime-settings")]);
@@ -924,27 +1029,6 @@
     if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done).catch(() => {});
     else { const ta = h("textarea", { style: "position:fixed;opacity:0" }, text); document.body.append(ta); ta.select(); try { document.execCommand("copy"); done(); } catch { /* 不支持复制 */ } ta.remove(); }
   }
-  function ruAnalysis(r) {
-    const s = state();
-    const busy = !!s.ruAnalyzing?.[r.kind] || (s.runtimeUpdates?.analyzing || []).includes(r.kind);
-    const a = r.analysis;
-    const err = s.ruAnalyzeError?.[r.kind];
-    const [vlabel, vkind] = a ? RU_VERDICT[a.value.verdict] || [a.value.verdict, ""] : ["", ""];
-    return h("div", { class: "ru-analysis", "data-ru-analysis": r.kind },
-      !a ? h("p", { class: "muted small" }, "「是否值得升级」「升级风险与兼容」不会自动分析，点下面的按钮才调用一次 AI（DeepSeek，约几分钱）。") : [
-        h("div", { class: "ru-verdict" }, h("span", { class: `badge ${vkind}` }, vlabel), h("span", { class: "ru-verdict-reason" }, a.value.reason)),
-        a.stale ? h("p", { class: "small warn-text" }, "这份报告基于更早的版本，之后又出了新版本，建议重新分析。") : null,
-        h("h4", {}, "值得升级的收益"),
-        a.value.benefits.length ? h("ul", { class: "ru-list" }, a.value.benefits.map((b) => h("li", {}, h("strong", {}, b.title), h("span", { class: "ru-tag" }, `相关度 ${RU_LEVEL[b.relevance] || b.relevance}`), h("span", { class: "muted" }, ` ${b.detail}`)))) : h("p", { class: "muted small" }, "没有发现对平台有实质用处的新增内容。"),
-        h("h4", {}, "风险"),
-        a.value.risks.length ? h("ul", { class: "ru-list" }, a.value.risks.map((x) => h("li", { class: `ru-risk ru-risk-${x.severity}` }, h("strong", {}, x.title), h("span", { class: "ru-tag" }, `严重度 ${RU_LEVEL[x.severity] || x.severity}`), h("span", { class: "muted" }, ` ${x.detail}`)))) : h("p", { class: "muted small" }, "没有发现和平台依赖相关的风险。"),
-        a.value.compat.length ? [h("h4", {}, "平台需要兼容的"), h("ul", { class: "ru-list" }, a.value.compat.map((c) => h("li", {}, h("strong", {}, c.what), h("span", { class: "muted" }, ` → ${c.action}`))))] : null,
-        h("h4", {}, "升级前后的验证步骤"), h("ol", { class: "ru-list" }, a.value.testPlan.map((t) => h("li", {}, t))),
-        h("p", { class: "muted small" }, `分析于北京时间 ${beijing(a.at)} · ${a.installed} → ${a.latest}${a.costUsd ? ` · DeepSeek $${a.costUsd.toFixed(3)}` : ""}；AI 只依据更新日志和平台依赖清单判断，仅供决策参考。`)],
-      err ? h("p", { class: "settings-run-note small", role: "alert" }, err) : null,
-      h("div", { class: "settings-run-actions" },
-        h("button", { type: "button", class: `btn${a ? "" : " primary"}`, "data-ru-analyze": r.kind, disabled: busy, "aria-busy": String(busy), onclick: () => analyzeRuntimeUpdate(r.kind, !!a) }, busy ? "分析中…（约半分钟）" : a ? "重新分析" : "分析收益与风险")));
-  }
   function ruRelease(r, key) {
     const s = state();
     const open = !!s.ruOpen?.[key];
@@ -960,75 +1044,235 @@
         h("pre", { class: "ru-notes" }, r.notes || "（这一版没有更新日志正文）"),
         r.url ? h("a", { class: "small", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "打开原始发布页") : null) : null);
   }
-  function ruCard(r) {
-    const s = state();
-    const status = r.error && !r.latest ? ["检测失败", "bad"] : r.hasUpdate ? (r.ignored ? ["有新版本（已忽略）", ""] : ["有新稳定版", "warn"]) : r.installed && r.latest ? ["已是最新稳定版", "ok"] : ["已装版本未知", ""];
-    const executor = RU_EXECUTOR[r.kind];
-    const fullFeatures = !!s.ruOpen?.[`features-${r.kind}`];
-    const features = r.highlights.features, shown = fullFeatures ? features : features.slice(0, 5);
-    return h("section", { class: "card settings-card ru-card", "data-ru-card": r.kind, "aria-label": r.label },
-      h("div", { class: "rt-profile-head" }, h("span", { class: `rt-glyph ${r.kind}`, "aria-hidden": "true" }, { pi: "π", "claude-code": "✺", codex: "◎" }[r.kind] || "•"), h("h2", {}, r.label), h("span", { class: `badge ${status[1]}` }, status[0])),
-      h("dl", { class: "kv rt-facts" },
-        h("dt", {}, "已装版本"), h("dd", {}, r.installed || "未知（先到「运行时配置」点一次「检查」）"),
-        h("dt", {}, "最新稳定版"), h("dd", {}, r.latest ? `${r.latest}${r.hasUpdate ? `（落后 ${r.pendingCount} 个版本）` : ""}` : "还没有检测到"),
-        h("dt", {}, "检测"), h("dd", { title: r.checkedAt ? beijing(r.checkedAt) : "" }, r.checkedAt ? `北京时间 ${beijing(r.checkedAt)}` : "还没检测过")),
+  /** 一个 runtime 在页面上的状态：一级列表和二级页共用同一套结论。 */
+  function ruState(r) {
+    const a = r.analysis;
+    if (r.error && !r.latest) return { pill: ["检测失败", "bad"], dot: "bad" };
+    if (!r.installed || !r.latest) return { pill: ["版本未知", ""], dot: "" };
+    if (!r.hasUpdate) return { pill: ["已是最新", "ok"], dot: "ok" };
+    if (r.ignored) return { pill: ["已忽略", ""], dot: "" };
+    if (r.kind === "codex") return { pill: ["随桌面版", ""], dot: "warn" };
+    if (a && !a.stale) { const [t, k] = RU_VERDICT[a.value.verdict] || [a.value.verdict, ""]; return { pill: [t, k], dot: k === "ok" ? "ok" : "warn" }; }
+    if (r.analyzing) return { pill: ["分析中", ""], dot: "warn" };
+    if (a?.stale) return { pill: ["报告过期", "warn"], dot: "warn" };
+    return { pill: ["待分析", ""], dot: "warn" };
+  }
+  /** 卡片式折叠区：展开状态记在 ruOpen 里，重绘不丢。 */
+  function ruFold(kind, name, summary, ...body) {
+    const s = state(), key = `${name}-${kind}`;
+    return h("details", { class: "ru2-card ru2-fold", ...(s.ruOpen?.[key] ? { open: true } : {}), ontoggle: (ev) => { s.ruOpen = { ...(s.ruOpen || {}), [key]: ev.currentTarget.open }; } },
+      h("summary", {}, summary), h("div", { class: "ru2-fold-in" }, ...body));
+  }
+  function ruDots(items, risk) {
+    return h("ul", { class: `ru2-list${risk ? " risk" : ""}` }, items.map((x) => h("li", { class: risk && x.severity === "high" ? "high" : "" }, h("div", {}, h("b", {}, x.title), h("span", {}, x.detail)))));
+  }
+  /** 结论：已装 → 最新 + 一句人话结论（收益 / 风险要再点一下才展开）。 */
+  function ruHero(r, st) {
+    const a = r.analysis, fresh = a && !a.stale;
+    const track = h("div", { class: "ru2-track" },
+      h("div", { class: "ru2-node from" }, h("small", {}, "已装版本"), h("code", {}, r.installed || "未知")),
+      h("div", { class: "ru2-line" }, r.hasUpdate ? h("em", {}, `落后 ${r.pendingCount} 个版本`) : null),
+      h("div", { class: "ru2-node to" }, h("small", {}, "最新稳定版"), h("code", {}, r.latest || "—")));
+    let verdict;
+    if (fresh) {
+      const [vl, vk] = RU_VERDICT[a.value.verdict] || [a.value.verdict, ""];
+      verdict = h("div", { class: "ru2-verdict", "data-ru-analysis": r.kind, "data-ru-verdict": a.value.verdict }, h("span", { class: `ru2-pill ${vk}` }, vl), h("p", {}, a.value.reason));
+    } else if (r.analyzing) {
+      verdict = h("div", { class: "ru2-verdict", "data-ru-analysis": r.kind }, h("span", { class: "ru2-pill" }, "分析中"),
+        h("p", { class: "muted" }, a?.stale ? "这一版已经有新报告在生成，等一会儿就好。" : "正在看更新日志，马上就出结论。"));
+    } else if (a?.stale) {
+      // 报告对不上当前版本：不把旧版本的判断当成现在的，只说差异
+      verdict = h("div", { class: "ru2-verdict stale", "data-ru-analysis": r.kind, "data-ru-stale": r.kind }, h("span", { class: "ru2-pill warn" }, "待重新分析"),
+        h("p", {}, `这份报告分析的是 ${a.installed} → ${a.latest}，现在是 ${r.installed || "未知"} → ${r.latest || "未知"}，正在重新分析。`));
+    } else if (r.hasUpdate) {
+      verdict = h("div", { class: "ru2-verdict", "data-ru-analysis": r.kind }, h("span", { class: `ru2-pill ${st.pill[1]}` }, st.pill[0]),
+        h("p", { class: "muted" }, r.kind === "codex" ? "已装的是 ChatGPT.app 内置的 alpha，随桌面版自动更新，平台不替你升级。" : "还没出结论：点下面的「重新分析」马上跑一次（检测到更新时也会自动分析）。"));
+    } else {
+      verdict = h("div", { class: "ru2-verdict", "data-ru-analysis": r.kind }, h("span", { class: `ru2-pill ${st.pill[1]}` }, st.pill[0]),
+        h("p", { class: "muted" }, r.installed && r.latest ? (r.kind === "codex" ? "已装版本不低于最新稳定版，不用动。" : "已是最新稳定版，无需处理。") : "还没检测过：回上一页点「立即检测」，就知道有没有新版、要不要升。"));
+    }
+    return h("div", { class: "ru2-hero" }, track, verdict,
       r.error ? h("p", { class: "small warn-text", role: "alert" }, `最近一次检测失败：${r.error}${r.latest ? "（下面仍是上次检测到的内容）" : ""}`) : null,
-      r.hasUpdate ? [
-        h("div", { class: "ru-sec" }, h("h3", {}, `新增了什么（${r.installed} → ${r.latest}）`),
-          shown.length ? ruList(shown) : h("p", { class: "muted small" }, "更新日志里没有明确标注的新增功能，主要是修复和调整；点下面的完整更新记录查看原文。"),
-          features.length > 5 ? h("button", { type: "button", class: "btn-link small", onclick: () => ruToggle(`features-${r.kind}`) }, fullFeatures ? "收起" : `展开全部 ${features.length} 条`) : null,
-          r.highlights.breaking.length ? [h("p", { class: "small warn-text ru-breaking-title" }, `需要留意的破坏性变更（${r.highlights.breaking.length} 条）`), ruList(r.highlights.breaking, "ru-breaking")] : null),
-        h("div", { class: "ru-sec" }, h("h3", {}, "值不值得升级 · 风险与兼容"), ruAnalysis(r)),
-        h("details", { class: "ru-sec rt-profile-more", ...(s.ruOpen?.[`guide-${r.kind}`] ? { open: true } : {}), ontoggle: (ev) => { s.ruOpen = { ...(s.ruOpen || {}), [`guide-${r.kind}`]: ev.currentTarget.open }; } },
-          h("summary", { class: "small" }, executor ? `升级步骤（点「升级」后由 ${executor[0]} 会话照此执行）` : "升级方式"),
-          ruList(r.guide.steps), r.guide.note ? h("p", { class: "muted small" }, r.guide.note) : null,
-          r.guide.command ? h("div", { class: "ru-command" }, h("code", {}, r.guide.command), h("button", { type: "button", class: "btn small", onclick: (ev) => ruCopy(r.guide.command, ev.currentTarget) }, "复制命令")) : null),
-        executor ? h("div", { class: "settings-run-actions" },
-          h("button", { type: "button", class: "btn primary", "data-ru-upgrade": r.kind, disabled: !!s.ruUpgrading?.[r.kind], onclick: () => upgradeRuntime(r.kind) }, s.ruUpgrading?.[r.kind] ? "正在发起…" : `升级 ${executor[1]} 到 ${r.latest}`),
-          h("span", { class: "muted small" }, `由 ${executor[0]} 开一个会话来执行，你可以在会话里看进度`)) : null,
-        s.ruUpgradeError?.[r.kind] ? h("p", { class: "small warn-text", role: "alert" }, s.ruUpgradeError[r.kind]) : null,
-        h("div", { class: "settings-run-actions" },
-          r.ignored ? h("button", { type: "button", class: "btn small", onclick: () => ignoreRuntimeUpdate(r.kind, true) }, "取消忽略")
-            : h("button", { type: "button", class: "btn small", "data-ru-ignore": r.kind, onclick: () => ignoreRuntimeUpdate(r.kind) }, "忽略这个版本"),
-          h("span", { class: "muted small" }, r.ignored ? `已忽略 ${r.latest}，有更新的版本才会再提醒` : "忽略后红点熄灭，出了更新的版本才再提醒"))
-      ] : null,
-      h("details", { class: "rt-profile-more", ...(s.ruOpen?.[`log-${r.kind}`] ? { open: true } : {}), ontoggle: (ev) => { s.ruOpen = { ...(s.ruOpen || {}), [`log-${r.kind}`]: ev.currentTarget.open }; } },
-        h("summary", { class: "small" }, `版本更新记录（${r.pending.length + r.history.length} 版）`),
+      r.analysisError && !r.analyzing ? h("p", { class: "small warn-text", role: "alert" }, `上次分析没成功：${r.analysisError}`) : null);
+  }
+  /** 收益 / 风险：各自一个折叠行，内容紧跟自己的标题（默认收起，一级只让人看「推不推荐」）。 */
+  function ruPeek(r, a) {
+    const s = state(), v = a.value;
+    // 触发行用和页内其它折叠一样的 details：展开的内容就在自己标题下面，不会隔着别人的行
+    const fold = (name, label, count, ...body) => {
+      const key = `peek-${name}-${r.kind}`, open = !!s.ruOpen?.[key];
+      return h("details", {
+        class: "ru2-card ru2-fold", ...(open ? { open: true } : {}),
+        ontoggle: (ev) => { s.ruOpen = { ...(s.ruOpen || {}), [key]: ev.currentTarget.open }; }
+      },
+        h("summary", { [`data-ru-${name}`]: r.kind },
+          h("span", { class: "ru2-fold-title" }, label),
+          h("span", { class: "ru2-fold-count" }, `${count} 条`)),
+        h("div", { class: "ru2-fold-in", [`data-ru-${name}-body`]: r.kind }, ...body));
+    };
+    return [
+      fold("benefit", "升级有什么好处", v.benefits.length,
+        v.benefits.length ? ruDots(v.benefits) : h("p", { class: "muted small" }, "这一批更新里没有对平台有用的东西。")),
+      fold("risk", "可能出什么问题", v.risks.length,
+        v.risks.length ? ruDots(v.risks, true) : h("p", { class: "muted small" }, "没发现会碰到平台的问题。"),
+        h("p", { class: "ru2-reassure" }, "升级前会先在临时目录验证，通过才替换；出问题可以退回现在的版本。")),
+      v.compat.length || v.testPlan.length ? ruFold(r.kind, "analysis-more", "平台要做哪些适配",
+        v.compat.length ? h("ul", { class: "ru-list" }, v.compat.map((c) => h("li", {}, h("strong", {}, c.what), h("span", { class: "muted" }, ` → ${c.action}`)))) : null,
+        h("p", { class: "ru2-sub" }, "升级前后的验证步骤"), h("ol", { class: "ru-list" }, v.testPlan.map((t) => h("li", {}, t)))) : null,
+      h("p", { class: "foot" }, `分析于北京时间 ${beijing(a.at)} · 分析的是 ${a.installed} → ${a.latest}${a.costUsd ? ` · DeepSeek $${a.costUsd.toFixed(3)}` : ""}${a.trigger === "auto" ? " · 检测后自动分析" : ""}。只依据更新日志和平台依赖清单判断，仅供参考。`)
+    ];
+  }
+  /** 自动夜间升级：已安排就显示时间并可取消；没安排就说清缺哪一条。 */
+  function ruAutoBlock(r, data) {
+    if (!r.hasUpdate) return null;
+    const enabled = !!data?.autoUpgrade?.enabled;
+    const threshold = data?.autoUpgrade?.threshold ?? 10;
+    const entry = r.autoUpgrade?.entry;
+    const supported = (data?.autoUpgrade?.kinds || []).includes(r.kind);
+    const status = entry?.status;
+    let pill = ["不会自动升级", ""], body;
+    if (status === "scheduled") {
+      pill = ["已安排", "ok"];
+      body = `北京时间 ${beijing(entry.at)} 自动升到 ${entry.to}：到点先看有没有会话在跑，有就等，最晚等到 05:30，还忙就改到明晚。`;
+    } else if (status === "started") {
+      pill = ["正在自动升级", "ok"];
+      body = `北京时间 ${beijing(entry.at)} 已经开始，升级完成后下一次检测会写进升级记录。`;
+    } else if (status === "done") {
+      pill = ["已自动升过", "ok"];
+      body = `这个版本已经自动升过一次（${entry.from} → ${entry.to}）。`;
+    } else if (status === "failed") {
+      pill = ["自动升级失败", "bad"];
+      body = `这次没有升成：${entry.note || "开升级会话失败"}。同一个版本不会再自动重试，需要你手动升。`;
+    } else if (status === "cancelled") {
+      pill = ["已取消", ""];
+      body = "这个版本的自动升级已被取消，需要的话可以手动升。";
+    } else if (!supported) {
+      body = `${r.kind === "codex" ? "Codex" : "Claude Code"} 不自动升级：${r.kind === "codex" ? "它跟着 ChatGPT.app 一起更新。" : "它的升级要改代码并部署，交给人工决定。"}`;
+    } else if (!enabled) {
+      body = `自动夜间升级现在是关的。打开后：落后超过 ${threshold} 个版本、结论是「建议升级」、又没有高风险时，平台会在北京时间 03:00–05:30 自动升。`;
+    } else {
+      body = `还不会自动升：${(r.autoUpgrade?.blocked || []).slice(0, 3).join("；")}。条件：落后超过 ${threshold} 个版本 + 结论是「建议升级」+ 没有高风险项。`;
+    }
+    const actions = [];
+    if (status === "scheduled") actions.push(h("button", { type: "button", class: "btn small", "data-ru-auto-cancel": r.kind, disabled: !!state().ruAutoBusy, onclick: () => cancelAutoUpgrade(r.kind) }, "取消这次自动升级"));
+    else if (supported && !enabled && !status) actions.push(h("button", { type: "button", class: "btn small", "data-ru-auto-enable": r.kind, disabled: !!state().ruAutoBusy, onclick: () => setAutoUpgrade(true) }, "打开自动夜间升级"));
+    return h("section", { class: "ru2-card ru-auto-status", "data-ru-auto-status": r.kind },
+      h("h3", {}, "自动夜间升级", h("span", { class: `ru2-pill ${pill[1]}` }, pill[0])),
+      h("p", { class: "small muted" }, body), actions.length ? h("div", { class: "ru-auto-actions" }, ...actions) : null);
+  }
+  /** 固定在底部的主操作：报告有效时「升级」是主按钮，否则先「分析」。 */
+  function ruBar(r) {
+    if (!r.hasUpdate) return null;
+    const s = state(), a = r.analysis, fresh = a && !a.stale, executor = RU_EXECUTOR[r.kind];
+    const busy = r.analyzing || !!s.ruAnalyzing?.[r.kind] || (s.runtimeUpdates?.analyzing || []).includes(r.kind);
+    // 一屏只留一个实心主操作，另一个用 ghost：不和折叠行抢「按钮」的样子
+    const analyze = (primary) => h("button", { type: "button", class: `btn${primary ? " primary" : " ghost"}`, "data-ru-analyze": r.kind, disabled: busy, "aria-busy": String(busy), onclick: () => analyzeRuntimeUpdate(r.kind, !!a) }, busy ? "分析中…" : a ? "重新分析" : "分析收益与风险");
+    const upgrade = executor ? h("button", { type: "button", class: `btn${fresh ? " primary" : " ghost"}`, "data-ru-upgrade": r.kind, disabled: !!s.ruUpgrading?.[r.kind], onclick: () => upgradeRuntime(r.kind) }, s.ruUpgrading?.[r.kind] ? "正在发起…" : fresh ? `升级 ${executor[1]} 到 ${r.latest}` : `升级到 ${r.latest}`) : null;
+    const err = s.ruAnalyzeError?.[r.kind] || s.ruUpgradeError?.[r.kind];
+    return h("div", { class: "ru2-bar", "data-ru-bar": r.kind },
+      err ? h("p", { class: "small warn-text ru2-bar-err", role: "alert" }, err) : null,
+      h("div", { class: "ru2-bar-btns" }, fresh && upgrade ? [upgrade, analyze(false)] : [analyze(true), upgrade]));
+  }
+  /** 一级：一行一个组件，回答「有没有新版、推不推荐升」。 */
+  function ruRow(r) {
+    const st = ruState(r), entry = r.autoUpgrade?.entry;
+    const sub = [];
+    if (r.hasUpdate) sub.push(`落后 ${r.pendingCount} 版`);
+    else if (r.installed && r.latest) sub.push("已是最新");
+    if (r.hasUpdate && r.highlights.breaking.length) sub.push(`${r.highlights.breaking.length} 项破坏性变更`);
+    const auto = entry && entry.status === "scheduled" ? `${beijing(entry.at)} 自动升级` : entry && entry.status === "started" ? "自动升级进行中" : null;
+    return h("a", { class: "ru-row", href: `#/settings/runtimeupdates/${r.kind}`, "data-ru-row": r.kind },
+      h("span", { class: "ru-row-main" },
+        h("b", {}, h("i", { class: `ru2-dot ${st.dot}`, "aria-hidden": "true" }), r.label.replace(/（.*?）/g, "")),
+        h("span", { class: "ru-row-vers" }, h("code", {}, r.installed || "未知"), " → ", h("code", {}, r.latest || "—")),
+        h("small", {}, auto ? `${sub.join(" · ")} · ${auto}` : sub.join(" · "))),
+      h("span", { class: `ru2-pill ${st.pill[1]}` }, st.pill[0]),
+      h("span", { class: "settings-run-chev", "aria-hidden": "true" }, "›"));
+  }
+  function ruHead(data) {
+    const s = state();
+    const running = !!data?.running || !!s.ruStarting;
+    const analyzing = !!(data?.analyzing || []).length;
+    const status = running ? "检测中，跑完会自动更新下面的内容…"
+      : analyzing ? "检测完了，正在自动分析是不是值得升…"
+      : data?.lastCheckAt ? `上次检测 ${beijing(data.lastCheckAt)}（北京时间）` : "还没有检测记录，点「立即检测」。";
+    return h("div", { class: "ru2-sum" },
+      h("div", {}, h("h2", {}, !data ? "运行时版本" : data.alertCount ? `${data.alertCount} 个组件有新稳定版` : "都是最新稳定版"), h("p", { class: "muted small", role: "status" }, status)),
+      h("button", { type: "button", class: "btn small", "data-ru-check": "", disabled: running, "aria-busy": String(running), onclick: runRuntimeUpdateCheck }, running ? "检测中…" : "立即检测"));
+  }
+  function ruAutoCard(data) {
+    const enabled = !!data.autoUpgrade?.enabled;
+    const threshold = data.autoUpgrade?.threshold ?? 10;
+    const scheduled = (data.autoUpgrade?.entries || []).filter((e) => e.status === "scheduled" || e.status === "started");
+    return h("section", { class: "ru2-card ru-auto-card", "data-ru-auto": enabled ? "on" : "off" },
+      h("h3", {}, "自动夜间升级", h("span", { class: `ru2-pill ${enabled ? "ok" : ""}` }, enabled ? "已开" : "已关")),
+      h("p", { class: "small muted" }, `落后超过 ${threshold} 个版本、结论是「建议升级」、又没有高风险时，北京时间 03:00–05:30 没有会话在跑就自动升 Pi 和 Antigravity。Claude Code 要改代码并部署、Codex 跟着桌面版，都不自动升。`),
+      scheduled.length ? h("ul", { class: "ru-auto-list" }, scheduled.map((e) => h("li", {}, `${e.label} ${e.from} → ${e.to} · ${e.status === "started" ? "正在升级" : `北京时间 ${beijing(e.at)}`}`))) : null,
+      h("button", { type: "button", class: `btn small${enabled ? "" : " primary"}`, "data-ru-auto-toggle": "", disabled: !!state().ruAutoBusy, onclick: () => setAutoUpgrade(!enabled) }, enabled ? "关掉自动夜间升级" : "开启自动夜间升级"));
+  }
+  function ruHistory(data, logs, checks) {
+    const s = state();
+    return h("details", { class: "ru2-card ru2-fold", ...(s.ruOpen?.["history"] ? { open: true } : {}), ontoggle: (ev) => { s.ruOpen = { ...(s.ruOpen || {}), history: ev.currentTarget.open }; } },
+      h("summary", {}, "升级记录与检测历史"),
+      h("div", { class: "ru2-fold-in" },
+        h("p", { class: "ru2-sub" }, "升级记录（平台观察到的已装版本变化，升级完成后下一次检测时记下）"),
+        logs.length ? h("ul", { class: "ru-list" }, logs.map((e) => h("li", {}, h("strong", {}, (data.runtimes.find((r) => r.kind === e.kind) || {}).label || e.kind), h("span", { class: "muted" }, ` ${e.from ? `${e.from} → ${e.to}` : `首次记录 ${e.to}`} · 北京时间 ${beijing(e.at)}`))))
+          : h("p", { class: "muted small" }, "还没有记录。点「运行时配置」里的「检查」后再检测一次，就会记下当前版本。"),
+        (data.autoUpgrade?.entries || []).length ? [h("p", { class: "ru2-sub" }, "自动夜间升级"), h("ul", { class: "ru-list" }, data.autoUpgrade.entries.map((e) => h("li", {}, h("span", { class: `settings-run-state ${e.status === "failed" ? "failed" : "ok"}` }, RU_AUTO_ENTRY[e.status] || e.status), h("span", { class: "muted" }, ` ${e.label} ${e.from} → ${e.to} · 北京时间 ${beijing(e.at)}${e.note ? ` · ${e.note}` : ""}`))))] : null,
+        checks.length ? [h("p", { class: "ru2-sub" }, "检测历史"), h("ul", { class: "ru-list" }, checks.map((c) => h("li", {}, h("span", { class: `settings-run-state ${c.status}` }, { running: "检测中", ok: "完成", failed: "失败" }[c.status] || c.status),
+          h("span", { class: "muted" }, ` ${RU_TRIGGER[c.trigger] || "检测"} · 北京时间 ${beijing(c.startedAt)}${c.found.length ? ` · 新发现 ${c.found.map((f) => `${f.kind} ${f.version}`).join("、")}` : ""}${c.errors.length ? ` · 失败 ${c.errors.map((e) => e.kind).join("、")}` : ""}`))))] : null));
+  }
+  /** 一级：列表 → 详情。 */
+  function runtimeUpdatesList(data) {
+    const s = state();
+    return h("div", { class: "ru2 ru2-flat" },
+      ruHead(data),
+      s.ruMessage ? h("p", { class: "settings-run-note small", role: "alert" }, s.ruMessage) : null,
+      h("nav", { class: "ru-rows", "aria-label": "运行时组件" }, data.runtimes.map(ruRow)),
+      ruAutoCard(data),
+      ruHistory(data, data.installLog || [], data.checks || []),
+      h("p", { class: "foot" }, `每天北京时间 ${data.scheduleHour ?? 9}:${String(data.scheduleMinute ?? 0).padStart(2, "0")} 自动检测 Pi、Claude Code、Codex、Antigravity 的新稳定版（不含 alpha / beta / rc），检测到就自动分析值不值得升。点组件看收益和风险。${data.nextRunAt ? `下次自动检测：北京时间 ${beijing(data.nextRunAt)}。` : ""}`));
+  }
+  /** 二级：一个组件的结论、收益、风险、安排与记录。 */
+  function runtimeUpdatesDetail(r, data) {
+    const s = state(), st = ruState(r), a = r.analysis, fresh = a && !a.stale;
+    const executor = RU_EXECUTOR[r.kind];
+    const features = r.highlights.features;
+    return h("div", { class: "ru2 ru2-detail ru2-flat" },
+      s.ruMessage ? h("p", { class: "settings-run-note small", role: "alert" }, s.ruMessage) : null,
+      ruHero(r, st),
+      fresh ? ruPeek(r, a) : null,
+      a?.stale ? ruFold(r.kind, "analysis-old", "查看旧报告（仅供参考）", h("p", { class: "ru2-sub" }, `分析的是 ${a.installed} → ${a.latest}：${(RU_VERDICT[a.value.verdict] || [a.value.verdict])[0]}`), h("p", { class: "muted small" }, a.value.reason), ...ruPeek(r, a)) : null,
+      ruAutoBlock(r, data),
+      r.hasUpdate && r.highlights.breaking.length ? ruFold(r.kind, "breaking", `需要留意的破坏性变更（${r.highlights.breaking.length} 项）`, ruList(r.highlights.breaking, "ru-breaking")) : null,
+      r.hasUpdate && features.length ? ruFold(r.kind, "features", `新增功能（${features.length} 条）`, ruList(features)) : null,
+      r.hasUpdate ? ruFold(r.kind, "guide", executor ? `升级步骤（点「升级」后由 ${executor[0]} 会话照此执行）` : "升级方式",
+        ruList(r.guide.steps), r.guide.note ? h("p", { class: "muted small" }, r.guide.note) : null,
+        r.guide.command ? h("div", { class: "ru-command" }, h("code", {}, r.guide.command), h("button", { type: "button", class: "btn small", onclick: (ev) => ruCopy(r.guide.command, ev.currentTarget) }, "复制命令")) : null) : null,
+      ruFold(r.kind, "log", `版本更新记录（${r.pending.length + r.history.length} 版）`,
         r.pending.length || r.history.length
           ? h("div", { class: "ru-releases" }, [...r.pending.map((x) => ruRelease(x, `rel-${r.kind}-${x.version}`)), ...r.history.map((x) => ruRelease(x, `rel-${r.kind}-${x.version}`))])
-          : h("p", { class: "muted small" }, "还没有记录，点上面的「立即检测」。"),
+          : h("p", { class: "muted small" }, "还没有记录，回上一页点「立即检测」。"),
         r.pendingCount > r.pending.length ? h("p", { class: "muted small" }, `只列出最新 ${r.pending.length} 个新版本；更早的 ${r.pendingCount - r.pending.length} 个见`, " ", h("a", { href: r.homepage, target: "_blank", rel: "noopener noreferrer" }, "完整更新日志")) : null,
-        r.kind === "codex" ? h("p", { class: "muted small" }, "Codex 的发布列表太大，平台只读最新稳定版和近期的稳定版，更早的版本会从首次检测起逐日积累。") : null));
+        r.kind === "codex" ? h("p", { class: "muted small" }, "Codex 的发布列表太大，平台只读最新稳定版和近期的稳定版，更早的版本会从首次检测起逐日积累。") : null),
+      r.hasUpdate ? h("p", { class: "ru2-ignore" },
+        r.ignored ? [`已忽略 ${r.latest}，有更新的版本才会再提醒。`, h("button", { type: "button", class: "btn-link small", onclick: () => ignoreRuntimeUpdate(r.kind, true) }, "取消忽略")]
+          : [h("button", { type: "button", class: "btn-link small", "data-ru-ignore": r.kind, onclick: () => ignoreRuntimeUpdate(r.kind) }, "忽略这个版本"), "忽略后红点熄灭，出了更新的版本才再提醒。"]) : null,
+      h("p", { class: "foot" }, `检查时间：${r.checkedAt ? `北京时间 ${beijing(r.checkedAt)}` : "还没检测过"}。检测只认稳定版（不含 alpha / beta / rc）。`),
+      ruBar(r));
   }
   function runtimeUpdatesSection() {
     const s = state();
     if (!s.ruLoaded) { s.ruLoaded = true; void loadRuntimeUpdates(); }
     const data = s.runtimeUpdates;
-    const running = !!data?.running || !!s.ruStarting;
-    const status = running ? "检测中，跑完会自动更新下面的内容…" : data?.lastCheckAt ? `上次检测 ${beijing(data.lastCheckAt)}（北京时间）` : "还没有检测记录，点「立即检测」。";
-    const logs = data?.installLog || [];
-    const checks = data?.checks || [];
-    return h("div", { class: "settings-errorstats ru-page" },
-      h("section", { class: "card settings-card" },
-        h("div", { class: "settings-card-head" }, h("div", {},
-          h("h2", {}, "运行时更新"),
-          h("p", { class: "muted small" }, `每天北京时间 ${data?.scheduleHour ?? 9}:${String(data?.scheduleMinute ?? 0).padStart(2, "0")} 检测 Pi、Claude Code、Codex 有没有新的稳定版（不含 alpha / beta / rc）。有新版本时只提示：先看新增了什么，再决定要不要让 AI 分析收益与风险；Pi 和 Claude Code 点「升级」由对方 runtime 开会话执行，Codex 跟随桌面版 App 升级。`))),
-        h("div", { class: "settings-run-actions" },
-          h("button", { type: "button", class: "btn primary", "data-ru-check": "", disabled: running, "aria-busy": String(running), onclick: runRuntimeUpdateCheck }, running ? "检测中…" : "立即检测"),
-          h("span", { class: "muted small", role: "status" }, status)),
+    const kind = s.extra && data ? data.runtimes.find((r) => r.kind === s.extra) : null;
+    if (!data) {
+      return h("div", { class: "ru2 ru2-flat" }, ruHead(undefined),
         s.ruMessage ? h("p", { class: "settings-run-note small", role: "alert" }, s.ruMessage) : null,
-        data?.nextRunAt ? h("p", { class: "muted small" }, `下次自动检测：北京时间 ${beijing(data.nextRunAt)}`) : null),
-      !data ? h("section", { class: "card settings-card" }, h("div", { class: "settings-run-empty", role: "status" }, s.ruError || "读取中…")) : data.runtimes.map(ruCard),
-      data ? h("section", { class: "card settings-card" },
-        h("div", { class: "settings-card-head" }, h("div", {}, h("h2", {}, "升级记录"), h("p", { class: "muted small" }, "平台观察到的已装版本变化（升级完成后，下一次检测时记下）。"))),
-        logs.length ? h("ul", { class: "ru-list" }, logs.map((e) => h("li", {}, h("strong", {}, (data.runtimes.find((r) => r.kind === e.kind) || {}).label || e.kind), h("span", { class: "muted" }, ` ${e.from ? `${e.from} → ${e.to}` : `首次记录 ${e.to}`} · 北京时间 ${beijing(e.at)}`))))
-          : h("p", { class: "muted small" }, "还没有记录。点「运行时配置」里的「检查」后再检测一次，就会记下当前版本。")) : null,
-      data && checks.length ? h("section", { class: "card settings-card" },
-        h("div", { class: "settings-card-head" }, h("div", {}, h("h2", {}, "检测历史"))),
-        h("ul", { class: "ru-list" }, checks.map((c) => h("li", {}, h("span", { class: `settings-run-state ${c.status}` }, { running: "检测中", ok: "完成", failed: "失败" }[c.status] || c.status),
-          h("span", { class: "muted" }, ` ${RU_TRIGGER[c.trigger] || "检测"} · 北京时间 ${beijing(c.startedAt)}${c.found.length ? ` · 新发现 ${c.found.map((f) => `${f.kind} ${f.version}`).join("、")}` : ""}${c.errors.length ? ` · 失败 ${c.errors.map((e) => e.kind).join("、")}` : ""}`))))) : null);
+        h("section", { class: "card settings-card" }, s.ruError ? h("div", { class: "settings-run-empty", role: "status" }, s.ruError) : skeletonRows(3)));
+    }
+    return kind ? runtimeUpdatesDetail(kind, data) : runtimeUpdatesList(data);
   }
-
   const CODEX_TRIGGER = { schedule: "定时", "catch-up": "补扫", manual: "手动" };
   function codexResetSection() {
     const s = state();
@@ -1054,7 +1298,7 @@
       : h("div", { class: "settings-run-empty" }, auth?.ok ? "现在没有可用的重置卡。" : "等读到登录态后再看。");
     const scans = data?.scans || [];
     const scanList = !data
-      ? h("div", { class: "settings-run-empty", role: "status" }, s.codexResetError || "读取中…")
+      ? (s.codexResetError ? h("div", { class: "settings-run-empty", role: "status" }, s.codexResetError) : skeletonRows(3))
       : scans.length ? scans.map((scan) => h("div", { class: "settings-run-item" },
         h("p", { class: "settings-run-line" }, `${CODEX_TRIGGER[scan.trigger] || "扫描"} · ${scan.status === "ok" ? "成功" : scan.status === "running" ? "进行中" : "失败"} · 可用 ${scan.availableCount ?? "—"} 张`),
         h("p", { class: "settings-run-line muted" }, [beijing(scan.finishedAt || scan.startedAt), scan.newGranted?.length ? `新发放 ${scan.newGranted.length} 张` : "", scan.newUsed?.length ? `新使用 ${scan.newUsed.length} 张` : "", scan.error || ""].filter(Boolean).join(" · "))))
@@ -1321,7 +1565,7 @@
         statsLink(),
         s.deployError ? h("p", { class: "field-error", role: "alert" }, s.deployError,
           h("button", { type: "button", class: "btn small", onclick: () => { s.deployAttempted = false; loadDeployments(true); } }, "重试")) : null,
-        !data && !s.deployError ? h("p", { class: "muted small" }, "正在读取部署历史…") : null,
+        !data && !s.deployError ? skeletonRows(3, "正在读取部署历史…") : null,
         data && !active.length && data.total === 0 ? h("p", { class: "muted small" }, "还没有部署记录。") : null),
       active.length ? h("section", { class: "card settings-card settings-deploy-active" },
         h("div", { class: "settings-card-head" }, h("div", {}, h("h2", {}, "进行中"), h("p", { class: "muted small" }, "已经登记、还在排队或正在部署的请求。"))),
@@ -1338,9 +1582,966 @@
     return [window.piAndroidShell?.versionPanel() ?? h("section", { class: "card settings-card" }, h("p", { class: "muted small" }, "平台 APP 版本只在 Android 客户端里可用。"))];
   }
 
+  /* ------------------------------ 设备与远程连接 ------------------------------ */
+  function formatMegabytes(bytes) {
+    const mb = Number(bytes) / 1048576;
+    return mb >= 100 ? `${Math.round(mb)} MB` : mb >= 1 ? `${Number(mb.toFixed(1))} MB` : `${Math.max(0, Math.round(Number(bytes) / 1024))} KB`;
+  }
+  function usageMeter(label, used, limit, usedText, limitText) {
+    const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
+    const level = ratio >= 1 ? "bad" : ratio >= 0.8 ? "warn" : "ok";
+    return h("div", { class: "settings-usage-row" },
+      h("div", { class: "settings-usage-head" },
+        h("span", { class: "small settings-usage-label" }, label),
+        h("span", { class: "small settings-usage-nums" },
+          h("strong", {}, usedText),
+          h("span", {}, ` / ${limitText} · ${Math.round(ratio * 100)}%`))),
+      h("div", { class: "settings-usage-bar", role: "progressbar", "aria-label": label, "aria-valuemin": "0", "aria-valuemax": String(limit), "aria-valuenow": String(Math.min(used, limit)) },
+        h("div", { class: `settings-usage-fill ${level}`, style: `width:${Math.max(ratio > 0 ? 2 : 0, ratio * 100)}%` })));
+  }
+  /** 公共中继当日用量；自建中继显示无限额；还没查到时不画任何东西。 */
+  function relayUsageBlock(usage) {
+    if (!usage) return null;
+    if (usage.kind === "unlimited") return h("div", { class: "settings-usage", "data-relay-usage": "unlimited" }, h("span", { class: "settings-run-meta" }, "自建中继 · 无限额"));
+    return h("div", { class: "settings-usage", "data-relay-usage": "limited" },
+      usageMeter("今日流量", usage.dayBytes, usage.dailyRoomBytes, formatMegabytes(usage.dayBytes), formatMegabytes(usage.dailyRoomBytes)),
+      usageMeter("今日帧数", usage.dayFrames, usage.dailyRoomFrames, String(usage.dayFrames), String(usage.dailyRoomFrames)),
+      h("span", { class: "settings-run-meta settings-usage-reset" }, usage.blocked
+        ? `今日额度已用完，将于 ${beijing(new Date(usage.resetAt).toISOString())} 重置；可切换到自有域名或自建中继`
+        : `每日免费额度 · ${beijing(new Date(usage.resetAt).toISOString())} 重置`));
+  }
+  function stopRemotePoll() {
+    const s = state();
+    if (s.remotePoll) { clearTimeout(s.remotePoll); s.remotePoll = 0; }
+  }
+  async function loadRemoteStatus(force = false) {
+    const s = state();
+    if (s.remoteLoading && !force) return;
+    s.remoteLoading = true;
+    try {
+      const data = await api("/api/remote-connect/status");
+      s.remote = data;
+      s.remoteError = "";
+      if (!s.remoteDraftDirty) {
+        s.remoteHostName = data.hostName || "";
+        s.remoteRelayMode = data.relayMode || "official";
+        s.remoteCustomRelay = data.customRelayUrl || "";
+      }
+    } catch (error) {
+      s.remoteError = error?.message || "读取远程连接状态失败";
+    }
+    // 自有域名方式添加的手机：仅电脑/浏览器登录态可读待批准列表；Android App 壳为设备身份，调用只会 403。
+    if (window.piAndroidShell?.available) {
+      s.devicePairs = [];
+    } else {
+      try { s.devicePairs = (await api("/api/auth/device-pairs/pending"))?.pairs || []; } catch { s.devicePairs = []; }
+    }
+    s.remoteLoading = false;
+    stopRemotePoll();
+    if (ui.view === "settings" && section() === "remote") {
+      // 手机已经发来请求（比如刷新页面时配对进行到一半）：直接弹出新增设备弹窗，在同一个地方核对批准。
+      // 只在等批准时弹；单纯还没人扫的二维码不弹，用户要用再点「新增设备」。
+      const ap = s.remote?.activePairing;
+      if (!link.open && ap?.status === "awaiting_approval" && !link.dismissed.has(ap.pairId)) openLinkModal({ restore: "relay" });
+      else if (!link.open && (s.devicePairs || []).some((p) => !link.dismissed.has(p.pairId))) openLinkModal({ restore: "domain" });
+      const waiting = s.remote?.activePairing || s.devicePairs.length > 0;
+      s.remotePoll = setTimeout(() => { if (ui.view === "settings" && section() === "remote") void loadRemoteStatus(true); }, waiting ? 1500 : 4000);
+    }
+    if (ui.view === "settings") renderMain();
+  }
+  async function saveRemoteConfig(patch) {
+    const s = state();
+    s.remoteBusy = true; s.remoteError = ""; s.remoteNotice = ""; renderMain();
+    try {
+      s.remote = await api("/api/remote-connect/config", { method: "POST", body: JSON.stringify(patch) });
+      s.remoteDraftDirty = false;
+      s.remoteHostName = s.remote.hostName || "";
+      s.remoteRelayMode = s.remote.relayMode || "official";
+      s.remoteCustomRelay = s.remote.customRelayUrl || "";
+      s.remoteNotice = "设置已保存";
+    } catch (error) {
+      s.remoteError = error?.message || "保存远程连接配置失败";
+    }
+    s.remoteBusy = false;
+    renderMain();
+  }
+  /* ------------------------------ 新增设备弹窗：选线路 → 扫码 → 确认 → 完成 ------------------------------ */
+  // 弹窗挂在 body 上、有自己的渲染：页面每 1.5~4 秒轮询刷新列表时不会重建弹窗，输入框的内容和光标不会丢。
+  const LINK_STEPS = [{ id: "route", label: "选线路" }, { id: "scan", label: "扫码" }, { id: "confirm", label: "确认" }];
+  const LINK_ROUTE_KEY = "heji.link.route";
+  const link = {
+    open: false, step: "route", routeId: "public", adding: false, addType: "custom_relay", addUrl: "", addName: "",
+    busy: false, error: "", pair: null, baseline: new Set(), done: null, expired: false,
+    root: null, box: null, poll: 0, tick: 0, dismissed: new Set(), onKey: null,
+  };
+  const publicRouteOf = () => ({ id: "public", type: "public_relay", name: "公共中继", url: state().remote?.defaultRelayUrl || "wss://relay.heji.pro" });
+  const linkRoutes = () => [publicRouteOf(), ...(state().remote?.routes || [])];
+  const linkRoute = () => linkRoutes().find((r) => r.id === link.routeId) || publicRouteOf();
+  const ROUTE_KIND = { public_relay: "公共中继", custom_relay: "自建中继", domain: "自有域名" };
+  const routeHost = (url) => String(url || "").replace(/^[a-z]+:\/\//i, "").replace(/\/$/, "");
+  const countdownText = (ms) => {
+    const sec = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  };
+  const pairCode = (code) => String(code || "").replace(/(\d{3})(\d{3})/, "$1 $2");
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function openLinkModal(opts = {}) {
+    if (link.open) return;
+    const s = state();
+    Object.assign(link, {
+      open: true, step: "route", adding: false, addType: "custom_relay", addUrl: "", addName: "", busy: false, error: "",
+      pair: null, done: null, expired: false, baseline: new Set(),
+    });
+    try { link.routeId = localStorage.getItem(LINK_ROUTE_KEY) || "public"; } catch { link.routeId = "public"; }
+    if (!linkRoutes().some((r) => r.id === link.routeId)) link.routeId = "public";
+
+    if (opts.restore === "relay" && s.remote?.activePairing) {
+      const ap = s.remote.activePairing;
+      const route = linkRoutes().find((r) => r.url === ap.relayUrl);
+      if (route) link.routeId = route.id;
+      link.pair = { kind: "relay", pairId: ap.pairId, qrSvg: ap.qrSvg, qrText: ap.qrText, expiresAt: ap.expiresAt };
+      link.step = "scan";
+      if (ap.status === "awaiting_approval") adoptRelayRequest(ap);
+    } else if (opts.restore === "domain") {
+      const pair = (s.devicePairs || []).find((p) => !link.dismissed.has(p.pairId));
+      if (pair) {
+        link.pair = { kind: "domain", pairId: pair.pairId, expiresAt: pair.expiresAt };
+        adoptDomainRequest(pair);
+        link.baseline = domainDeviceIds();
+      }
+    }
+
+    link.root = h("div", { class: "link-backdrop", "data-link-modal": "" });
+    link.box = h("div", { class: "link-modal", role: "dialog", "aria-modal": "true", "aria-label": "新增设备" });
+    link.root.append(link.box);
+    document.body.append(link.root);
+    link.onKey = (ev) => { if (ev.key === "Escape") void closeLinkModal(); };
+    document.addEventListener("keydown", link.onKey);
+    renderLink();
+    startLinkLoops();
+  }
+
+  function startLinkLoops() {
+    stopLinkLoops();
+    link.tick = setInterval(() => {
+      const el = link.box?.querySelector("[data-link-countdown]");
+      if (!el || !link.pair?.expiresAt) return;
+      const left = link.pair.expiresAt - Date.now();
+      el.textContent = left > 0 ? countdownText(left) : "已过期";
+      if (left <= 0 && link.step === "scan" && !link.expired) { link.expired = true; renderLink(); }
+    }, 1000);
+    const loop = async () => {
+      if (!link.open) return;
+      if (["scan", "confirm", "working"].includes(link.step)) await linkProgress();
+      if (link.open) link.poll = setTimeout(loop, 1200);
+    };
+    link.poll = setTimeout(loop, 1200);
+  }
+  function stopLinkLoops() {
+    if (link.tick) clearInterval(link.tick);
+    if (link.poll) clearTimeout(link.poll);
+    link.tick = 0; link.poll = 0;
+  }
+
+  async function closeLinkModal() {
+    if (!link.open) return;
+    const pair = link.pair;
+    const wasPending = (link.step === "scan" || link.step === "confirm") && pair;
+    link.open = false;
+    stopLinkLoops();
+    document.removeEventListener("keydown", link.onKey);
+    link.root?.remove();
+    link.root = null; link.box = null;
+    if (wasPending) {
+      // 关掉弹窗等于放弃这次配对：电脑上的二维码和待批准请求都作废，手机端会提示被拒绝。
+      link.dismissed.add(pair.pairId);
+      const url = pair.kind === "relay"
+        ? `/api/remote-connect/pairings/${encodeURIComponent(pair.pairId)}/reject`
+        : link.step === "confirm" ? `/api/auth/device-pairs/${encodeURIComponent(pair.pairId)}/reject` : "";
+      if (url) { try { await api(url, { method: "POST", body: "{}" }); } catch { /* 已过期即可 */ } }
+    }
+    if (ui.view === "settings" && section() === "remote") void loadRemoteStatus(true);
+  }
+
+  function domainDeviceIds() {
+    return new Set((state().remote?.devices || []).filter((d) => d.route === "domain").map((d) => d.id));
+  }
+  function adoptRelayRequest(ap) {
+    link.pair = { ...link.pair, deviceName: ap.deviceName, code: ap.safetyCode };
+    link.step = "confirm";
+  }
+  function adoptDomainRequest(pair) {
+    link.pair = { ...link.pair, kind: "domain", pairId: pair.pairId, deviceName: pair.deviceName, code: pair.userCode, expiresAt: pair.expiresAt };
+    link.step = "confirm";
+  }
+  function linkFail(message, step = "scan") {
+    link.error = message; link.step = step; link.busy = false;
+    renderLink();
+  }
+
+  // 轮询推进：电脑端状态由服务端权威给出，弹窗只负责把它翻译成当前步骤。
+  async function linkProgress() {
+    const s = state();
+    let status, pending = [];
+    try {
+      [status, pending] = await Promise.all([
+        api("/api/remote-connect/status"),
+        window.piAndroidShell?.available ? Promise.resolve([]) : api("/api/auth/device-pairs/pending").then((r) => r?.pairs || []).catch(() => []),
+      ]);
+    } catch { return; }
+    if (!link.open) return;
+    s.remote = status; s.devicePairs = pending;
+    const pair = link.pair;
+    if (!pair) return;
+    if (link.step === "working") {
+      if (pair.kind === "domain") {
+        const created = (status.devices || []).find((d) => d.route === "domain" && !link.baseline.has(d.id));
+        if (created) finishLink(created);
+      }
+      return;
+    }
+    if (pair.kind === "relay") {
+      const ap = status.activePairing;
+      if (ap && ap.pairId === pair.pairId) {
+        if (link.step === "scan" && ap.status === "awaiting_approval") { adoptRelayRequest(ap); link.error = ""; renderLink(); }
+      } else if (!link.busy) {
+        linkFail("这次配对已失效（二维码过期或被取消），请重新生成二维码。", "scan");
+        link.expired = true; renderLink();
+      }
+      return;
+    }
+    // 自有域名：手机出示的六位码出现在待批准列表里
+    const hit = link.step === "scan" ? pending[0] : pending.find((p) => p.pairId === pair.pairId);
+    if (link.step === "scan" && hit) { adoptDomainRequest(hit); link.error = ""; renderLink(); }
+    else if (link.step === "confirm" && !hit && !link.busy) { link.expired = true; linkFail("手机已取消或请求已过期，请让手机重新扫码。", "scan"); }
+  }
+
+  async function linkNext() {
+    const route = linkRoute();
+    link.busy = true; link.error = ""; renderLink();
+    try {
+      if (route.type === "domain") {
+        const qr = await api("/api/remote-connect/domain-qr", { method: "POST", body: JSON.stringify({ routeId: route.id }) });
+        link.baseline = domainDeviceIds();
+        link.pair = { kind: "domain", pairId: "", qrSvg: qr.qrSvg, qrText: qr.qrText, expiresAt: qr.expiresAt, origin: qr.origin };
+      } else {
+        const pairing = await api("/api/remote-connect/pairings", { method: "POST", body: JSON.stringify({ routeId: route.id }) });
+        link.pair = { kind: "relay", pairId: pairing.pairId, qrSvg: pairing.qrSvg, qrText: pairing.qrText, expiresAt: pairing.expiresAt };
+      }
+      try { localStorage.setItem(LINK_ROUTE_KEY, route.id); } catch { /* 无痕模式 */ }
+      link.step = "scan"; link.expired = false;
+    } catch (error) {
+      link.error = error?.message || "生成二维码失败";
+    }
+    link.busy = false;
+    renderLink();
+  }
+
+  async function linkBack() {
+    const pair = link.pair;
+    link.busy = true; renderLink();
+    if (pair?.kind === "relay" && pair.pairId) { try { await api(`/api/remote-connect/pairings/${encodeURIComponent(pair.pairId)}/reject`, { method: "POST", body: "{}" }); } catch { /* ignore */ } }
+    if (pair?.pairId) link.dismissed.add(pair.pairId);
+    link.pair = null; link.step = "route"; link.busy = false; link.error = ""; link.expired = false;
+    renderLink();
+  }
+
+  async function linkDecide(decision) {
+    const pair = link.pair;
+    if (!pair?.pairId) return;
+    const started = Date.now();
+    link.busy = true; link.error = "";
+    if (decision === "approve") link.step = "working";
+    renderLink();
+    try {
+      if (pair.kind === "relay") {
+        const res = await api(`/api/remote-connect/pairings/${encodeURIComponent(pair.pairId)}/${decision}`, { method: "POST", body: "{}" });
+        if (res?.status) state().remote = res.status;
+        if (decision === "approve") {
+          await sleep(Math.max(0, 700 - (Date.now() - started)));
+          finishLink(res?.device || { name: pair.deviceName });
+          return;
+        }
+      } else {
+        await api(`/api/auth/device-pairs/${encodeURIComponent(pair.pairId)}/${decision}`, { method: "POST", body: "{}" });
+        if (decision === "approve") {
+          // 手机每 3 秒查一次批准结果，换到凭据后设备才会出现在列表里：这段时间一直显示「正在链接」。
+          link.busy = false;
+          const deadline = Date.now() + 30_000;
+          while (link.open && link.step === "working" && Date.now() < deadline) await sleep(500);
+          if (link.open && link.step === "working") linkFail("已批准，但手机还没完成连接。请保持手机 App 在前台，连上后会自动出现在设备列表里。", "scan");
+          return;
+        }
+      }
+      link.dismissed.add(pair.pairId);
+      link.pair = null; link.step = "route"; link.busy = false; link.expired = false;
+      renderLink();
+    } catch (error) {
+      linkFail(error?.message || (decision === "approve" ? "批准失败，请求可能已过期，请让手机重新扫码" : "拒绝失败，请求可能已过期"), decision === "approve" ? "scan" : "confirm");
+      link.expired = decision === "approve";
+    }
+  }
+
+  function finishLink(device) {
+    if (link.step === "done") return;
+    const s = state();
+    link.done = { name: device?.name || link.pair?.deviceName || "新设备", route: linkRoute() };
+    link.step = "done"; link.busy = false;
+    if (device?.id) { s.remoteHighlight = device.id; s.remoteHighlightAt = Date.now(); }
+    renderLink();
+    void loadRemoteStatus(true);
+    setTimeout(() => { if (link.open && link.step === "done") void closeLinkModal(); }, 1600);
+  }
+
+  async function saveLinkRoute() {
+    const url = link.addUrl.trim();
+    if (!url) { link.error = link.addType === "domain" ? "请填写自有域名地址（https://…）" : "请填写自建中继地址（wss://…）"; renderLink(); return; }
+    link.busy = true; link.error = ""; renderLink();
+    try {
+      const res = await api("/api/remote-connect/routes", { method: "POST", body: JSON.stringify({ type: link.addType, url, name: link.addName.trim() }) });
+      if (res?.status) state().remote = res.status;
+      link.routeId = res.route.id; link.adding = false; link.addUrl = ""; link.addName = "";
+    } catch (error) {
+      link.error = error?.message || "保存线路失败";
+    }
+    link.busy = false;
+    renderLink();
+  }
+  async function removeLinkRoute(route) {
+    if (!window.confirm(`移除线路「${route.name}」？已经用它链接的设备不受影响。`)) return;
+    try {
+      const res = await api(`/api/remote-connect/routes/${encodeURIComponent(route.id)}`, { method: "DELETE" });
+      if (res?.status) state().remote = res.status;
+      if (link.routeId === route.id) link.routeId = "public";
+    } catch (error) {
+      link.error = error?.message || "移除线路失败";
+    }
+    if (link.open) renderLink(); else renderMain();
+  }
+
+  // 每种线路下面的说明和教程：选中哪条就讲哪条，教程里的命令都是仓库里真实存在的。
+  function routeGuide(route) {
+    const steps = (items) => h("ol", { class: "link-guide-steps" }, items.map((x) => h("li", {}, x)));
+    if (route.type === "public_relay") {
+      return h("details", { class: "link-guide", open: "", "data-link-guide": "public_relay" },
+        h("summary", {}, "公共中继 · 说明与教程"),
+        h("p", { class: "muted small" }, "官方 Cloudflare 中继，开箱即用，国内不用 VPN。中继只转发端到端加密的密文，看不到聊天、文件和模型密钥；它能看到连接 IP、在线状态和帧大小。免费额度每日 150 MB / 2 万帧，用完次日 0 点（UTC）自动恢复，重度使用建议自建中继。"),
+        steps(["手机安装并打开 Heji App，点「扫码连接」", "回到这里点「下一步」，用手机扫描二维码", "手机上会出现六位码，回到电脑核对一致后批准"]));
+    }
+    if (route.type === "custom_relay") {
+      return h("details", { class: "link-guide", open: "", "data-link-guide": "custom_relay" },
+        h("summary", {}, "自建中继 · 说明与教程"),
+        h("p", { class: "muted small" }, "把中继放在你自己的 Cloudflare 或服务器上，没有公共额度限制，连接也不经过官方中继。已经链接的设备不会自动迁移，需要重新新增。"),
+        steps([
+          h("span", {}, "部署中继：Cloudflare 在仓库 ", h("code", {}, "apps/relay/cloudflare"), " 里运行 ", h("code", {}, "node build.mjs && cf deploy --prebuilt"), "；自有服务器用 ", h("code", {}, "apps/relay/node"), " 的 Docker Compose，并配好 HTTPS（已附 Caddyfile）。"),
+          h("span", {}, "确认 ", h("code", {}, "https://你的域名/health"), " 返回 ", h("code", {}, "{\"ok\":true…}"), "，中继地址就是 ", h("code", {}, "wss://你的域名"), "。"),
+          "点上方「新增我的线路」，类型选「自建中继」，填入地址并保存",
+          "选中它，点「下一步」，用手机扫码",
+        ]));
+    }
+    return h("details", { class: "link-guide", open: "", "data-link-guide": "domain" },
+      h("summary", {}, "自有域名 · 说明与教程"),
+      h("p", { class: "muted small" }, "适合电脑已经有公网 https 入口（Cloudflare Tunnel、frp 或反向代理到本机 Heji）。手机直连你的域名，不经过中继；同一局域网会自动走内网直连。"),
+      steps([
+        h("span", {}, "确认电脑已能通过 ", h("code", {}, "https://你的域名"), " 打开 Heji"),
+        "点上方「新增我的线路」，类型选「自有域名」，填入实例根地址并保存（不要带路径）",
+        "选中它，点「下一步」，手机扫码后会显示六位码",
+        "回到这里核对六位码一致，批准后手机自动进入；凭据可在「登录管理」里吊销",
+      ]));
+  }
+
+  function linkRouteCard(route) {
+    const selected = link.routeId === route.id;
+    const desc = route.type === "public_relay" ? "免费 · 开箱即用，国内可直连" : routeHost(route.url);
+    return h("div", { class: `link-route${selected ? " is-selected" : ""}`, "data-link-route": route.id },
+      h("button", {
+        type: "button", class: "link-route-main", role: "radio", "aria-checked": selected ? "true" : "false", disabled: link.busy,
+        onclick: () => { link.routeId = route.id; link.error = ""; renderLink(); },
+      },
+        h("span", { class: "link-route-radio", "aria-hidden": "true" }),
+        h("span", { class: "link-route-text" },
+          h("span", { class: "link-route-title" },
+            h("span", { class: `settings-route-kind ${route.type === "domain" ? "kind-domain" : route.type === "custom_relay" ? "kind-custom-relay" : "kind-public-relay"}` }, ROUTE_KIND[route.type]),
+            route.type === "public_relay" ? "官方中继" : route.name),
+          h("span", { class: "muted small" }, desc))),
+      route.id === "public" ? null : h("button", { type: "button", class: "link-route-remove", "aria-label": `移除线路 ${route.name}`, disabled: link.busy, onclick: () => removeLinkRoute(route) }, "移除"));
+  }
+
+  function linkAddRouteForm() {
+    if (!link.adding) {
+      return h("button", { type: "button", class: "link-add-route", "data-link-add-route": "", disabled: link.busy, onclick: () => { link.adding = true; link.error = ""; renderLink(); } }, "＋ 新增我的线路");
+    }
+    const isDomain = link.addType === "domain";
+    const here = location.protocol === "https:" && !/^(localhost|127\.|\[::1\])/.test(location.hostname) ? location.origin : "";
+    return h("div", { class: "link-add-form", "data-link-add-form": "" },
+      h("div", { class: "category-level-switch", role: "tablist" },
+        ...[["custom_relay", "自建中继"], ["domain", "自有域名"]].map(([type, label]) => h("button", {
+          type: "button", class: link.addType === type ? "active" : "", role: "tab", "aria-selected": link.addType === type ? "true" : "false",
+          onclick: () => { link.addType = type; link.error = ""; renderLink(); },
+        }, label))),
+      h("input", {
+        type: "url", class: "input", inputmode: "url", autocomplete: "off", autocapitalize: "off", spellcheck: "false", "data-link-add-url": "",
+        placeholder: isDomain ? "https://你的域名" : "wss://relay.你的域名", value: link.addUrl,
+        oninput: (ev) => { link.addUrl = ev.target.value; },
+      }),
+      isDomain && here && !link.addUrl ? h("button", { type: "button", class: "link-chip", onclick: () => { link.addUrl = here; renderLink(); } }, `使用当前访问地址 ${here}`) : null,
+      h("input", {
+        type: "text", class: "input", maxlength: "40", autocomplete: "off", placeholder: "线路名称（可不填）", value: link.addName,
+        oninput: (ev) => { link.addName = ev.target.value; },
+      }),
+      h("div", { class: "link-add-actions" },
+        h("button", { type: "button", class: "btn small", disabled: link.busy, onclick: () => { link.adding = false; link.error = ""; renderLink(); } }, "取消"),
+        h("button", { type: "button", class: "btn primary small", disabled: link.busy, "data-link-save-route": "", onclick: saveLinkRoute }, link.busy ? "保存中…" : "保存线路")));
+  }
+
+  function linkStepBody() {
+    const pair = link.pair;
+    if (link.step === "route") {
+      return [
+        h("p", { class: "muted small link-lead" }, "先选一条线路。手机通过它连到这台电脑，所有内容端到端加密。"),
+        h("div", { class: "link-routes", role: "radiogroup", "aria-label": "连接线路", "data-link-routes": "" }, linkRoutes().map(linkRouteCard)),
+        linkAddRouteForm(),
+        routeGuide(linkRoute()),
+      ];
+    }
+    if (link.step === "scan") {
+      const isDomain = pair?.kind === "domain";
+      return [
+        link.expired
+          ? h("div", { class: "link-expired", "data-link-expired": "" }, h("strong", {}, "二维码已失效"), h("span", { class: "muted small" }, "请重新生成后再用手机扫码。"))
+          : h("div", { class: "settings-remote-qr-wrap link-qr", "data-remote-qr": "" },
+              h("div", { class: "settings-remote-qr-box" }, parseQrSvgNode(pair?.qrSvg)),
+              h("div", { class: "settings-remote-qr-info" },
+                h("p", { class: "link-wait" }, h("span", { class: "link-pulse", "aria-hidden": "true" }), "等待手机扫码…"),
+                h("ol", { class: "link-guide-steps" },
+                  h("li", {}, "手机打开 Heji App，点「扫码连接」"),
+                  h("li", {}, "扫描二维码并提交"),
+                  h("li", {}, isDomain ? "手机显示六位码后，这里会自动出现确认卡片" : "手机提交后，这里会自动出现确认卡片")),
+                h("p", { class: "muted small" }, `线路：${ROUTE_KIND[linkRoute().type]}${linkRoute().type === "public_relay" ? "" : ` · ${routeHost(linkRoute().url)}`}　有效期 `, h("span", { "data-link-countdown": "" }, countdownText((pair?.expiresAt || 0) - Date.now()))),
+                !isDomain && pair?.qrText ? h("div", { class: "settings-run-actions" },
+                  h("button", {
+                    type: "button", class: "btn small",
+                    onclick: async () => {
+                      try { await navigator.clipboard.writeText(pair.qrText); link.error = ""; link.notice = "已复制配对码"; }
+                      catch { link.notice = ""; link.error = "复制失败，请直接扫码"; }
+                      renderLink();
+                    },
+                  }, "复制配对码")) : null)),
+        link.notice ? h("p", { class: "muted small", role: "status" }, link.notice) : null,
+        h("p", { class: "muted small settings-remote-privacy" }, "中继只转发端到端加密的密文，不保存聊天、文件或模型 API Key；中继可见连接 IP、在线状态与帧大小。"),
+      ];
+    }
+    if (link.step === "confirm") {
+      return [
+        h("div", { class: "settings-remote-approve link-confirm", "data-remote-approve": "", "data-device-pair": pair?.kind === "domain" ? pair.pairId : null },
+          h("p", { class: "small" }, "手机「", h("strong", {}, pair?.deviceName || "Android 设备"), "」请求连接，请核对手机屏幕上的六位码是否和下面一致："),
+          h("div", { class: "settings-remote-sas", "data-remote-sas": "", "data-device-pair-code": pair?.kind === "domain" ? "" : null }, pairCode(pair?.code)),
+          h("p", { class: "muted small" }, "只在你本人刚刚用手机扫码、两边六位码一致时才批准。")),
+      ];
+    }
+    if (link.step === "working") {
+      return [h("div", { class: "link-state", "data-link-working": "", role: "status" },
+        h("span", { class: "link-spinner", "aria-hidden": "true" }),
+        h("strong", {}, "正在建立加密通道…"),
+        h("span", { class: "muted small" }, "手机会自动进入，请保持手机 App 在前台。"))];
+    }
+    return [h("div", { class: "link-state is-done", "data-link-done": "", role: "status" },
+      h("span", { class: "link-check", "aria-hidden": "true" }, "✓"),
+      h("strong", {}, "链接成功"),
+      h("span", { class: "muted small" }, `「${link.done?.name || "新设备"}」已加入，设备列表已更新。`))];
+  }
+
+  function linkFooter() {
+    const btn = (label, cls, onclick, extra = {}) => h("button", { type: "button", class: `btn ${cls}`.trim(), disabled: link.busy, onclick, ...extra }, label);
+    if (link.step === "route") return [btn("取消", "", () => closeLinkModal()), btn(link.busy ? "正在生成…" : "下一步：生成二维码", "primary", linkNext, { "data-link-next": "" })];
+    if (link.step === "scan") return [btn("上一步", "", linkBack, { "data-link-back": "" }), link.expired ? btn("重新生成二维码", "primary", async () => { await linkBack(); await linkNext(); }, { "data-link-regenerate": "" }) : null];
+    if (link.step === "confirm") return [
+      btn("拒绝", "", () => linkDecide("reject"), { "data-link-reject": "" }),
+      btn("核对一致，批准连接", "primary", () => linkDecide("approve"), { "data-link-approve": "", "data-device-pair-approve-btn": link.pair?.kind === "domain" ? "" : null }),
+    ];
+    if (link.step === "done") return [btn("完成", "primary", () => closeLinkModal(), { "data-link-finish": "" })];
+    return [];
+  }
+
+  function renderLink() {
+    if (!link.open || !link.box) return;
+    const titles = { route: "新增设备 · 选择线路", scan: "新增设备 · 手机扫码", confirm: "新增设备 · 核对并批准", working: "正在链接", done: "链接成功" };
+    const activeIdx = { route: 0, scan: 1, confirm: 2, working: 2, done: 3 }[link.step];
+    const footer = linkFooter().filter(Boolean);
+    const scroller = link.box.querySelector(".link-body");
+    const top = scroller?.scrollTop ?? 0;
+    link.box.replaceChildren(...[
+      h("div", { class: "link-head" },
+        h("h2", {}, titles[link.step]),
+        h("button", { type: "button", class: "category-modal-close", "aria-label": "关闭", "data-link-close": "", onclick: () => closeLinkModal() }, "×")),
+      h("ol", { class: "link-steps", "aria-label": "进度" }, LINK_STEPS.map((x, i) => h("li", { class: i < activeIdx ? "is-done" : i === activeIdx ? "is-active" : "", "aria-current": i === activeIdx ? "step" : null },
+        h("span", { class: "link-step-dot" }, i < activeIdx ? "✓" : String(i + 1)), h("span", {}, x.label)))),
+      h("div", { class: "link-body" },
+        ...linkStepBody(),
+        link.error ? h("p", { class: "field-error", role: "alert", "data-link-error": "" }, link.error) : null),
+      footer.length ? h("div", { class: "link-foot" }, ...footer) : null,
+    ].filter(Boolean));
+    const next = link.box.querySelector(".link-body");
+    if (next && top) next.scrollTop = top;
+    link.notice = "";
+  }
+  async function revokeRemoteDevice(device) {
+    const group = (device.memberIds || [device.id]).length > 1;
+    const tip = group ? "这台手机会同时断开所有线路并失效全部登录会话。" : "撤销后会立即断开它的连接。";
+    if (!window.confirm(`确定撤销「${device.name}」的远程访问权限？${tip}`)) return;
+    const s = state();
+    s.remoteBusy = true; s.remoteError = ""; renderMain();
+    try {
+      const res = await api(`/api/remote-connect/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
+      if (res?.status) s.remote = res.status;
+      s.remoteNotice = `已撤销「${device.name}」`;
+    } catch (error) {
+      s.remoteError = error?.message || "撤销设备失败";
+    }
+    s.remoteBusy = false;
+    renderMain();
+  }
+  function parseQrSvgNode(svgText) {
+    try {
+      const doc = new DOMParser().parseFromString(String(svgText || ""), "image/svg+xml");
+      const svg = doc.documentElement;
+      if (svg && svg.tagName.toLowerCase() === "svg") return document.importNode(svg, true);
+    } catch { /* fallback below */ }
+    return h("span", { class: "muted small" }, "二维码加载失败，请使用下方配对码");
+  }
+  async function loadNativeConnectionStatus(force = false) {
+    const shell = window.piAndroidShell;
+    if (!shell?.available || typeof shell.call !== "function") return;
+    const s = state();
+    if (s.nativeConnLoading && !force) return;
+    s.nativeConnLoading = true;
+    try {
+      const status = await shell.call("shell.status");
+      const caps = Array.isArray(status?.capabilities) ? status.capabilities : [];
+      s.nativeConnSupported = caps.includes("connection.switch");
+      s.nativeRoutesSupported = caps.includes("connection.routes.v1");
+      if (s.nativeConnSupported) {
+        s.nativeConn = await shell.call("connection.status");
+        s.nativeConnError = "";
+        // 中继用量由 App 在后台查询，第一次读状态时还没有；最多补读 3 次，不一直轮询。
+        const waitingUsage = (s.nativeConn?.routes || []).some((r) => (r.type === "public_relay" || r.type === "custom_relay") && !r.usage);
+        if (waitingUsage && (s.nativeUsageRetry || 0) < 3) {
+          s.nativeUsageRetry = (s.nativeUsageRetry || 0) + 1;
+          setTimeout(() => { if (ui.view === "settings") void loadNativeConnectionStatus(true); }, 2500);
+        } else if (!waitingUsage) {
+          s.nativeUsageRetry = 0;
+        }
+      }
+    } catch (error) {
+      s.nativeConnError = error?.message || "读取本机连接方式失败";
+    }
+    s.nativeConnLoading = false;
+    if (ui.view === "settings") renderMain();
+  }
+  async function switchNativeConnection(target) {
+    const shell = window.piAndroidShell;
+    if (!shell?.available || typeof shell.call !== "function") return;
+    const s = state();
+    const params = typeof target === "string" ? { mode: target } : target;
+    if (params.action) {
+      // 添加线路改用 App 里的半屏弹层：网页这侧不进忙态、不重绘，刚看的设置页和滚动位置原样留着。
+      s.nativeConnError = "";
+      try {
+        await shell.call("connection.switch", params);
+      } catch (error) {
+        s.nativeConnError = error?.message || "打不开添加线路";
+        renderMain();
+      }
+      return;
+    }
+    s.nativeConnBusy = true; s.nativeConnError = ""; renderMain();
+    try {
+      await shell.call("connection.switch", params);
+    } catch (error) {
+      s.nativeConnError = error?.message || "切换连接线路失败";
+      s.nativeConnBusy = false;
+      renderMain();
+    }
+  }
+  // App 里刚添加完线路会派发这个事件：页面回到线路列表，并把那条新线路高亮一会儿。
+  let addedRouteId = null;
+  let addedRouteTimer = 0;
+  function markAddedRoute(routeId) {
+    addedRouteId = routeId || null;
+    if (addedRouteTimer) clearTimeout(addedRouteTimer);
+    addedRouteTimer = setTimeout(() => {
+      addedRouteId = null; addedRouteTimer = 0;
+      rerenderIfSettings();
+    }, 8000);
+    rerenderIfSettings();
+  }
+  function rerenderIfSettings() {
+    if (typeof renderMain === "function" && ui.view === "settings") renderMain();
+  }
+  window.addEventListener("pi-native-route-added", (event) => {
+    const id = event?.detail?.routeId;
+    if (id) markAddedRoute(id);
+  });
+  // 页面重建时事件可能已经发过：全局变量兜住时差。
+  if (window.__piNativeAddedRoute) markAddedRoute(window.__piNativeAddedRoute);
+  async function removeNativeRoute(route) {
+    if (!window.confirm(`确定移除线路「${route.label}」？不会影响其他已保存的线路。`)) return;
+    const shell = window.piAndroidShell;
+    if (!shell?.available || typeof shell.call !== "function") return;
+    const s = state();
+    s.nativeConnBusy = true; s.nativeConnError = ""; renderMain();
+    try {
+      await shell.call("connection.removeRoute", { routeId: route.id });
+      await loadNativeConnectionStatus(true);
+    } catch (error) {
+      s.nativeConnError = error?.message || "移除线路失败";
+    }
+    s.nativeConnBusy = false;
+    renderMain();
+  }
+  async function unpairNativeRemote() {
+    if (!window.confirm("确定清除本机的加密远程连接配对信息？你原有的公网地址凭据会保留。")) return;
+    const shell = window.piAndroidShell;
+    if (!shell?.available || typeof shell.call !== "function") return;
+    const s = state();
+    s.nativeConnBusy = true; s.nativeConnError = ""; renderMain();
+    try {
+      await shell.call("connection.unpairRemote");
+      await loadNativeConnectionStatus(true);
+    } catch (error) {
+      s.nativeConnError = error?.message || "解除远程配对失败";
+    }
+    s.nativeConnBusy = false;
+    renderMain();
+  }
+  function routeTypeMeta(type) {
+    if (type === "public_domain") return { label: "自有域名", cls: "kind-domain" };
+    if (type === "custom_relay") return { label: "自建中继", cls: "kind-custom-relay" };
+    return { label: "公共中继", cls: "kind-public-relay" };
+  }
+  function routeRefreshIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "14");
+    svg.setAttribute("height", "14");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const p1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p1.setAttribute("d", "M21 12a9 9 0 1 1-2.64-6.36");
+    const p2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p2.setAttribute("d", "M21 3v6h-6");
+    svg.append(p1, p2);
+    return svg;
+  }
+  function routeActiveStateBadge(text, quotaExceeded) {
+    return h("span", {
+      class: `settings-route-state ${quotaExceeded ? "is-quota" : "is-live"}`,
+      "data-native-conn-active": "",
+    },
+      h("span", { class: "settings-route-dot", "aria-hidden": "true" }),
+      text);
+  }
+  function nativeConnectionCard(remoteData) {
+    if (!window.piAndroidShell?.available) return null;
+    const s = state();
+    if (!s.nativeConnLoaded) { s.nativeConnLoaded = true; void loadNativeConnectionStatus(true); }
+    if (s.nativeConnSupported === false) {
+      return h("section", { class: "card settings-card", "data-native-connection-card": "" },
+        h("div", { class: "settings-card-head" },
+          h("div", {},
+            h("h2", {}, "连接线路"),
+            h("p", { class: "muted small" }, "当前 App 版本暂不支持线路切换与扫码接入，请先到「设置 → 平台 APP 版本」更新客户端。"))));
+    }
+    const c = s.nativeConn;
+    const busy = Boolean(s.nativeConnBusy);
+    const loading = Boolean(s.nativeConnLoading);
+    const isRemote = c?.active === "remote";
+    const lanBadge = typeof window.piAndroidShell?.badge === "function" ? window.piAndroidShell.badge() : null;
+    const hasMultiRoutes = Boolean(c && Array.isArray(c.routes));
+    const activeRoute = hasMultiRoutes ? c.routes.find((r) => r.active) : null;
+    const quotaHit = Boolean(c?.quotaExceeded || activeRoute?.quotaExceeded || remoteData?.connectionState === "quota_exceeded");
+
+    const relayKindLabel = remoteData?.relayMode === "custom" ? "自建中继" : remoteData ? "公共中继" : "加密中继";
+
+    let routeList = null;
+    if (hasMultiRoutes) {
+      const sortedRoutes = [...c.routes].sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)));
+      const items = sortedRoutes.map((route) => {
+        const meta = routeTypeMeta(route.type);
+        const isNew = Boolean(addedRouteId && route.id === addedRouteId);
+        const stateText = route.quotaExceeded
+          ? "额度已满"
+          : route.type === "public_domain"
+            ? (lanBadge?.mode === "lan" ? `使用中 · ${lanBadge.text}` : "使用中")
+            : (route.state && route.state !== "已保存" && route.state !== "使用中" && route.state !== "加密中继"
+                ? `使用中 · ${route.state}`
+                : "使用中");
+        const desc = route.type === "public_domain"
+          ? (route.active && lanBadge?.mode === "lan" ? `${lanBadge.text}，页面与请求走内网` : "直连公网 HTTPS · 同局域网自动直连")
+          : route.type === "custom_relay"
+            ? `${route.relayHost ? `${route.relayHost} · ` : ""}端到端加密${route.usage?.kind === "unlimited" ? " · 无限额" : ""}`
+            : route.quotaExceeded
+              ? "端到端加密 · 今日已达上限"
+              : route.state === "P2P 直连"
+                ? "端到端加密 · 优先走 P2P 通道"
+                : `${route.state && route.state !== "已保存" && route.state !== "使用中" ? `${route.state} · ` : ""}端到端加密`;
+        const canRemove = c.routes.length > 1 || !route.active;
+        const routeActionBtns = [
+          canRemove
+            ? h("button", { type: "button", class: "btn small settings-route-remove", disabled: busy, "data-remove-route": route.id, onclick: () => removeNativeRoute(route) }, "移除")
+            : null,
+          !route.active
+            ? h("button", { type: "button", class: "btn primary small", disabled: busy, "data-switch-route": route.id, onclick: () => switchNativeConnection({ routeId: route.id }) }, "切换")
+            : null,
+        ].filter(Boolean);
+        return h("article", {
+          class: `settings-route-item${route.active ? " is-active" : ""}${route.quotaExceeded ? " is-quota" : ""}${isNew ? " is-new" : ""}`,
+          "data-route-item": route.id,
+          "data-route-type": route.type,
+          "data-route-new": isNew ? "1" : null,
+        },
+          h("div", { class: "settings-route-meta" },
+            h("div", { class: "settings-route-meta-left" },
+              h("span", { class: `settings-route-kind ${meta.cls}` }, meta.label),
+              isNew ? h("span", { class: "settings-route-new" }, "刚刚添加") : null),
+            route.active ? routeActiveStateBadge(stateText, route.quotaExceeded) : null),
+          h("div", { class: "settings-route-main" },
+            h("strong", { class: "settings-route-title" }, route.label),
+            h("p", { class: "muted small settings-route-desc" }, desc)),
+          route.type === "public_relay" ? relayUsageBlock(route.usage) : null,
+          routeActionBtns.length ? h("div", { class: "settings-route-actions" }, ...routeActionBtns) : null);
+      });
+      routeList = h("div", { class: "settings-route-list", "data-native-route-list": "" },
+        items.length ? items : h("p", { class: "muted small" }, "还没有已保存的连接线路，点击下方按钮扫码或输入自有域名添加。"));
+    } else if (c) {
+      const publicTitle = c.publicHost || "自有域名入口";
+      const publicDesc = c.publicConfigured
+        ? (isRemote ? "已保存登录凭据，可一键切回" : (lanBadge?.mode === "lan" ? `${lanBadge.text}，页面与请求走内网` : "直连公网 HTTPS · 同局域网自动直连"))
+        : "输入你的公网域名并通过浏览器批准";
+      const remoteTitle = c.remoteConfigured ? (c.remoteHostName || "我的电脑") : "扫码接入电脑端中继";
+      const remoteDesc = c.remoteConfigured
+        ? `${relayKindLabel} · ${c.remoteState || "就绪"} · 端到端加密`
+        : "在电脑端打开配对二维码，手机扫码核对 6 位安全码即可连接";
+      const publicItem = h("article", { class: `settings-route-item${!isRemote ? " is-active" : ""}`, "data-route-item": "public" },
+        h("div", { class: "settings-route-meta" },
+          h("div", { class: "settings-route-meta-left" },
+            h("span", { class: "settings-route-kind kind-domain" }, "自有域名")),
+          !isRemote ? routeActiveStateBadge(lanBadge?.mode === "lan" ? `使用中 · ${lanBadge.text}` : "使用中", false) : null),
+        h("div", { class: "settings-route-main" },
+          h("strong", { class: "settings-route-title" }, publicTitle),
+          h("p", { class: "muted small settings-route-desc" }, publicDesc)),
+        isRemote
+          ? h("div", { class: "settings-route-actions" },
+              h("button", { type: "button", class: "btn primary small", disabled: busy, "data-switch-public": "", onclick: () => switchNativeConnection("public") }, c.publicConfigured ? "切换" : "去配置"))
+          : null);
+      const remoteItem = h("article", { class: `settings-route-item${isRemote ? " is-active" : ""}`, "data-route-item": "remote" },
+        h("div", { class: "settings-route-meta" },
+          h("div", { class: "settings-route-meta-left" },
+            h("span", { class: `settings-route-kind ${remoteData?.relayMode === "custom" ? "kind-custom-relay" : "kind-public-relay"}` }, relayKindLabel)),
+          isRemote ? routeActiveStateBadge(c.remoteState && c.remoteState !== "加密中继" ? `使用中 · ${c.remoteState}` : "使用中", quotaHit) : null),
+        h("div", { class: "settings-route-main" },
+          h("strong", { class: "settings-route-title" }, remoteTitle),
+          h("p", { class: "muted small settings-route-desc" }, remoteDesc)),
+        !isRemote
+          ? h("div", { class: "settings-route-actions" },
+              h("button", { type: "button", class: "btn primary small", disabled: busy, "data-switch-remote": "", onclick: () => switchNativeConnection("remote") }, c.remoteConfigured ? "切换" : "扫码连接"))
+          : null);
+      routeList = h("div", { class: "settings-route-list", "data-native-route-list": "" },
+        isRemote ? remoteItem : publicItem,
+        isRemote ? publicItem : remoteItem);
+    } else if (loading) {
+      routeList = skeletonRows(2);
+    }
+
+    const bottomActions = hasMultiRoutes || s.nativeRoutesSupported
+      ? h("div", { class: "settings-route-add-actions" },
+          h("button", { type: "button", class: "btn primary small", disabled: busy, "data-add-relay-scan": "", onclick: () => switchNativeConnection({ action: "scan_relay" }) }, "扫码添加中继"),
+          h("button", { type: "button", class: "btn small", disabled: busy, "data-add-domain": "", onclick: () => switchNativeConnection({ action: "add_domain" }) }, "添加自有域名"))
+      : (c?.remoteConfigured
+          ? h("div", { class: "settings-run-actions" },
+              h("button", { type: "button", class: "btn small", disabled: busy, "data-unpair-remote": "", onclick: unpairNativeRemote }, "解除中继配对"))
+          : null);
+
+    return h("section", { class: "card settings-card", "data-native-connection-card": "" },
+      h("div", { class: "settings-card-head settings-native-head" },
+        h("div", {},
+          h("h2", {}, "连接线路"),
+          h("p", { class: "muted small" }, "各线路独立保存，随时一键切换")),
+        h("button", {
+          type: "button",
+          class: "btn small settings-route-refresh",
+          disabled: loading || busy,
+          "data-native-conn-refresh": "",
+          onclick: () => loadNativeConnectionStatus(true),
+        }, routeRefreshIcon(), h("span", {}, loading ? "读取中…" : "刷新"))),
+      quotaHit
+        ? h("p", { class: "settings-remote-quota-alert", role: "alert", "data-quota-alert": "" },
+            remoteData?.quotaNotice || "公共中继今日免费额度（150 MB / 20,000 帧）已用完，次日 UTC 0 点自动重置；可切换到自有域名或自建中继线路。")
+        : null,
+      routeList,
+      s.nativeConnError ? h("p", { class: "field-error", role: "alert" }, s.nativeConnError) : null,
+      bottomActions);
+  }
+  /* ------------------------------ 链接设备列表 ------------------------------ */
+  const TIER_LABEL = { good: "流畅", fair: "一般", poor: "较慢", unknown: "未测速" };
+  const PLATFORM_LABEL = { android: "Android", ios: "iOS" };
+  const ROUTE_NOTE = { public_relay: "公共中继", custom_relay: "自建中继", domain: "自有域名" };
+  function formatRate(kbps) {
+    return kbps >= 1024 ? `${(kbps / 1024).toFixed(1)} MB/s` : `${Math.max(1, Math.round(kbps))} KB/s`;
+  }
+  // 通道标签：在线时按实际走的通道（直连优先，其次中继种类），离线统一灰色。
+  function deviceChannel(d) {
+    if (!d.online) return { label: "离线", cls: "is-off" };
+    if (d.route === "domain") return { label: "自有域名", cls: "kind-domain" };
+    if (d.pathKind === "lan") return { label: "局域网直连", cls: "kind-direct" };
+    if (d.pathKind === "p2p") return { label: "P2P 直连", cls: "kind-direct" };
+    // 中继记录本身没通道、但同一台手机的自有域名会话在线：按实际在用的线路显示。
+    if (!d.pathKind && (d.routes || []).some((r) => r.route === "domain" && r.online)) return { label: "自有域名", cls: "kind-domain" };
+    return d.route === "custom_relay" ? { label: "自建中继", cls: "kind-custom-relay" } : { label: "公共中继", cls: "kind-public-relay" };
+  }
+  function deviceRouteNote(d) {
+    const other = (d.routes || []).filter((r) => r.route !== d.route).map((r) => ROUTE_NOTE[r.route]);
+    const extra = other.length ? ` · 另有${[...new Set(other)].join("/")}会话` : "";
+    if (d.route === "domain") return `线路：自有域名${extra}`;
+    const kind = d.route === "custom_relay" ? "自建中继" : "公共中继";
+    const host = d.routeHost ? ` · ${d.routeHost}` : "";
+    return d.online && (d.pathKind === "lan" || d.pathKind === "p2p") ? `中继备用：${kind}${host}${extra}` : `线路：${kind}${host}${extra}`;
+  }
+  function deviceQualityLine(d) {
+    if (d.route === "domain") return h("span", { class: "link-quality is-unknown", "data-device-quality": "unknown" }, "自有域名按请求访问，暂不测速");
+    const q = d.quality;
+    if (!q || q.tier === "unknown") {
+      return h("span", { class: "link-quality is-unknown", "data-device-quality": "unknown" }, d.online ? "暂未测得网速" : "暂无测速记录");
+    }
+    const detail = [q.rttMs !== undefined ? `延迟 ${q.rttMs} ms` : "", q.kbps !== undefined ? formatRate(q.kbps) : "", d.online ? "" : `${ago(q.at)}测得`].filter(Boolean).join(" · ");
+    return h("span", { class: `link-quality is-${q.tier}`, "data-device-quality": q.tier },
+      h("span", { class: "link-quality-dot", "aria-hidden": "true" }),
+      h("strong", {}, `${d.online ? "" : "上次"}网速${TIER_LABEL[q.tier]}`),
+      detail ? h("span", { class: "muted small" }, ` · ${detail}`) : null);
+  }
+  function deviceRow(d, busy) {
+    const s = state();
+    const ch = deviceChannel(d);
+    const fresh = s.remoteHighlight === d.id && Date.now() - (s.remoteHighlightAt || 0) < 8000;
+    return h("div", { class: `link-device${d.online ? "" : " is-offline"}${fresh ? " is-new" : ""}`, "data-remote-device-id": d.id, "data-device-route": d.route, "data-device-channel": ch.label },
+      h("div", { class: "link-device-icon", "aria-hidden": "true" }, "📱"),
+      h("div", { class: "link-device-main" },
+        h("div", { class: "link-device-title" },
+          h("strong", {}, d.name),
+          fresh ? h("span", { class: "settings-route-new" }, "刚刚添加") : null),
+        h("div", { class: "muted small" }, `${PLATFORM_LABEL[d.platform] || d.platform || "设备"} · ${d.online ? "在线" : `最近活跃 ${beijing(d.lastSeenAt)}`} · ${deviceRouteNote(d)}`),
+        deviceQualityLine(d),
+        relayUsageBlock(d.usage)),
+      h("div", { class: "link-device-side" },
+        h("span", { class: `settings-route-kind link-channel ${ch.cls}`, "data-device-channel-tag": "" }, ch.label),
+        h("button", { type: "button", class: "btn small", disabled: busy, onclick: () => revokeRemoteDevice(d) }, "撤销")));
+  }
+
+  function remoteSection() {
+    const s = state();
+    if (!s.remoteLoaded) { s.remoteLoaded = true; void loadRemoteStatus(true); }
+    const data = s.remote;
+    const busy = Boolean(s.remoteBusy);
+    const devices = (data?.devices || []).filter((d) => !d.revokedAt);
+    const stateCls = data?.connectionState === "lan" || data?.connectionState === "p2p" || data?.connectionState === "relay"
+      ? "ok"
+      : data?.connectionState === "quota_exceeded"
+        ? "failed"
+        : data?.connectionState === "recovering"
+          ? "warn"
+          : "";
+    const isAndroidApp = Boolean(window.piAndroidShell?.available);
+
+    const hostConnectCard = h("section", { class: "card settings-card", "data-remote-connect-card": "" },
+      h("div", { class: "settings-card-head" },
+        h("div", {},
+          h("h2", {}, "链接设备"),
+          h("p", { class: "muted small" }, "用手机 App 扫码加入，设备经端到端加密通道访问这台电脑上的 Heji。")),
+        h("div", { class: "settings-card-actions" },
+          h("span", { class: `settings-run-state ${stateCls}`, "data-remote-state": "" }, data ? data.connectionLabel : "读取中…"),
+          h("button", { type: "button", class: "btn primary", disabled: busy || !data, "data-remote-add": "", onclick: () => openLinkModal() }, "新增设备"))),
+      data?.quotaNotice ? h("p", { class: "settings-remote-quota-alert", role: "alert", "data-host-quota-alert": "" }, data.quotaNotice) : null,
+      s.remoteError ? h("p", { class: "field-error", role: "alert" }, s.remoteError) : null,
+      s.remoteNotice ? h("p", { class: "muted small", role: "status" }, s.remoteNotice) : null,
+      !data
+        ? skeletonRows(2)
+        : devices.length === 0
+          ? h("div", { class: "link-empty", "data-link-empty": "" },
+              h("strong", {}, "还没有链接的设备"),
+              h("span", { class: "muted small" }, "点「新增设备」，选好线路后用手机扫码，电脑上确认即可。"),
+              h("button", { type: "button", class: "btn primary", onclick: () => openLinkModal() }, "新增设备"))
+          : h("div", { class: "link-device-list", "data-link-device-list": "" }, devices.map((d) => deviceRow(d, busy))),
+      h("div", { class: "settings-run-actions link-list-foot" },
+        h("button", { type: "button", class: "btn small", disabled: s.remoteLoading, onclick: () => loadRemoteStatus(true) }, "刷新状态"),
+        h("span", { class: "muted small" }, "撤销后立即断开该设备并失效其登录凭据。")),
+      h("p", { class: "muted small settings-remote-privacy" }, "隐私说明：中继服务器仅转发端到端加密密文，不保存聊天、文件或模型 API Key；中继可见连接 IP、在线状态与帧大小。"));
+
+    const savedRoutes = data?.routes || [];
+    const hostAdvancedCard = h("section", { class: "card settings-card" },
+      h("details", { class: "settings-remote-advanced", open: Boolean(s.remoteAdvOpen), ontoggle: (ev) => { s.remoteAdvOpen = ev.target.open; } },
+        h("summary", { class: "settings-remote-summary" }, "高级设置（本机名称、远程服务开关、我的线路）"),
+        h("div", { class: "settings-remote-form" },
+          h("label", { class: "settings-remote-field" },
+            h("span", { class: "small" }, "电脑显示名称"),
+            h("input", {
+              type: "text", class: "input", maxlength: "60",
+              value: s.remoteHostName ?? data?.hostName ?? "",
+              oninput: (ev) => { s.remoteHostName = ev.target.value; s.remoteDraftDirty = true; },
+            })),
+          h("div", { class: "settings-run-actions" },
+            h("button", {
+              type: "button", class: "btn primary small", disabled: busy || !data,
+              onclick: () => saveRemoteConfig({ hostName: s.remoteHostName ?? data?.hostName ?? "" }),
+            }, "保存名称"),
+            h("button", {
+              type: "button", class: `btn small ${data?.enabled ? "" : "primary"}`, disabled: busy || !data, "data-remote-toggle": "",
+              onclick: () => saveRemoteConfig({ enabled: !data.enabled }),
+            }, data?.enabled ? "关闭远程连接" : "开启远程连接")),
+          h("div", { class: "settings-remote-field" },
+            h("span", { class: "small" }, "我的线路"),
+            savedRoutes.length === 0
+              ? h("p", { class: "muted small" }, "还没有自建中继或自有域名线路。在「新增设备」里选线路时可以添加。")
+              : h("div", { class: "link-saved-routes", "data-link-saved-routes": "" }, savedRoutes.map((r) => h("div", { class: "link-saved-route" },
+                  h("span", { class: `settings-route-kind ${r.type === "domain" ? "kind-domain" : "kind-custom-relay"}` }, ROUTE_KIND[r.type]),
+                  h("span", { class: "link-saved-route-name" }, r.name === routeHost(r.url) ? r.name : `${r.name} · ${routeHost(r.url)}`),
+                  h("button", { type: "button", class: "btn small", disabled: busy, onclick: () => removeLinkRoute(r) }, "移除"))))))));
+
+    if (isAndroidApp) {
+      const hostSummaryMeta = !data
+        ? "读取中…"
+        : `${data.connectionLabel}${devices.length ? ` · ${devices.length} 台设备` : ""}`;
+      const autoOpenHost = data?.activePairing?.status === "awaiting_approval" || (s.devicePairs || []).length > 0;
+      return [
+        nativeConnectionCard(data),
+        h("details", {
+          class: "card settings-card settings-remote-host-panel",
+          "data-remote-host-panel": "",
+          open: Boolean(s.remoteHostPanelOpen || autoOpenHost),
+          ontoggle: (ev) => { s.remoteHostPanelOpen = ev.target.open; },
+        },
+          h("summary", { class: "settings-remote-host-summary" },
+            h("div", { class: "settings-remote-host-summary-text" },
+              h("span", { class: "settings-remote-host-title" }, "管理电脑端远程服务"),
+              h("span", { class: "muted small" }, autoOpenHost ? "有新的配对请求等待批准" : hostSummaryMeta)),
+            h("span", { class: "settings-remote-host-chevron", "aria-hidden": "true" }, "›")),
+          h("div", { class: "settings-remote-host-body" },
+            hostConnectCard,
+            hostAdvancedCard)),
+      ];
+    }
+
+    return [hostConnectCard, hostAdvancedCard];
+  }
+
   // 每个设置页的渲染器；目录（home）在 PC 上就是导航页，手机上只显示组目录。
   const SECTION_VIEWS = {
     capabilities: capabilitiesSection,
+    remote: remoteSection,
     navigation: navigationSection,
     apps: appsSection,
     cache: cacheSection,
@@ -1361,6 +2562,9 @@
 
   function render() {
     if (section() !== "runtimeupdates") void loadRuntimeUpdatesSummary();
+    // 回到这一页（含从详情返回）时隔一会儿重新读一次，进度和安排不会停在旧状态
+    else if (Date.now() - (state().ruLoadedAt || 0) > 20_000) { state().ruLoadedAt = Date.now(); void loadRuntimeUpdates(); }
+    if (section() !== "remote") { stopRemotePoll(); if (link.open) void closeLinkModal(); }
     if (section() !== "version" || installsRoute()) {
       historyObserver?.disconnect();
       historyObserver = null;

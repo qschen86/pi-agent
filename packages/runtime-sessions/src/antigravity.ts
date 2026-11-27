@@ -74,6 +74,9 @@ interface ActiveTurn {
   client: AcpClient; sessionId: string; sink: TurnSink; clientMessageId: string; model?: string;
   browserSocket?: string; browserOutputLines: number;
   message: string; lastMessage: string; thought: string; messageNo: number; thoughtNo: number; lastText: "message" | "thought" | null;
+  /** ACP usage_update 报的上下文占用与窗口上限：本轮最后一次的值，随这一轮的用量记录保存 */
+  contextUsed?: number;
+  contextSize?: number;
   readOnly: boolean; tools: Map<string, Json>; approvals: Map<string, AbortController>; finish: (r: TurnResult) => void; settled: boolean; cancelled: boolean;
 }
 
@@ -124,7 +127,10 @@ export class AntigravityDriver implements RuntimeDriver {
     const bin = this.resolveBinary();
     if (!bin) throw new Error("找不到 agy：请先安装 Antigravity CLI（curl -fsSL https://antigravity.google/cli/install.sh | bash）");
     const args = slot === "bypass" ? ["acp", "--process-per-session", "--dangerously-skip-permissions"] : ["acp", "--process-per-session"];
-    const client = new AcpClient({ binaryPath: bin, args, env: this.processEnv(), requestTimeoutMs: 60_000 });
+    // 显式固定 agy 进程的启动 cwd，绝不继承宿主进程的 process.cwd()（蓝绿部署时为 slots/blue 或 slots/green）：
+    // agy 会把启动 cwd 自动写进系统提示顶部的 Active Workspaces，切槽若跟着变会导致前缀缓存 0% 命中。
+    mkdirSync(this.probeDir, { recursive: true });
+    const client = new AcpClient({ binaryPath: bin, args, cwd: this.probeDir, env: this.processEnv(), requestTimeoutMs: 60_000 });
     client.on("notification", (m: NotificationMsg) => this.onNotification(client, m));
     client.on("request", (m: ServerRequestMsg) => this.onServerRequest(client, m));
     client.on("exit", (info: { code: number | null; signal: string | null; stderrTail: string }) => this.onClientExit(client, info));
@@ -303,10 +309,12 @@ export class AntigravityDriver implements RuntimeDriver {
     try { client = await this.ensureClient(bypass ? "bypass" : "turn"); }
     catch (e) { throw new DriverStageError((e as Error).message, "spawn", args.nativeSessionId, true); }
     const meta = args.roleInstructions ? { _meta: { antigravity: { systemPrompt: { append: args.roleInstructions } } } } : {};
+    // agy 在同一 worker 内 session/resume 时，若同名 MCP 的 args 变化会额外注册 platform_browser_<hash> 工具，
+    // 导致每回合顶部工具声明变化、Gemini 前缀缓存 0% 命中并泄漏 MCP 子进程；传按会话固定的 pointerPath，调用时再解析本轮 socket。
     const mcpServers = args.platformBrowser && !args.readOnlyRoom ? [{
       name: "platform_browser",
       command: process.execPath,
-      args: [args.platformBrowser.bridgePath, args.platformBrowser.socketPath],
+      args: [args.platformBrowser.bridgePath, args.platformBrowser.pointerPath ?? args.platformBrowser.socketPath],
       env: [],
     }] : [];
     let sessionId = args.nativeSessionId;
@@ -386,7 +394,7 @@ export class AntigravityDriver implements RuntimeDriver {
       const res = obj(r);
       const usage = obj(res["usage"]);
       const record = antigravityUsage(usage, turn.clientMessageId, turn.model, new Date().toISOString());
-      if (record) sink.usage(record);
+      if (record) sink.usage({ ...record, ...(turn.contextUsed ? { contextTokens: turn.contextUsed } : {}), ...(turn.contextSize ? { contextWindow: turn.contextSize } : {}) });
       const stop = str(res["stopReason"]) ?? "end_turn";
       const quotaNotice = stop === "end_turn" ? antigravityQuotaNotice(turn.message || turn.lastMessage) : undefined;
       if (quotaNotice) {
@@ -497,7 +505,12 @@ export class AntigravityDriver implements RuntimeDriver {
       }
       // session_info_update（agy 自动起的标题）不转发：agy 看到的是平台注入公共记忆之后的整段 prompt，起出来的名字
       // 是「Platform Skills Overview」这类前言内容，会盖掉平台自己的标题生成。只读历史（外部会话）才用 agy 的标题。
-      default: return; // usage_update（上下文窗口）、available_commands_update、mode / config 变化：不进会话记录
+      case "usage_update": {
+        const used = num(update["used"]); if (used !== undefined && used > 0) turn.contextUsed = used;
+        const size = num(update["size"]); if (size !== undefined && size > 0) turn.contextSize = size;
+        return;
+      } // 上下文占用与窗口上限：只记数字，不进会话记录
+      default: return; // available_commands_update、mode / config 变化：不进会话记录
     }
   }
 

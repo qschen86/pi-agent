@@ -82,16 +82,75 @@ function initNavSettings() {
   window.addEventListener('resize', syncIndicator);
   // 左右滑切换应用（app-swipe.js）拖动中改写气泡位置，取消 / 结束后用它让气泡回到当前选中项。
   window.navSyncIndicator = syncIndicator;
+
+  /* 底栏随滚动收放：一级页开始向下滚（进入浏览）就收起，向上滚立刻回来。
+     会话列表（智力球那一层）不参与——底栏在那里是「来源 / 上推回产物区」的指示，收走会丢掉引导。
+     收起时 body 仍按 --bottomnav-h 预留，内容不跳；滚回顶部、换页、键盘弹起都会复位。 */
+  const SCROLL_HIDE_MIN = 10;   // 累积位移超过它才切换，手指抖动不算
+  const SCROLL_KEEP_TOP = 24;   // 页面顶部这一段始终显示
+  let navScrollHidden = false, navScrollLast = null, navScrollAccum = 0, navScrollFrame = 0, navScrollBox = null;
+  // 一级页有的靠文档滚（产物 / 待办 / 资源），有的靠 .main 自己滚：哪个容器在动就跟哪个
+  const navScrollDoc = () => document.scrollingElement || document.documentElement;
+  // 键盘弹起时页面会跟着滚，这时不该把底栏收走（输入区的操作还要能看见）
+  const navScrollTyping = () => { const el = document.activeElement; return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)); };
+  // 会话列表是「下一层」，浮层打开时页面滚的是浮层自己，两种都不收。
+  const navScrollBlocked = () => !isBottom() || bottomBar.hidden || navScrollTyping() ||
+    document.body.classList.contains('rt-phone-list') || document.body.classList.contains('settings-mode') ||
+    !!document.querySelector('dialog[open], #nav-more:not([hidden]), .rt-auth-overlay, .rt-lightbox, .image-zoom');
+  function navScrollReset() {
+    navScrollLast = null; navScrollAccum = 0;
+    if (!navScrollHidden) return;
+    navScrollHidden = false;
+    document.body.classList.remove('nav-scroll-hidden');
+    bottomBar.removeAttribute('inert');
+    syncIndicator();
+  }
+  function navScrollHide(next) {
+    if (next === navScrollHidden || (next && navScrollBlocked())) return;
+    navScrollHidden = next;
+    document.body.classList.toggle('nav-scroll-hidden', next);
+    // 收起后不再能被点到 / 聚焦；回来时恢复（旧内核不认 inert 时只是少一层限制，样式照样收起）。
+    if (next) bottomBar.setAttribute('inert', ''); else bottomBar.removeAttribute('inert');
+  }
+  function navScrollCheck(event) {
+    if (navScrollFrame) return;
+    const target = event?.target;
+    // 文档滚动时事件 target 是 document；元素自己滚时是那个元素。
+    const box = target && target.nodeType === 1 ? target : navScrollDoc();
+    navScrollFrame = requestAnimationFrame(() => {
+      navScrollFrame = 0;
+      const at = Math.max(0, Math.round(box.scrollTop || 0));
+      // 换了一个滚动容器（或刚复位）：从现在这个位置重新算方向
+      if (box !== navScrollBox || navScrollLast === null) { navScrollBox = box; navScrollLast = at; navScrollAccum = 0; return; }
+      const delta = at - navScrollLast;
+      navScrollLast = at;
+      if (!delta) return;
+      // 页面顶部这一段始终显示；一往上滑就回来（包括在列表底部往上滑）。
+      if (navScrollBlocked() || at <= SCROLL_KEEP_TOP) { navScrollReset(); return; }
+      navScrollAccum = Math.sign(delta) === Math.sign(navScrollAccum) ? navScrollAccum + delta : delta;
+      if (navScrollAccum >= SCROLL_HIDE_MIN) navScrollHide(true);
+      else if (navScrollAccum <= -SCROLL_HIDE_MIN) navScrollHide(false);
+    });
+  }
+  window.navScrollReset = navScrollReset;
+  // 捕获阶段监听：滚动事件不冒泡，但元素的 scroll 在 window 的捕获阶段能收到
+  window.addEventListener('scroll', navScrollCheck, { passive: true, capture: true });
+  window.addEventListener('hashchange', () => navScrollReset());
   const gameTabs = new Map();
   const gameTab = g => {
     let el = gameTabs.get(g.id);
     if (!el) {
       el = h('button', { type: 'button', class: 'tab', 'data-game': g.id, onclick: () => { location.hash = `#/artifacts/${el.dataset.category}/${g.id}`; } },
-        h('span', { class: 'tab-icon tab-emoji', 'aria-hidden': 'true' }), h('span', { class: 'tab-label' }));
+        h('span', { class: 'tab-icon tab-emoji', 'aria-hidden': 'true' }, h('span', { class: 'tab-emoji-char' })), h('span', { class: 'tab-label' }));
+      // 小游戏自己的图标直接上屏；没有或加载失败时退回 emoji
+      const box = el.querySelector('.tab-emoji'), art = h('img', { src: `/games/${encodeURIComponent(g.id)}/icon.svg`, alt: '', draggable: 'false' });
+      art.addEventListener('load', () => box.classList.add('has-art'));
+      art.addEventListener('error', () => art.remove());
+      box.append(art);
       gameTabs.set(g.id, el);
     }
     el.dataset.category = g.category;
-    el.querySelector('.tab-emoji').textContent = g.emoji || '▣';
+    el.querySelector('.tab-emoji-char').textContent = g.emoji || '▣';
     el.querySelector('.tab-label').textContent = g.name; el.title = g.name; el.setAttribute('aria-label', g.name);
     return el;
   };
@@ -107,6 +166,8 @@ function initNavSettings() {
   const apply = () => {
     const bottom = isBottom();
     placeChrome(bottom);
+    // 不是一级页（会话详情 / 二级页）时底栏本来就不在，收起状态一并清掉，回一级页时是展开的。
+    if (!bottom) navScrollReset();
     // 宽屏时菜单入口可能尚未挂入 DOM；重新展示时读取当前连接状态。
     connection.querySelector('.nav-connection-status').textContent = conn?.querySelector('.conn-text')?.textContent || '连接中…';
     const pinned = id => saved.find(x => x.id === id)?.position === 'main';
@@ -363,10 +424,18 @@ function initNavSettings() {
     const missing = (window.sessionNotifications?.supported?.() && !window.sessionNotifications.enabled())
       || (window.piClipboardImages?.supported?.() && !window.piClipboardImages.enabled())
       || (window.piRecentPhotos?.supported?.() && !window.piRecentPhotos.enabled());
-    settings.classList.toggle('has-capability-alert', !!missing || runtimeUpdateCount > 0);
-    // 桌面端设置入口在会话列表头部右侧（rt-settings-link），红点同步
-    document.querySelectorAll('.rt-settings-link').forEach(el => el.classList.toggle('has-capability-alert', !!missing || runtimeUpdateCount > 0));
-    settings.title = missing ? '全局设置：本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '全局设置：有 runtime 出了新的稳定版' : '全局设置：本设备能力、导航、版本与故障上报';
+    const hasAlert = !!missing || runtimeUpdateCount > 0;
+    const alertTitle = missing ? '全局设置：本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '全局设置：有 runtime 出了新的稳定版' : '全局设置：本设备能力、导航、版本与故障上报';
+    const alertDesc = missing ? '本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '有运行时可更新' : '';
+    settings.classList.toggle('has-capability-alert', hasAlert);
+    settings.title = alertTitle;
+    // 桌面端设置入口在会话列表头部右侧（rt-settings-link），红点与原因提示同步（保持 aria-label="设置" 不变）
+    document.querySelectorAll('.rt-settings-link').forEach(el => {
+      el.classList.toggle('has-capability-alert', hasAlert);
+      el.title = alertTitle;
+      if (alertDesc) el.setAttribute('aria-description', alertDesc);
+      else el.removeAttribute('aria-description');
+    });
   };
   window.addEventListener('pi-capabilities-change', syncCapabilityAlert);
   window.addEventListener('load', syncCapabilityAlert);
@@ -562,7 +631,7 @@ function initNavSettings() {
   });
   phone.addEventListener('change', () => { closeMore(); apply(); });
   // 夜间模式按钮可能在 DOMContentLoaded 时才挂载。
-  window.syncNavLayout = apply;
+  window.syncNavLayout = () => { navScrollReset(); apply(); };
   let layoutFrame = 0;
   const scheduleLayout = () => {
     if (layoutFrame) return;

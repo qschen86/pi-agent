@@ -96,7 +96,7 @@
     return true;
   }
 
-  let gesture = null, busy = false;
+  let gesture = null, busy = false, suppressEnterUntil = 0;
   const movers = () => { const main = mainEl(), bar = headerBar(); return main ? [main, ...(bar ? [...bar.children] : [])] : []; };
 
   /** 帘子：从上方（enter）或下方（exit）带着一行提示落下来，盖住换页的瞬间 */
@@ -202,18 +202,18 @@
   function onEnd() {
     const g = gesture; gesture = null; detach();
     if (!g?.dragging) return;
-    if (g.ready) commit(g); else springBack(g);
+    if (g.ready) commit(g); else { suppressEnterUntil = Date.now() + 300; springBack(g); }
   }
   function onCancel() {
     const g = gesture; gesture = null; detach();
-    if (g?.dragging) springBack(g);
+    if (g?.dragging) { suppressEnterUntil = Date.now() + 300; springBack(g); }
   }
   document.addEventListener("touchstart", (ev) => {
     if (gesture) { detach(); const g = gesture; gesture = null; if (g?.dragging) springBack(g); }
     if (busy || ev.touches.length !== 1) return;
     const kind = mode(), target = ev.target, main = mainEl();
     if (!kind || !(target instanceof Element) || !main) return;
-    if (!target.closest("#main, #rt-mobile-header")) return;
+    if (!target.closest("#main, #rt-mobile-header, #session-halo")) return;
     const t = ev.touches[0];
     if (t.clientX < EDGE || t.clientX > window.innerWidth - EDGE) return;
     if (target.closest(IGNORE) || document.querySelector(OVERLAYS) || claimed(target)) return;
@@ -227,6 +227,7 @@
   /** 不经过手指拖动直接进入 / 退出（悬浮提醒、点按）：帘子整张落下，再换页 */
   function run(kind) {
     if (busy || gesture) return false;
+    if (kind === "enter" && Date.now() < suppressEnterUntil) return false;
     if (kind === "enter" ? inSession(location.hash) : !inSession(location.hash)) return false;
     const g = { kind, dragging: true, ready: true, movers: null, curtain: null };
     begin(g); hint(g.curtain, true);

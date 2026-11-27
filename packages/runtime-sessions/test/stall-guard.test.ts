@@ -153,4 +153,102 @@ describe("卡住看门狗", () => {
     await until(() => notices(id).length >= 1);
     expect(notices(id)[0]!.text).toContain("超出命令里写明的等待时间");
   });
+
+  /* ---- 修复：等用户不算卡住、Codex 形态、并行工具、残留清理（docs/requirements/stall-guard-fixes） ---- */
+  const aborted = (id: string) => mgr.store.events(id).filter((e) => e.kind === "notice" && (e.text ?? "").includes("已自动中止"));
+  const askApproval = (turn: { sink: { approval(r: never): unknown } }, nativeRequestId = "ap-1") =>
+    turn.sink.approval({ nativeRequestId, kind: "permissions", title: "使用工具 Bash", action: "npm test", scope: "workspace", source: "test", params: { nativeRequestId }, requiresExplicitApproval: true } as never);
+  const pendingApproval = (id: string) => mgr.pendingApprovals().find((p) => p.platformSessionId === id)!;
+
+  it("提问类工具不登记计时：挂起超过自动中止阈值也不提醒、不中止", async () => {
+    const { id, turn } = await start();
+    turn.sink.event(tool("q1", JSON.stringify({ questions: [{ question: "下一步？" }] }), "inProgress", "AskUserQuestion"));
+    turn.sink.event(tool("q2", JSON.stringify({ questions: [] }), "inProgress", "request_user_input"));
+    await tick(THRESHOLDS.abortMs * 2);
+    expect(notices(id).length).toBe(0);
+    expect(turn.interrupted).toBe(false);
+  });
+
+  it("等审批期间暂停计时，批准后从暂停处接着算", async () => {
+    const { id, turn } = await start();
+    turn.sink.event(tool("w1", "npm test", "inProgress"));
+    void askApproval(turn);
+    await until(() => mgr.pendingApprovals().some((p) => p.platformSessionId === id));
+    // 等审批的时间远超提醒与中止阈值：不提醒、不中止
+    await tick(THRESHOLDS.abortMs * 2);
+    expect(notices(id).length).toBe(0);
+    expect(turn.interrupted).toBe(false);
+    const p = pendingApproval(id);
+    mgr.decideApproval(id, p.approvalId, { approve: true, paramsDigest: p.paramsDigest, turnNo: p.turnNo }, "owner");
+    // 批准之后计时重新开始，工具仍没结束才提醒
+    await until(() => notices(id).length >= 1);
+    expect(notices(id)[0]!.text).toContain("npm test");
+  });
+
+  it("Codex 形态：item/started 是 partial 事件，也要开始计时；completed 后清除", async () => {
+    const { id, turn } = await start();
+    turn.sink.event({ ...tool("c1", "npm test", "inProgress", "命令"), partial: true });
+    await until(() => notices(id).length >= 1);
+    expect(notices(id)[0]!.text).toContain("命令 已运行");
+    await until(() => turn.interrupted);
+    expect(aborted(id).length).toBe(1);
+    // 另一个命令：started 后很快 completed，不应提醒
+    const before = notices(id).length;
+    turn.sink.event({ ...tool("c2", "ls", "inProgress", "命令"), partial: true });
+    turn.sink.event({ ...tool("c2", "ls", "completed", "命令"), tool: { name: "命令", input: "ls", status: "completed", exitCode: 0 } });
+    await tick(THRESHOLDS.abortMs);
+    expect(notices(id).filter((e) => e.key.includes("c2")).length).toBe(0);
+    expect(notices(id).length).toBeGreaterThanOrEqual(before);
+  });
+
+  it("状态为空的非 partial 工具事件（Codex 的网页搜索）和历史回放事件都不登记", async () => {
+    const { id, turn } = await start();
+    turn.sink.event(tool("e1", "某个搜索", "", "网页搜索"));
+    turn.sink.event({ ...tool("h1", "npm test", "inProgress"), source: "history" as never });
+    await tick(THRESHOLDS.abortMs * 2);
+    expect(notices(id).length).toBe(0);
+    expect(turn.interrupted).toBe(false);
+  });
+
+  it("并行工具各自计时：先开始的卡住、后开始的已结束，仍然提醒并中止", async () => {
+    const { id, turn } = await start();
+    turn.sink.event(tool("p1", "npm run build", "inProgress"));
+    turn.sink.event(tool("p2", "ls", "inProgress"));
+    turn.sink.event({ ...tool("p2", "ls", "completed"), tool: { name: "bash", input: "ls", status: "completed", exitCode: 0 } });
+    await until(() => notices(id).length >= 1);
+    expect(notices(id)[0]!.key).toBe("stall:p1:60");
+    await until(() => turn.interrupted);
+    expect(aborted(id).length).toBe(1);
+    expect(aborted(id)[0]!.text).toContain("npm run build");
+  });
+
+  it("并行工具都卡住时只中止一次，提醒各自成条", async () => {
+    const { id, turn } = await start();
+    turn.sink.event(tool("m1", "npm run a", "inProgress"));
+    turn.sink.event(tool("m2", "npm run b", "inProgress"));
+    await until(() => turn.interrupted);
+    await tick(THRESHOLDS.abortMs / 2);
+    expect(aborted(id).length).toBe(1);
+    const keys = notices(id).map((e) => e.key);
+    expect(keys).toContain("stall:m1:60");
+    expect(keys).toContain("stall:m2:60");
+  });
+
+  it("工具登记之后才出现的助手消息说明工具已返回：残留的计时被清掉", async () => {
+    const { id, turn } = await start();
+    // 没有配对完成事件的工具（有的 runtime 会丢）
+    turn.sink.event(tool("r1", "npm test", "inProgress"));
+    turn.sink.event({ key: "msg1", kind: "message", role: "assistant", text: "测试跑完了", source: "stream", parserVersion: "fake", availability: "recorded" } as never);
+    await tick(THRESHOLDS.abortMs * 2);
+    expect(notices(id).length).toBe(0);
+    expect(turn.interrupted).toBe(false);
+  });
+
+  it("助手消息先于工具出现（同一条回复里先说话再调工具）不清掉新登记的工具", async () => {
+    const { id, turn } = await start();
+    turn.sink.event({ key: "msg2", kind: "message", role: "assistant", text: "我来跑一下测试", source: "stream", parserVersion: "fake", availability: "recorded" } as never);
+    turn.sink.event(tool("r2", "npm test", "inProgress"));
+    await until(() => notices(id).length >= 1);
+    expect(notices(id)[0]!.key).toBe("stall:r2:60");
+  });
 });

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { OperationRecord, SessionBinding, UsageRecord } from "@pi-agent/runtime-sessions";
+import type { CacheHealthSummary, OperationRecord, SessionBinding, UsageRecord } from "@pi-agent/runtime-sessions";
 import { usageTime } from "@pi-agent/runtime-sessions";
 import { runtimeDeepSeekChannel, type DeepSeekDailyRow, type DeepSeekDeviceOf } from "./deepseek-usage.js";
 import { parseDeployHistoryLine, type DeployHistoryEntry } from "./deploy-history.js";
@@ -37,6 +37,8 @@ export interface StatsResult {
   days: StatsDay[];
   /** 每个指标可用的拆解维度，按展示顺序 */
   dims: StatsDim[];
+  /** 近 7 天各 runtime 热续聊首调缓存命中率（仅消耗模块返回） */
+  cacheHealth?: CacheHealthSummary;
   notes: string[];
 }
 
@@ -313,6 +315,7 @@ export interface StatsSources {
   billing: () => BillingConfig;
   dataDir: string;
   deployRoot?: string;
+  cacheHealth?: (now: Date) => CacheHealthSummary;
   /** 数据没变就复用上一次结果：把几个文件的 mtime / size 拼成串 */
   signature: () => string;
 }
@@ -352,7 +355,8 @@ export class StatsService {
       }
       notes.push("发起端从该功能上线后才开始记录：记录开始之前的是「未知」，记录开始之后无人发起的（定时任务、额度恢复等）是「自动」。");
     }
-    const result: StatsResult = { domain, timeZone: PLATFORM_TIME_ZONE, generatedAt: now.toISOString(), from, to, days: table.rows(), dims, notes };
+    const cacheHealth = domain === "cost" && this.src.cacheHealth ? this.src.cacheHealth(now) : undefined;
+    const result: StatsResult = { domain, timeZone: PLATFORM_TIME_ZONE, generatedAt: now.toISOString(), from, to, days: table.rows(), dims, ...(cacheHealth ? { cacheHealth } : {}), notes };
     if (this.cache.size > 24) this.cache.clear();
     this.cache.set(key, result);
     return result;

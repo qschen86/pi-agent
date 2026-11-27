@@ -22,6 +22,8 @@ export interface AuthSessionRecord {
   revokeReason?: string;
   userAgent: string;
   kind?: "browser" | "device";
+  /** 手机 App 的稳定安装标识：同一台手机重新配对时复用同一条设备会话，不新增记录。 */
+  deviceId?: string;
 }
 
 export type AuthFailureReason = "no-cookie" | "malformed" | "unknown" | "unknown-in-memory" | "revoked" | "password-changed" | "expired" | "idle";
@@ -29,6 +31,9 @@ export type AuthFailureReason = "no-cookie" | "malformed" | "unknown" | "unknown
 export interface AuthSessionOptions { file?: string; ttlMs?: number; idleMs?: number; password: string }
 
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+/** 手机安装标识：只接受安全字符，长度受限；不合法就当没带。 */
+export const normalizeDeviceId = (raw: unknown): string | undefined =>
+  typeof raw === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(raw) ? raw : undefined;
 const DEVICE_WINDOW_MS = 90 * 24 * 3600_000;
 
 export class AuthSessions {
@@ -50,13 +55,14 @@ export class AuthSessions {
 
   get maxAgeSeconds(): number { return Math.floor(this.ttlMs / 1000); }
 
-  issue(userAgent: string, kind: "browser" | "device" = "browser"): { token: string; record: AuthSessionRecord } {
+  issue(userAgent: string, kind: "browser" | "device" = "browser", opts: { deviceId?: string } = {}): { token: string; record: AuthSessionRecord } {
     const token = randomBytes(32).toString("base64url");
     const now = Date.now();
+    const deviceId = kind === 'device' ? normalizeDeviceId(opts.deviceId) : undefined;
     const record: AuthSessionRecord = {
       id: `ls-${randomUUID().slice(0, 12)}`, tokenHash: hash(token), passwordTag: this.passwordTag,
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + (kind === 'device' ? DEVICE_WINDOW_MS : this.ttlMs)).toISOString(), lastSeenAt: new Date(now).toISOString(),
-      kind, userAgent: userAgent.slice(0, 160)
+      kind, userAgent: userAgent.slice(0, 160), ...(deviceId ? { deviceId } : {})
     };
     this.records[record.id] = record;
     this.prune();
@@ -130,6 +136,42 @@ export class AuthSessions {
       return {...r};
     };
     return this.opts.file ? withAuthFileLock(this.opts.file, renew) : renew();
+  }
+
+  /**
+   * 同一台手机再次配对：沿用原来的会话 id，只换新令牌并续期。
+   * 这样「链接设备」列表和「登录管理」里始终只有一条记录，旧的配对令牌立即失效。
+   */
+  rotateDevice(id: string, userAgent?: string): { token: string; record: AuthSessionRecord } | undefined {
+    const rotate = () => {
+      if (this.opts.file) {
+        try { this.records = JSON.parse(readFileSync(this.opts.file, "utf8")) as Record<string, AuthSessionRecord>; }
+        catch { /* 读不到就按内存记录处理 */ }
+      }
+      const r = this.records[id], now = Date.now();
+      if (!r || r.kind !== 'device' || r.revokedAt || r.passwordTag !== this.passwordTag ||
+          Date.parse(r.expiresAt) <= now || Date.parse(r.lastSeenAt) + DEVICE_WINDOW_MS <= now) return undefined;
+      const token = randomBytes(32).toString("base64url");
+      r.tokenHash = hash(token);
+      r.lastSeenAt = new Date(now).toISOString();
+      r.expiresAt = new Date(now + DEVICE_WINDOW_MS).toISOString();
+      if (userAgent) r.userAgent = userAgent.slice(0, 160);
+      this.dirty = true;
+      if (this.opts.file) {
+        const tmp = `${this.opts.file}.rotate-${process.pid}`;
+        writeFileSync(tmp, JSON.stringify(this.records, null, 1), { mode: 0o600 });
+        renameSync(tmp, this.opts.file);
+      }
+      return { token, record: { ...r } };
+    };
+    return this.opts.file ? withAuthFileLock(this.opts.file, rotate) : rotate();
+  }
+
+  /** 按手机安装标识找还有效的设备会话（重新配对时复用，不重复造记录）。 */
+  findActiveDevice(deviceId: string): ReturnType<AuthSessions['list']>[number] | undefined {
+    const wanted = normalizeDeviceId(deviceId);
+    if (!wanted) return undefined;
+    return this.list().find((r) => r.kind === 'device' && r.active && r.deviceId === wanted);
   }
 
   /** Background delivery must validate a login without extending its idle lifetime. */

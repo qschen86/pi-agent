@@ -1,10 +1,11 @@
 import { relationSources } from "./note-relation-service.js";
+import type { VerifyService } from "./verify-routes.js";
 import type {RuntimeMemoryPort} from './memory/port.js';
 import { deploymentProgress, readDeploymentRun } from "./deployment-progress.js";
 import { createHash } from "node:crypto";
 import { DeploymentInbox, type DeploymentSubmission } from "./deployment-inbox.js";
 import type { NoteIterations } from "./note-iterations.js";
-import { FilePreviewError, readPreviewFile, serveFilePreview, temporaryFileReferences, workspaceLocation } from './file-preview.js';
+import { checkPreviewFiles, FilePreviewError, readPreviewFile, serveFilePreview, temporaryFileReferences, workspaceLocation } from './file-preview.js';
 import type { RoomService } from "./room-service.js";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -84,8 +85,10 @@ export interface RuntimeRouteContext {
   revealFile?: (absPath: string) => Promise<void>;
   /** 会话页「空闲时部署」（只对工作目录在 pi-agent 仓库里的会话开放）；不给就不提供 */
   deployQueue?: DeployQueue;
+  /** 本地验证引擎状态聚合与取消能力：供会话列表徽章、会话详情状态行展示 */
+  verifyService?: VerifyService;
   /** Codex reset 卡小结（张数 + 最近过期时刻）：和额度一起下发，页面不用再单独请求 */
-  codexReset?: { badge(): { availableCount: number; soonestExpiry: string | null } };
+  codexReset?: { refreshBadge?(): Promise<void>; badge(): { availableCount: number; soonestExpiry: string | null } };
   /** Pi 所用模型服务（DeepSeek、OpenRouter…）的账户余额；没有接入时不显示 */
   factAudit?: RuntimeMemoryPort['factAudit'];
   /** 平台公共记忆：按条目编号前缀取一句话，供会话侧栏「查阅记录」显示查了哪些条目；不给就只显示编号 */
@@ -134,7 +137,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     try { const result=await fn();return result instanceof Response ? result : c.json(result as object, ok); }
     catch (e) {
       if (e instanceof AttachmentError && e.decodeReason) uploadLog("decode_failed", { uploadId: c.res.headers.get("x-upload-id"), reason: e.decodeReason });
-      if (e instanceof RuntimeError || e instanceof AttachmentError) return c.json({ error: e.message, code: e.code }, e.status);
+      if (e instanceof RuntimeError || e instanceof AttachmentError) return c.json({ error: e.message, code: e.code, ...(e instanceof RuntimeError && e.details ? { details: e.details } : {}) }, e.status);
       const err = e as { code?: string; message?: string; decision?: unknown };
       if (err.code === "RUNTIME_NETWORK_BLOCKED") return c.json({ error: err.message ?? "当前网络检查未通过，已停止操作", code: err.code, ...(err.decision ? { decision: err.decision } : {}) }, 409);
       if (err.code === 'SYNC_CURSOR') return c.json({error:err.message,code:err.code},400);
@@ -151,17 +154,26 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
   };
   /** 受管会话的读取：对外入口要求控制或查看任一已开启；已发现历史要求查看授权 */
   const canRead = (c: Context, _id: string): string | null => allowed(c, "history");
-  /** 会话目录条目带上「空闲时部署」的排队 / 部署中状态（部署请求由 Web 服务登记，runtime 目录本身不知道） */
+  /** 会话目录条目带上「空闲时部署」和「本地验证」的状态（两者都由宿主常驻服务写文件，runtime 目录本身不知道） */
   const withDeploy = async <T extends { entries: DirectoryEntry[] }>(d: T): Promise<T> => {
     const q = ctx.deployQueue;
     const by = await q?.byNotifySession(mgr.activity());
-    if (!q) return d;
+    const verifyBy = ctx.verifyService?.bySession();
+    if (!q && (!verifyBy || verifyBy.size === 0)) return d;
     return { ...d, entries: d.entries.map((e) => {
-      const r = by?.get(e.id);
-      if (r) return { ...e, deploy: { state: r.startedAt ? "started" : "pending", sha: r.sha, subject: r.subject, requestedAt: r.requestedAt, ...(r.startedAt ? { startedAt: r.startedAt } : {}), id: r.id, notifySession: r.notifySession, ...(r.staging ? { staging: r.staging, stage: r.stage } : {}), ...(r.action ? { action: r.action } : {}), ...(r.progress ? { progress: r.progress } : {}), ...(r.wait ? { wait: { kind: r.wait.kind, short: r.wait.short, detail: r.wait.detail } } : {}) } };
-      // 冲突自动解决中 / 需要人处理：列表上也要看得到（尤其是需要人的时候）
-      const a = e.worktreeBranch ? q.autoResolveState(e.id) : undefined;
-      return a && a.phase !== "queued" ? { ...e, deploy: { state: a.phase, sha: a.head ?? "", subject: a.phase === "needs-human" ? a.reason ?? "" : a.conflicts.join("、"), requestedAt: a.at } } : e;
+      let next: Record<string, unknown> = { ...e };
+      if (q) {
+        const r = by?.get(e.id);
+        if (r) next = { ...next, deploy: { state: r.startedAt ? "started" : "pending", sha: r.sha, subject: r.subject, requestedAt: r.requestedAt, ...(r.startedAt ? { startedAt: r.startedAt } : {}), id: r.id, notifySession: r.notifySession, ...(r.staging ? { staging: r.staging, stage: r.stage } : {}), ...(r.action ? { action: r.action } : {}), ...(r.progress ? { progress: r.progress } : {}), ...(r.wait ? { wait: { kind: r.wait.kind, short: r.wait.short, detail: r.wait.detail } } : {}) } };
+        else {
+          // 冲突自动解决中 / 需要人处理：列表上也要看得到（尤其是需要人的时候）
+          const a = e.worktreeBranch ? q.autoResolveState(e.id) : undefined;
+          if (a && a.phase !== "queued") next = { ...next, deploy: { state: a.phase, sha: a.head ?? "", subject: a.phase === "needs-human" ? a.reason ?? "" : a.conflicts.join("、"), requestedAt: a.at } };
+        }
+      }
+      const v = verifyBy?.get(e.id);
+      if (v) next = { ...next, verify: v };
+      return next;
     }) } as T;
   };
 
@@ -277,6 +289,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     if (typeof body.publicControl === "boolean") next.publicControl = body.publicControl;
     if (typeof body.publicHistory === "boolean") next.publicHistory = body.publicHistory;
     if (body.maxRunningPerProfile !== undefined) next.maxRunningPerProfile = Number(body.maxRunningPerProfile);
+    if (body.cacheHandoff !== undefined) next.cacheHandoff = body.cacheHandoff as RuntimeSettings["cacheHandoff"];
     return mgr.updateSettings(next, ctx.actor(c));
   }));
 
@@ -288,6 +301,68 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     const body = await c.req.json<{ maxRunningPerProfile?: unknown }>().catch(() => ({} as { maxRunningPerProfile?: unknown }));
     if (typeof body.maxRunningPerProfile !== "number") throw new RuntimeError("maxRunningPerProfile 必须是 1–8 的整数", 400, "RT_INPUT");
     return mgr.updateSettings({ maxRunningPerProfile: body.maxRunningPerProfile }, ctx.actor(c));
+  }));
+  /**
+   * 新建会话最近一次选择（工作目录、上次 runtime、逐运行时模型/强度/审批）：
+   * 落盘到服务端 settings.json，手机（公网/局域网/中继）和电脑共用一份；前端 localStorage 仅作首帧缓存。
+   */
+  app.put("/api/runtime-settings/preferences", guard("control"), (c) => run(c, async () => {
+    const raw = await c.req.json<unknown>().catch(() => null);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new RuntimeError("新建偏好格式无效", 400, "RT_INPUT");
+    const body = raw as Record<string, unknown>;
+    const lastRuntimeKind = body.lastRuntimeKind === undefined || body.lastRuntimeKind === ""
+      ? undefined
+      : (typeof body.lastRuntimeKind === "string" && (RUNTIME_KINDS as readonly string[]).includes(body.lastRuntimeKind)
+        ? (body.lastRuntimeKind as RuntimeKind)
+        : (() => { throw new RuntimeError("不支持的运行时类型", 400, "RT_INPUT"); })());
+    let lastWorkspace = "";
+    if (body.lastWorkspace !== undefined && body.lastWorkspace !== null) {
+      if (typeof body.lastWorkspace !== "string" || body.lastWorkspace.length > 8192 || /[\0\r\n]/.test(body.lastWorkspace)) {
+        throw new RuntimeError("工作目录格式无效", 400, "RT_INPUT");
+      }
+      lastWorkspace = body.lastWorkspace;
+    }
+    const drafts: NonNullable<RuntimeSettings["newSessionPreferences"]>["drafts"] = {};
+    if (body.drafts !== undefined) {
+      if (!body.drafts || typeof body.drafts !== "object" || Array.isArray(body.drafts)) {
+        throw new RuntimeError("drafts 必须是对象", 400, "RT_INPUT");
+      }
+      const rawDrafts = body.drafts as Record<string, unknown>;
+      for (const kind of RUNTIME_KINDS) {
+        const entry = rawDrafts[kind];
+        if (entry === undefined || entry === null) continue;
+        if (typeof entry !== "object" || Array.isArray(entry)) throw new RuntimeError(`${kind} 偏好格式无效`, 400, "RT_INPUT");
+        const rec = entry as Record<string, unknown>;
+        const clean: NonNullable<typeof drafts[typeof kind]> = {};
+        for (const field of ["model", "effort", "permissionMode"] as const) {
+          const v = rec[field];
+          if (v === undefined || v === null) continue;
+          if (typeof v !== "string" || v.length > 256 || /[\0\r\n]/.test(v)) throw new RuntimeError(`${kind}.${field} 格式无效`, 400, "RT_INPUT");
+          clean[field] = v;
+        }
+        if (rec.explicit !== undefined && rec.explicit !== null) {
+          if (typeof rec.explicit !== "object" || Array.isArray(rec.explicit)) throw new RuntimeError(`${kind}.explicit 格式无效`, 400, "RT_INPUT");
+          const exp = rec.explicit as Record<string, unknown>;
+          const cleanExp: Partial<Record<"model" | "effort" | "permissionMode", boolean>> = {};
+          for (const field of ["model", "effort", "permissionMode"] as const) {
+            if (typeof exp[field] === "boolean") cleanExp[field] = exp[field] as boolean;
+          }
+          if (Object.keys(cleanExp).length) clean.explicit = cleanExp;
+        }
+        if (Object.keys(clean).length) drafts[kind] = clean;
+      }
+    }
+    const nextPrefs: NonNullable<RuntimeSettings["newSessionPreferences"]> = {
+      version: 1,
+      piPermissionPolicyVersion: 1,
+      antigravityPermissionPolicyVersion: 1,
+      ...(lastRuntimeKind ? { lastRuntimeKind } : {}),
+      lastWorkspace,
+      drafts,
+      updatedAt: new Date().toISOString()
+    };
+    const saved = mgr.updateSettings({ newSessionPreferences: nextPrefs }, ctx.actor(c));
+    return saved.newSessionPreferences ?? nextPrefs;
   }));
   /**
    * 新建会话可选的模型：只在 runtime 报告的模型里收窄或放开，不扩大能力——对外入口开了控制本来就能用任何报告的模型，
@@ -329,6 +404,21 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     if (permissionMode && (!permissionOption(kind, permissionMode) || (profile.permissionOptions && !profile.permissionOptions.some((x) => x.id === permissionMode)))) throw new RuntimeError(`该 runtime 没有审批模式 ${permissionMode}`, 400, "RT_INPUT");
     return mgr.updateSettings({ defaultSessionByRuntime: { [kind]: { model, effort, permissionMode } } }, ctx.actor(c));
   }));
+  /**
+   * 额度余量 <3% 时发送前的提醒偏好：off = 该运行时永久不再提醒（设置里可改回）；snoozeUntil = 本周期内不再提醒，
+   * 到该时间（窗口重置）自动失效。只影响浏览器里的提醒，不改变任何发送能力，所以和可选模型一样跟着控制权限走。
+   */
+  app.put("/api/runtime-profiles/:kind/quota-low-prompt", guard("control"), (c) => run(c, async () => {
+    const kind = kindOf(param(c, "kind"));
+    const body = await c.req.json<{ off?: unknown; snoozeUntil?: unknown }>().catch(() => ({} as { off?: unknown; snoozeUntil?: unknown }));
+    if (body.off !== undefined && typeof body.off !== "boolean") throw new RuntimeError("off 必须是布尔值", 400, "RT_INPUT");
+    if (body.snoozeUntil !== undefined && body.snoozeUntil !== null && (typeof body.snoozeUntil !== "string" || !Number.isFinite(Date.parse(body.snoozeUntil)))) throw new RuntimeError("snoozeUntil 必须是时间字符串，或 null（清除）", 400, "RT_INPUT");
+    const all = mgr.settings().quotaLowPromptByRuntime ?? {};
+    const next = { ...(all[kind] ?? {}) };
+    if (body.off !== undefined) { if (body.off) next.off = true; else delete next.off; }
+    if (body.snoozeUntil !== undefined) { if (body.snoozeUntil) next.snoozeUntil = new Date(Date.parse(body.snoozeUntil as string)).toISOString(); else delete next.snoozeUntil; }
+    return mgr.updateSettings({ quotaLowPromptByRuntime: { ...all, [kind]: Object.keys(next).length ? next : undefined } }, ctx.actor(c));
+  }));
   // 平台级技能目录：输入框 `/` 菜单读取。只给展示用字段，不含服务器上的目录路径与说明正文。
   // 被用户禁用的技能不出现在菜单里（与不存在一样）。
   app.get("/api/platform-skills", (c) => c.json({ skills: listPlatformSkills(undefined, mgr.platformSkillSwitches?.disabledIds()) }));
@@ -350,6 +440,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     }
   });
   app.get("/api/runtime-profiles", async (c) => {
+    await ctx.codexReset?.refreshBadge?.();
     const profiles: Array<ReturnType<RuntimeSessionManager["profiles"]>[number] & { balances?: ProviderBalance[] }> = mgr.profiles();
     // Pi 没有订阅额度窗口：改为显示它所用模型服务的账户余额
     const pi = profiles.find((p) => p.runtimeKind === "pi");
@@ -427,7 +518,12 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
   }));
   app.post("/api/runtime-profiles/:kind/rate-limits", guard("control"), (c) => run(c, async () => {
     const body = await c.req.json<{ automatic?: unknown }>().catch(() => ({} as { automatic?: unknown }));
-    return { rateLimit: await mgr.refreshRateLimit(kindOf(param(c, "kind")), { automatic: body.automatic === true }) ?? null };
+    const kind = kindOf(param(c, "kind"));
+    const [rateLimit] = await Promise.all([
+      mgr.refreshRateLimit(kind, { automatic: body.automatic === true }),
+      kind === "codex" ? ctx.codexReset?.refreshBadge?.() : undefined
+    ]);
+    return { rateLimit: rateLimit ?? null, ...(kind === "codex" && ctx.codexReset ? { codexReset: ctx.codexReset.badge() } : {}) };
   }));
   app.get("/api/runtime-profiles/:kind/settings-preview", guard("control"), (c) => run(c, async () => {
     const kind = kindOf(param(c, "kind"));
@@ -642,6 +738,17 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
       if (session.sourceMode === "external-discovered" && !mgr.settings().history[session.runtimeKind].enabled) throw new RuntimeError("历史来源已停用", 403, "RT_FORBIDDEN");
       const references = mgr.store.binding(session.platformSessionId) ? temporaryFileReferences(mgr.store.events(session.platformSessionId)) : [];
       return serveFilePreview(c, { workspace: session.workspace, roots: mgr.workspaceRoots(session.runtimeKind), referencedFiles: references }, endpoint === "file-content");
+    } catch(e) { if(e instanceof RuntimeError) return c.json({error:e.message,code:e.code},e.status); return c.json({error:"会话不可用"},404); }
+  });
+  /** 消息里的文件引用渲染前预检：判断规则与上面点开读取完全一致（定位 + 授权），不读正文；读不到的引用前端不做成可点胶囊 */
+  app.get("/api/runtime-sessions/:id/file-check", guard("history"), async c => {
+    c.header("Cache-Control", "private, no-store");
+    try {
+      const session = (await mgr.view(param(c, "id"))).session;
+      if (session.hostId !== mgr.store.host.hostId) throw new RuntimeError("文件所在运行主机不可用", 409, "FILE_HOST_UNAVAILABLE");
+      if (session.sourceMode === "external-discovered" && !mgr.settings().history[session.runtimeKind].enabled) throw new RuntimeError("历史来源已停用", 403, "RT_FORBIDDEN");
+      const references = mgr.store.binding(session.platformSessionId) ? temporaryFileReferences(mgr.store.events(session.platformSessionId)) : [];
+      return c.json(await checkPreviewFiles({ workspace: session.workspace, roots: mgr.workspaceRoots(session.runtimeKind), referencedFiles: references }, c.req.queries("ref") ?? []));
     } catch(e) { if(e instanceof RuntimeError) return c.json({error:e.message,code:e.code},e.status); return c.json({error:"会话不可用"},404); }
   });
   app.get("/api/runtime-sessions/:id/files/stat", (c) => {
@@ -976,6 +1083,27 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     if (action === 'create' || action === 'turn' || action === 'outbox') {
       turnOriginsAt(join(mgr.store.dir, 'turn-origins.jsonl')).record(originKeys(action, entry.body), deviceOfRequest(name => c.req.header(name)));
     }
+    // 缓存变冷：空闲超过缓存保留时间、上下文又很长的会话，续聊会把整段上下文重写一遍。
+    // 默认先拒绝并带上数字，由页面问用户；用户选「新开会话」就在这里建新会话并归档旧会话，选「继续旧会话」带 continue 放行。
+    if (action === 'turn' && sessionId && !mgr.isDraining()) {
+      const choice = entry.body['cacheHandoff'];
+      if (choice === 'new') {
+        return mgr.handoffSession(sessionId, {
+          idempotencyKey: String(entry.body['idempotencyKey'] ?? ''), prompt: String(entry.body['prompt'] ?? ''),
+          ...(Array.isArray(entry.body['attachmentIds']) ? { attachmentIds: entry.body['attachmentIds'] as string[] } : {}),
+          ...(typeof entry.body['effort'] === 'string' && entry.body['effort'] ? { effort: entry.body['effort'] as string } : {}), reason: 'manual'
+        }, entry.actor);
+      }
+      if (choice !== 'continue') {
+        let cold: ReturnType<typeof mgr.cacheHandoff> | undefined;
+        try { cold = mgr.cacheHandoff(sessionId); } catch { /* 会话不存在 / 只读：交给原来的流程报错 */ }
+        if (cold?.due) {
+          const hours = (cold.idleMs ?? 0) / 3_600_000;
+          throw new RuntimeError(`这个会话已空闲约 ${hours >= 1 ? `${hours.toFixed(1)} 小时` : `${Math.round(hours * 60)} 分钟`}，缓存已过期；上下文约 ${Math.round((cold.contextTokens ?? 0) / 1000)}k token，继续会先整段重写一次缓存`, 409, 'RT_CACHE_COLD',
+            { idleMs: cold.idleMs, ttlMs: cold.ttlMs, ttlBasis: cold.ttlBasis, contextTokens: cold.contextTokens, thresholdTokens: cold.thresholdTokens, runtimeKind: cold.runtimeKind });
+        }
+      }
+    }
     const queued = inbox.submit(entry);
     return queued && (queued as { deploymentQueued?: boolean }).deploymentQueued ? c.json(queued as object, 202) : queued ?? executeSubmission(entry);
   };
@@ -1110,16 +1238,35 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
 
   // 与续聊同一权限：能控制会话的人本来就能让会话自己执行 deploy-gui.sh --when-idle
   const autoResolver = ctx.deployQueue ? createDeployAutoResolver(mgr, ctx.deployQueue) : undefined;
-  // 守候进程只改请求文件（开始部署、部署结束、冲突自动解决）：轮询指纹，变了就推「目录已变」，
-  // 列表的「待部署 / 部署中」、会话头部和关联部署的快捷回复据此一起更新，不会各说各的
-  let deploySig = ctx.deployQueue?.signature() ?? "";
-  const deployWatch = ctx.deployQueue ? setInterval(() => {
+  // 守候进程只改请求文件（开始部署、部署结束、冲突自动解决、验证任务推进）：轮询指纹，变了就推「目录已变」，
+  // 列表的「待部署 / 部署中 / 验证中」、会话头部、详情状态行和关联部署的快捷回复据此一起更新，不会各说各的
+  const readCombinedSig = () => `${ctx.deployQueue?.signature() ?? ""}#${ctx.verifyService?.signature() ?? ""}`;
+  let deploySig = ctx.deployQueue || ctx.verifyService ? readCombinedSig() : "";
+  const deployWatch = ctx.deployQueue || ctx.verifyService ? setInterval(() => {
     let sig: string;
-    try { sig = ctx.deployQueue!.signature(); } catch { return; }
+    try { sig = readCombinedSig(); } catch { return; }
     if (sig !== deploySig) { deploySig = sig; mgr.emit("directory", {}); }
   }, 2_000) : undefined;
   deployWatch?.unref?.();
   ctx.shutdown?.addEventListener("abort", () => { autoResolver?.stop(); clearInterval(deployWatch); }, { once: true });
+
+  app.get("/api/runtime-sessions/:id/verify", guard("history"), (c) => run(c, async () => {
+    const id = param(c, "id");
+    await mgr.view(id, { includeUsage: false });
+    c.header("Cache-Control", "private, no-store");
+    return { verify: ctx.verifyService?.forSession(id) ?? null };
+  }));
+  app.post("/api/runtime-sessions/:id/verify/:jobId/cancel", guard("control"), (c) => run(c, async () => {
+    if (!ctx.verifyService) throw new RuntimeError("验证服务未启用", 404, "RT_NOT_FOUND");
+    const id = param(c, "id"), jobId = param(c, "jobId");
+    await mgr.view(id, { includeUsage: false });
+    const status = await ctx.verifyService.status(jobId).catch(() => null) as { notifySession?: string | null } | null;
+    const owned = ctx.verifyService.forSession(id);
+    if (!status && !owned) throw new RuntimeError("找不到对应的验证任务", 404, "RT_NOT_FOUND");
+    const res = ctx.verifyService.cancel(jobId, { by: ctx.actor(c), reason: "用户在页面取消" });
+    mgr.emit("directory", {});
+    return { ...res, verify: ctx.verifyService.forSession(id) };
+  }));
   const deployTarget = async (c: Context) => {
     if (!ctx.deployQueue) throw new RuntimeError("这个服务没有开启从页面部署", 404, "RT_NOT_FOUND");
     const s = (await mgr.view(param(c, "id"))).session;
@@ -1136,12 +1283,7 @@ export function mountRuntimeRoutes(app: Hono, mgr: RuntimeSessionManager, ctx: R
     const { q, s } = await deployTarget(c);
     const b = await c.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
     // 只有界面自动触发的那一次才占用配额；手动点击重新部署不带这个标记，不受上限影响。
-    // 自动重新部署带着失败通知里的提交：会话分支没有新提交 / 新改动时不对同一提交重试（手动点击不受影响）。
-    if (b["autoRedeploy"] === true && typeof b["failedSha"] === "string" && /^[0-9a-f]{7,40}$/i.test(b["failedSha"])) {
-      const cur = await q.info(s, mgr.activity());
-      const head = cur.mode === "worktree" ? (cur.worktree && !cur.worktree.changes.length ? cur.worktree.head : undefined) : cur.main?.sha;
-      if (head && head.startsWith(b["failedSha"].toLowerCase())) throw new RuntimeError("上次部署失败的提交没有变化，不自动重新部署；修改后再部署，或手动点击「重新部署」", 409, "RT_AUTO_REDEPLOY_SAME");
-    }
+    // Failure deduplication is host-owned in enqueue(), for manual, automatic and CLI requests alike.
     const claim = b["autoRedeploy"] === true ? mgr.claimAutoRedeploy(s.platformSessionId) : undefined;
     if (claim && !claim.allowed) throw new RuntimeError(`本会话自动重新部署已达 ${claim.limit} 次上限，可手动点击「重新部署」`, 409, "RT_AUTO_REDEPLOY_LIMIT");
     let result;

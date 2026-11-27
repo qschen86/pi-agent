@@ -462,7 +462,13 @@ function sessionDiskPanel(resource, display) {
     resource.kind === 'rt' && typeof rtComposerLoading === 'function' ? rtComposerLoading() : null);
 }
 function sessionPersistenceSettings() {
-  return h('section',{class:'nav-settings-cache'},h('label',{},h('input',{type:'checkbox',checked:sessionDisk.enabled,onchange:async ev=>{await sessionPersistenceEnable(ev.target.checked);ev.target.checked=sessionDisk.enabled;}}),' 保存本机会话正文'),h('p',{class:'muted small'},'会话列表和最近会话正文保存在本机，打开即显示，再在后台核对更新；正文最多保存 7 天，退出登录或登录失效会立即清除。本机匿名入口不保存。'),h('button',{type:'button',class:'btn small',onclick:async ev=>{await sessionPersistenceClear();ev.target.textContent='已清除正文缓存';}},'清除本机正文缓存'),h('p',{class:'muted small'},'只清除此站点保存的会话列表、正文和阅读快照，保留输入草稿及服务器历史。'),sessionOpenTimingLine());
+  // 开关行与设置页其它开关同构：左边标题 + 右侧统一开关，说明放在下面。
+  return h('section',{class:'nav-settings-cache'},
+    h('div',{class:'settings-switch-row'},h('strong',{},'保存本机会话正文'),h('input',{type:'checkbox',role:'switch',class:'settings-switch','aria-label':'保存本机会话正文',checked:sessionDisk.enabled,onchange:async ev=>{await sessionPersistenceEnable(ev.target.checked);ev.target.checked=sessionDisk.enabled;}})),
+    h('p',{class:'muted small'},'会话列表和最近会话正文保存在本机，打开即显示，再在后台核对更新；正文最多保存 7 天，退出登录或登录失效会立即清除。本机匿名入口不保存。'),
+    h('button',{type:'button',class:'btn small',onclick:async ev=>{await sessionPersistenceClear();ev.target.textContent='已清除正文缓存';}},'清除本机正文缓存'),
+    h('p',{class:'muted small'},'只清除此站点保存的会话列表、正文和阅读快照，保留输入草稿及服务器历史。'),
+    sessionOpenTimingLine());
 }
 function sessionOpenTimingLine() {
   const s = window.piOpenTiming?.summary?.(), ms = v => v == null ? '–' : `${v} ms`;

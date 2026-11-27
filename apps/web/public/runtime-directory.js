@@ -46,14 +46,33 @@ function rtArchivePageNodes(group) {
  *  没有路由加载器时（精简页面）沿用原行为，当作可用；只有清单明确没有 notes 才关掉。 */
 const rtNotesAvailable = () => typeof notesFocusInput === "function" || !window.piRouteModules || window.piRouteModules.has("notes");
 let rtTodayListRefreshTimer = null;
+/* 手机上新会话只有右下角一个「＋」：第一次进会话列表时给一次文字提示（约 6 秒），之后不再出现。
+ * 提示挂在列表的「＋」上，列表每次重绘都会重建它：所以用一个截止时间，重绘后仍在提示期内就继续显示。 */
+const RT_NEW_HINT_KEY = "pi-agent:rt-new-hint:v1";
+let rtNewCoachUntil = 0;
+function rtNewCoachMark() {
+  if (!rtPhone.matches) return null;
+  try { if (localStorage.getItem(RT_NEW_HINT_KEY)) return null; } catch { return null; }
+  const now = Date.now();
+  if (!rtNewCoachUntil) {
+    rtNewCoachUntil = now + 6000;
+    setTimeout(() => {
+      rtNewCoachUntil = 0;
+      try { localStorage.setItem(RT_NEW_HINT_KEY, "1"); } catch { /* 存储不可用时每次进列表都提示一次 */ }
+      document.querySelector(".rt-new-coach")?.remove();
+    }, 6000);
+  }
+  if (now >= rtNewCoachUntil) return null;
+  return h("span", { class: "rt-new-coach", "aria-hidden": "true" }, "＋ 新建会话");
+}
 function rtDirectoryRenderListOnly() {
   clearTimeout(rtTodayListRefreshTimer);
   rtTodayListRefreshTimer = null;
   const old = document.querySelector(".rt-list");
   if (!old) return;
   if (rtRowPressBusy) { rtRowPressPending = true; return; }
-  // 今日卡片随列表一起重建；等横滑动画结束再刷新，避免拆掉正在捕获指针的节点。
-  if (old.querySelector("#notes-today.is-sliding")) {
+  // 今日卡片随列表一起重建；手指按住卡片、横滑或退场提交期间都延迟刷新，避免拆掉正在处理触摸手势的节点。
+  if (old.querySelector("#notes-today.is-sliding, #notes-today-body[data-today-touch], #notes-today-body[data-today-leaving]")) {
     rtTodayListRefreshTimer = setTimeout(rtDirectoryRenderListOnly, 200);
     return;
   }
@@ -111,16 +130,21 @@ function rtTodayCard() {
 // 里的快照，再退回本机上次读到的数值，所以列表首屏不会为这三行多发一条请求。
 const rtSummarySnapshot = (kind) => typeof rtAccountSnapshot === "function" ? rtAccountSnapshot(kind) : null;
 function rtRuntimesSummaryData(kind) {
-  const fromDir = (ui.rt.dir?.runtimes || []).find((r) => r.runtimeKind === kind);
+  const profile = (ui.rt.profiles || []).find((p) => p.runtimeKind === kind);
+  const directory = (ui.rt.dir?.runtimes || []).find((r) => r.runtimeKind === kind);
+  // 配置刷新可能先于目录推送到达，不能让旧目录覆盖刚读到的额度或余额。
+  const sampledAt = (p) => Math.max(Date.parse(p?.rateLimit?.sampledAt || "") || 0,
+    ...(p?.balances || []).map((b) => Date.parse(b.balance?.fetchedAt || "") || 0));
+  const fromDir = sampledAt(profile) > sampledAt(directory) ? profile : directory;
+  const state = fromDir?.state ?? directory?.state ?? profile?.state;
   const dirLive = fromDir?.rateLimit && fromDir.rateLimit.windows?.length ? fromDir.rateLimit : null;
   const dirBalances = fromDir?.balances?.length ? fromDir.balances : null;
-  if (dirLive || dirBalances) return { rateLimit: dirLive, balances: dirBalances, cached: false, state: fromDir.state };
-  const profile = (ui.rt.profiles || []).find((p) => p.runtimeKind === kind);
+  if (dirLive || dirBalances) return { rateLimit: dirLive, balances: dirBalances, cached: false, state };
   const live = profile?.rateLimit && profile.rateLimit.available && profile.rateLimit.windows?.length ? profile.rateLimit : null;
   const balances = profile?.balances?.length ? profile.balances : null;
-  if (live || balances) return { rateLimit: live, balances, cached: false, state: profile?.state };
+  if (live || balances) return { rateLimit: live, balances, cached: false, state };
   const snap = rtSummarySnapshot(kind);
-  return snap ? { rateLimit: snap.rateLimit, balances: snap.balances, cached: true } : { rateLimit: null, balances: null, cached: false };
+  return snap ? { rateLimit: snap.rateLimit, balances: snap.balances, cached: true, state } : { rateLimit: null, balances: null, cached: false, state };
 }
 /**
  * 状态色阶（与新建页卡片同一口径）：已用 <80% 够用、≥80% 快不够用、≥95% 基本用完；读不到比例不着色。
@@ -174,8 +198,9 @@ function rtSummaryStart(kind) {
  */
 function rtRuntimesSummary() {
   if (typeof RT_KINDS === "undefined" || typeof rtQuotaShortLabel !== "function") return null;
-  const boxes = RT_KINDS.map((kind) => {
-    const d = rtRuntimesSummaryData(kind);
+  const data = new Map(RT_KINDS.map((kind) => [kind, { runtimeKind: kind, ...rtRuntimesSummaryData(kind) }]));
+  const boxes = rtOrderedNewKinds([...data.values()]).map((kind) => {
+    const d = data.get(kind);
     const unavailable = !!d.state && d.state !== "executable";
     const lines = unavailable
       ? [h("span", { class: "rt-rt-sum-item", "data-tone": "bad" }, h("span", { class: "rt-rt-sum-value" }, "不可用"))]
@@ -199,8 +224,21 @@ function rtRuntimesSummary() {
       // 右上角：有可用 reset 卡时的小标（与输入区账户胶囊同一套，数据在同一份额度快照里）
       typeof rtResetDot === "function" ? rtResetDot(kind, d.rateLimit) : null);
   });
-  // 外层是容器查询的容器（容器查询只作用于它的后代），网格放在里面一层，窄列表时才能改列数
-  return h("div", { class: "rt-runtimes-summary", role: "group", "aria-label": "用哪个 runtime 新建会话（附账户额度与余额）" }, h("div", { class: "rt-rt-sum-grid", "data-keep-scroll-x": "rt-runtimes-summary" }, boxes));
+  // 外层是容器查询的容器（容器查询只作用于它的后代），网格放在里面一层，窄列表时才能改列数。
+  // 桌面侧栏窄：三块额度默认收成一行「运行时额度与余额」，点开才占三行的高度，不把仪表盘塞在会话列表的必经之路上；手机保持展开。
+  const grid = h("div", { class: "rt-rt-sum-grid", "data-keep-scroll-x": "rt-runtimes-summary" }, boxes);
+  const group = (child) => h("div", { class: "rt-runtimes-summary", role: "group", "aria-label": "用哪个 runtime 新建会话（附账户额度与余额）" }, child);
+  if (rtPhone.matches) return group(grid);
+  return group(h("details", {
+    class: "rt-rt-sum-fold", open: !!ui.rt.runtimeSummaryOpen,
+    ontoggle: (ev) => { ui.rt.runtimeSummaryOpen = ev.currentTarget.open; }
+  },
+  h("summary", { class: "rt-rt-sum-fold-head",
+    // toggle 事件是异步的：点下就同步记状态，列表重绘后才不会又折回去
+    onclick: (ev) => { const d = ev.currentTarget.parentElement; if (d) ui.rt.runtimeSummaryOpen = !d.open; } },
+    h("span", {}, "运行时额度与余额"),
+    h("span", { class: "rt-caret rt-rt-sum-fold-caret", "aria-hidden": "true" }, "›")),
+  grid));
 }
 /**
  * 窗口已经过了重置时间、比例却还停在旧值（例如 100% 卡了好几天）：这块真的在屏幕上时补读一次额度，
@@ -209,7 +247,7 @@ function rtRuntimesSummary() {
 let rtSummaryOnScreen = false;
 let rtSummaryObserver = null;
 let rtSummaryRefreshAt = 0;
-function rtListQuotaVisible() { return rtSummaryOnScreen && !!document.querySelector(".rt-runtimes-summary")?.getClientRects().length; }
+function rtListQuotaVisible() { return rtSummaryOnScreen && !!document.querySelector(".rt-rt-sum-grid")?.getClientRects().length; }
 function rtSummaryRefreshStale() {
   if (!rtListQuotaVisible() || Date.now() - rtSummaryRefreshAt < 60_000) return;
   const now = Date.now();
@@ -264,7 +302,13 @@ function rtListWidthMax() {
   const room = layout ? layout.clientWidth - RT_CENTER_MIN - sideW : RT_LIST_W_MAX;
   return Math.max(RT_LIST_W_MIN, Math.min(RT_LIST_W_MAX, room));
 }
-function rtListWidthNow() { return Math.round(document.querySelector(".rt-list")?.getBoundingClientRect().width || RT_LIST_W_DEFAULT); }
+// 取的是列宽（卡片宽 + 水平外边距）：桌面列表是带 4px 左边距的悬浮卡片，只量卡片会让每次拖动 / 方向键后宽度悄悄少 4px。
+function rtListWidthNow() {
+  const el = document.querySelector(".rt-list");
+  if (!el) return RT_LIST_W_DEFAULT;
+  const cs = getComputedStyle(el), margin = (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
+  return Math.round(el.getBoundingClientRect().width + margin) || RT_LIST_W_DEFAULT;
+}
 /** width 为 null 时恢复默认（去掉覆盖，回到样式表里 300 / 260 的默认值）。 */
 function rtSetListWidth(width, { save = true } = {}) {
   const root = document.documentElement;
@@ -361,7 +405,13 @@ function rtListBase() {
         h("button", { type: "button", class: `rt-icon-link${scheduledCount ? " has-count" : ""}`, "aria-label": scheduledCount ? `预约发送消息，${scheduledCount} 条` : "预约发送消息", title: scheduledCount ? `预约发送消息（${scheduledCount} 条）` : "预约发送消息", onclick: rtScheduledOverview }, rtClockIcon(),
           scheduledCount ? h("span", { class: "rt-schedule-count", "aria-hidden": "true" }, scheduledCount > 99 ? "99+" : String(scheduledCount)) : null),
         // 桌面端：全局设置放在会话列表右上角最右（竖栏左下角的入口已撤）；手机在下面的状态区菜单里
-        h("button", { type: "button", class: `rt-icon-link rt-settings-link${document.querySelector(".nav-settings-button")?.classList.contains("has-capability-alert") ? " has-capability-alert" : ""}`, title: "设置", "aria-label": "设置", onclick: () => window.piOpenSettings?.() }, rtGearIcon()),
+        (() => {
+          const navSettings = document.querySelector(".nav-settings-button");
+          const hasAlert = !!navSettings?.classList.contains("has-capability-alert");
+          const settingsTitle = navSettings?.title || "全局设置：本设备能力、导航、版本与故障上报";
+          const settingsDesc = hasAlert ? (settingsTitle.includes("能力") ? "本设备有能力尚未开启" : "有运行时可更新") : null;
+          return h("button", { type: "button", class: `rt-icon-link rt-settings-link${hasAlert ? " has-capability-alert" : ""}`, title: settingsTitle, "aria-label": "设置", ...(settingsDesc ? { "aria-description": settingsDesc } : {}), onclick: () => window.piOpenSettings?.() }, rtGearIcon());
+        })(),
         // 手机的状态区（夜间 / 设置 / 连接状态）：底栏没有「更多」了，入口在会话页头部
         h("button", { type: "button", class: "rt-icon-link rt-status-link", "data-nav-more-trigger": "", title: "夜间、设置与连接状态", "aria-label": "夜间、设置与连接状态", onclick: () => window.navToggleStatus?.() }, window.navStatusIcon?.() || "⚙"))),
     // 搜索默认收起成图标；有搜索词时保持展开，看得出列表正在被筛选
@@ -442,10 +492,10 @@ function rtListBase() {
           window.addEventListener("pointermove", onMove, true);
           window.addEventListener("pointerup", onUp, true);
           window.addEventListener("pointercancel", onCancel, true);
-          holdTimer = setTimeout(() => { holdTimer = null; holding = true; hint.textContent = "上滑进入待办"; el.classList.add("rt-new-holding"); }, HOLD_MS);
+          holdTimer = setTimeout(() => { holdTimer = null; holding = true; hint.textContent = "上滑进入待办"; el.classList.add("rt-new-holding"); document.querySelector(".rt-new-coach")?.remove(); }, HOLD_MS);
           buzzTimer = setTimeout(() => { buzzTimer = null; preBuzzed = true; buzz(HOLD_BUZZ); }, HOLD_MS - BUZZ_LEAD_MS);
         }
-      }, h("span", { class: "rt-new-plus", "aria-hidden": "true" }, "＋"), h("span", { class: "rt-new-text" }, "新建会话"), h("kbd", { class: "rt-new-keys", "aria-hidden": "true" }, "双击 Ctrl"), hint);
+      }, h("span", { class: "rt-new-plus", "aria-hidden": "true" }, "＋"), h("span", { class: "rt-new-text" }, "新建会话"), h("kbd", { class: "rt-new-keys", "aria-hidden": "true" }, "双击 Ctrl"), hint, rtNewCoachMark());
       return el;
     })() : null,
     // 运行时筛选跟着搜索一起出现 / 收起：不搜索时列表上方只留标题行，把高度让给会话
@@ -461,7 +511,7 @@ function rtListBase() {
           : rtGroupByWorkspace(shown).map(group),
       !showArchived && d && d.total > entries.length ? h("p", { class: "muted small rt-pad" }, `共 ${d.total} 项，已显示最近 ${entries.length} 项；用搜索缩小范围`) : null,
       // 会话列表到底之后先交代三个 runtime 的额度 / 余额，再看下面的今日日程与推荐
-      !showArchived ? (() => { const summary = rtRuntimesSummary(); if (summary) rtSummaryWatch(summary); return summary; })() : null,
+      !showArchived ? (() => { const summary = rtRuntimesSummary(); if (summary) rtSummaryWatch(summary.querySelector(".rt-rt-sum-grid") || summary); return summary; })() : null,
       rtTodaySegment()));
 }
 
@@ -519,21 +569,32 @@ function rtSetViewMenu(open) {
 function rtArchiveDisplayEntries(entries, archived, includeFailures = true) {
   const rows = new Map(entries.map(e => [e.id, e]));
   for (const [id, entry] of includeFailures ? rtArchiveFailures : []) {
-    // 快照是失败那一刻的样子：部署状态（带自己走的计时）早已过期，不显示
-    if (!!entry.archived === archived && (!ui.rt.filter.runtime || entry.runtimeKind === ui.rt.filter.runtime) && rtDirMatches(entry, ui.rt.filter.q)) { const { deploy, ...rest } = entry; rows.set(id, rest); }
+    // 快照是失败那一刻的样子：部署 / 验证状态（带自己走的计时）早已过期，不显示
+    if (!!entry.archived === archived && (!ui.rt.filter.runtime || entry.runtimeKind === ui.rt.filter.runtime) && rtDirMatches(entry, ui.rt.filter.q)) { const { deploy, verify, ...rest } = entry; rows.set(id, rest); }
   }
   return [...rows.values()].filter(e => !rtArchivePending.has(e.id));
 }
 function rtArchiveBusy(id) { return rtArchivePending.has(id); }
 // 同一条提示被局部重绘时不再重播入场动画；换成新提示才重新滑入。
 let rtFlashShownFor = null, rtFlashPendingShown = "";
+/** 提示条高度随换行变化：量出来写给轻提示栈，让它排在条的下面。 */
+function rtFlashMeasure(node) {
+  requestAnimationFrame(() => {
+    const root = document.documentElement.style;
+    if (node && node.isConnected) root.setProperty("--rt-flash-h", `${node.offsetHeight}px`);
+    else if (!document.querySelector(".rt-flash")) root.removeProperty("--rt-flash-h");
+    if (typeof piToastLayout === "function") piToastLayout();
+  });
+}
 function rtArchiveProgress() {
   if (!rtArchivePending.size) { rtFlashPendingShown = ""; return null; }
   const text = [...rtArchivePending.values()].map(({ entry, archived }) => `${archived ? "归档处理中" : "恢复处理中"}：${entry.title}`).join("；");
   const fresh = rtFlashPendingShown !== text;
   rtFlashPendingShown = text;
-  return h("div", { class: `rt-flash rt-flash-pending${fresh ? "" : " settled"}`, role: "status" },
-    h("span", { class: "rt-flash-text", title: text }, text));
+  const node = h("div", { class: `rt-flash rt-flash-pending${fresh ? "" : " settled"}`, role: "status" },
+    h("span", { class: "rt-flash-body", title: text }, h("span", { class: "rt-flash-text" }, text)));
+  rtFlashMeasure(node);
+  return node;
 }
 /** 关掉提示浮层：状态清空后局部重绘，列表不再为它留出行高。 */
 function rtFlashDismiss(f) {
@@ -630,7 +691,7 @@ async function rtArchive(e, archived, btn) {
       if (e.id === rtId()) { ui.rt.sendKey = null; ui.rt.queueKey = null; }
     }
     const removed = result && result.worktree && result.worktree.removedAt;
-    ui.rt.archiveFlash = { text: `${archived ? "已归档" : "已恢复"}「${e.title}」${removed ? " · worktree 已删除，恢复到列表不会恢复代码" : ""}`, undo: { ...e, archived }, undoLabel: removed && archived ? "恢复到列表" : "撤销" };
+    ui.rt.archiveFlash = { text: `${archived ? "已归档" : "已恢复"}「${e.title}」`, note: removed ? "worktree 已删除，恢复后不含代码改动" : undefined, undo: { ...e, archived }, undoLabel: removed && archived ? "恢复到列表" : "撤销" };
     announce(archived ? `已归档：${e.title}` : `已恢复：${e.title}`);
     done = true;
   } catch (err) {
@@ -658,15 +719,18 @@ async function rtArchive(e, archived, btn) {
 function rtArchiveFlash() {
   const f = ui.rt.archiveFlash;
   // One notice at a time: concurrent completions must not add a second row.
-  if (!f || rtArchivePending.size) { rtFlashShownFor = null; return null; }
+  if (!f || rtArchivePending.size) { rtFlashShownFor = null; if (!rtArchivePending.size) rtFlashMeasure(null); return null; }
   const fresh = rtFlashShownFor !== f;
   rtFlashShownFor = f;
   const dismiss = () => rtFlashDismiss(f);
   const node = h("div", { class: `rt-flash${f.error ? " bad" : ""}${fresh ? "" : " settled"}`, role: "status" },
-    h("span", { class: "rt-flash-text", title: f.text }, f.text),
+    h("span", { class: "rt-flash-body", title: f.note ? `${f.text}\n${f.note}` : f.text },
+      h("span", { class: "rt-flash-text" }, f.text),
+      f.note ? h("span", { class: "rt-flash-note" }, f.note) : null),
     f.undo ? h("button", { type: "button", class: "rt-flash-undo", onclick: (ev) => void rtArchive(f.undo, !f.undo.archived, ev.currentTarget) }, f.undoLabel || "撤销") : null,
     h("button", { type: "button", class: "rt-flash-x", "aria-label": "关闭提示", onclick: dismiss }, "×"));
   rtFlashSwipe(node, dismiss);
+  rtFlashMeasure(node);
   return node;
 }
 
@@ -717,7 +781,8 @@ function rtSyncDraftBadge(id) {
   if (!existing) sub.querySelector(".rt-item-model")?.after(rtDraftBadge(id));
 }
 /** 从待办 / 推荐任务发起的会话：列表行里单独一个关联图标，不占会话提示的统计数字。
- *  推荐任务本身是待办聚合，沿用同一套图标位置，只把图形换成叠层，颜色与授权入口一致。 */
+ *  推荐任务本身是待办聚合，沿用同一套图标位置，只把图形换成叠层；两者都是灰色线性图标，
+ *  颜色只留给状态胶囊（运行中 / 归档 / 部署待处理），来源标记不再抢注意力。 */
 function rtSessionLinkIcon(e) {
   const recommendation = e.recommendationRef;
   const noteId = e.noteRef?.noteId;
@@ -733,7 +798,7 @@ function rtSessionLinkIcon(e) {
   }, rtMiniIcon(RT_MINI_PATHS[aggregate ? "recommendation" : "note"], { size: 12 }));
 }
 /**
- * 会话行上只放一个状态标签：部署需要人 / 正在解决冲突 > 会话自身状态（运行中、被中断、失败…）> 部署进度 > 推荐操作 > 预约发送。
+ * 会话行上只放一个状态标签：部署需要人 / 正在解决冲突 > 会话自身状态（运行中、被中断、失败…）> 部署进度 > 本地验证 > 推荐操作 > 预约发送。
  * 草稿、外部写入不是状态，仍可并排显示。
  */
 function rtSessionStatusBadge(e, att) {
@@ -742,8 +807,15 @@ function rtSessionStatusBadge(e, att) {
   const attention = rtListAttention(e, att);
   if (attention) return attention;
   const quick = rtQuickActionBadge(e);
+  // 部署正在通过新 CI 验证引擎跑门禁：列表显示「验证排队 / 验证中」，并保留雷达进度小动图
+  const deployPhase = e.deploy?.progress?.phase;
+  const deployRunningGate = e.deploy && !e.deploy.ended && e.deploy.state === "started"
+    && (!deployPhase || deployPhase === "preparing")
+    && e.verify && e.verify.active && e.verify.profile === "deploy-gate";
+  if (deployRunningGate) return rtVerifyBadge(e.verify, e.deploy);
   // 部署成功后下一步是推荐操作（归档会话）：它出现时不再并排放一个「部署成功」
   if (e.deploy && !(quick && e.deploy.progress?.phase === "ready")) return rtDeployBadge(e.deploy);
+  if (e.verify && !(e.verify.profile === "deploy-gate" && !e.verify.active)) return rtVerifyBadge(e.verify);
   return quick || rtScheduledBadge(e);
 }
 function rtSessionListContent(e) {
@@ -893,8 +965,102 @@ function rtSwipeRow(li, item) {
   li.addEventListener("dragstart", (ev) => { if (touching) { ev.preventDefault(); ev.stopPropagation(); } }, true);
 }
 
-/** 会话列表行：包一层 <li>；触屏接左滑，单聊 / 群聊 / 对比三种行共用 */
-function rtSessionRow(id, item, act, note) {
+/**
+ * 长按会话行弹出菜单（现在只有「引用发起新会话」）：新建会话，首条消息带这个会话的引用 chip，和输入框里 @ 会话是同一种引用。
+ * 手指移动（滚动 / 左滑）就不算长按；长按松手后补发的那次 click 要拦掉，否则会顺手打开这个会话。
+ */
+const RT_ROW_LONG_PRESS_MS = 500;
+const RT_ROW_LONG_PRESS_MOVE_PX = 10;
+function rtQuoteSessionToNew(entry) {
+  if (typeof rtStartNewSession !== "function" || typeof rtSessionReference !== "function") { if (typeof announce === "function") announce("请稍后再试"); return; }
+  const draft = typeof rtImageDraft === "function" ? rtImageDraft("new") : null;
+  // 新建草稿里已经引用过这个会话就不再重复加
+  const quoted = draft && typeof rtSessionReferenceDraft === "function" && rtSessionReferenceDraft(draft.text || "").references.some(ref => ref.entry.id === entry.id);
+  rtStartNewSession(quoted ? "" : rtSessionReference(entry), null);
+}
+function rtRowMenuOpen(entry, at) {
+  document.querySelectorAll("dialog.rt-row-menu").forEach(el => el.remove());
+  const opened = Date.now();
+  const close = () => { try { dialog.close(); } catch { /* 已经关了 */ } dialog.remove(); };
+  const quote = h("button", { type: "button", class: "rt-row-menu-item", role: at ? "menuitem" : null, "data-key": "rt-row-menu-quote", onclick: () => { close(); rtQuoteSessionToNew(entry); } }, "引用发起新会话");
+  // 电脑右键：贴着鼠标的小菜单，只有菜单项；触屏长按：底部半屏，带标题和取消
+  const dialog = h("dialog", { class: `rt-row-menu${at ? " at-point" : ""}`, "aria-label": `会话操作：${entry.title || entry.id}` },
+    h("div", { class: "rt-row-menu-body", role: at ? "menu" : null },
+      at ? null : h("p", { class: "rt-row-menu-title" }, entry.title || entry.id),
+      quote,
+      at ? null : h("button", { type: "button", class: "rt-row-menu-item cancel", onclick: close }, "取消")));
+  dialog.addEventListener("cancel", (ev) => { ev.preventDefault(); close(); });
+  // 触屏长按的手指刚抬起时不算点空白处（右键菜单没有这个问题）
+  dialog.addEventListener("click", (ev) => { if (ev.target === dialog && (at || Date.now() - opened > 350)) close(); });
+  // 菜单外再点右键：关掉这一个，不弹系统菜单
+  if (at) dialog.addEventListener("contextmenu", (ev) => { ev.preventDefault(); if (ev.target === dialog) close(); });
+  document.body.append(dialog); dialog.showModal();
+  if (at) {
+    // 贴着鼠标，放不下就往左 / 往上收，始终留在窗口内
+    const box = dialog.getBoundingClientRect(), gap = 8;
+    dialog.style.left = `${Math.max(gap, Math.min(at.x, window.innerWidth - box.width - gap))}px`;
+    dialog.style.top = `${Math.max(gap, Math.min(at.y, window.innerHeight - box.height - gap))}px`;
+    quote.focus();
+  }
+}
+function rtRowLongPress(li, entry) {
+  let state = null, fired = 0, dragger = null, lastType = "";
+  const restoreDrag = () => { dragger?.setAttribute("draggable", "true"); dragger = null; };
+  const clear = () => { document.removeEventListener("pointerdown", extra, true); if (state) { clearTimeout(state.timer); state = null; } restoreDrag(); };
+  // 按住期间又落下别的手指（三指截图等系统手势）：不是长按，放弃
+  const extra = (ev) => { if (state && ev.pointerId !== state.pointerId && ev.pointerType === "touch") clear(); };
+  const fire = () => {
+    if (!state) return;
+    clear();
+    // 这段时间里列表重绘掉了这一行，或手指已滑开成左滑：不弹
+    if (!li.isConnected || li.classList.contains("swiping")) return;
+    fired = Date.now();
+    try { navigator.vibrate?.(12); } catch { /* 不支持震动 */ }
+    try { window.getSelection()?.removeAllRanges(); } catch { /* 老浏览器没有 Selection API */ }
+    rtRowMenuOpen(entry);
+  };
+  li.addEventListener("pointerdown", (ev) => {
+    fired = 0; lastType = ev.pointerType;
+    if (ev.button !== undefined && ev.button !== 0) return;
+    // 鼠标不靠长按（会和拖进分类、点选打架），电脑上走右键
+    if (ev.pointerType === "mouse") return;
+    if (ev.target instanceof Element && ev.target.closest(".rt-item-act")) return;
+    // 不看 isPrimary：别的手指也按着就不算长按
+    if (ev.pointerType === "touch" && window.piOtherTouchDown?.(ev)) return;
+    clear();
+    state = { pointerId: ev.pointerId, pointerType: ev.pointerType, x: ev.clientX, y: ev.clientY, timer: setTimeout(fire, RT_ROW_LONG_PRESS_MS) };
+    // 行里的链接是可拖动的（桌面拖进分类）：安卓上长按它会被系统当成拖拽起手，抛 pointercancel 把计时清掉
+    if (ev.pointerType === "touch") { dragger = li.querySelector('a[draggable="true"]'); dragger?.setAttribute("draggable", "false"); }
+    document.addEventListener("pointerdown", extra, true);
+  });
+  li.addEventListener("pointermove", (ev) => {
+    if (!state || ev.pointerId !== state.pointerId) return;
+    if (Math.abs(ev.clientX - state.x) > RT_ROW_LONG_PRESS_MOVE_PX || Math.abs(ev.clientY - state.y) > RT_ROW_LONG_PRESS_MOVE_PX) clear();
+  });
+  li.addEventListener("pointerup", clear);
+  li.addEventListener("pointercancel", clear);
+  li.addEventListener("pointerleave", (ev) => { if (ev.pointerType === "mouse") clear(); });
+  li.addEventListener("click", (ev) => {
+    if (!fired || Date.now() - fired > 1500) return;
+    fired = 0; ev.preventDefault(); ev.stopPropagation();
+  }, true);
+  // 系统的长按（contextmenu）先于我们的计时到达：手指没动过就是长按，就地接管；菜单刚弹出来那一下也挡掉系统菜单
+  // 电脑上的右键（鼠标 / 触控板 / 菜单键）：弹出贴着鼠标的自定义菜单，不出浏览器自带的菜单
+  li.addEventListener("contextmenu", (ev) => {
+    if (state?.pointerType === "touch") { ev.preventDefault(); fire(); return; }
+    if (state || (fired && Date.now() - fired < 1500) || lastType === "touch" || lastType === "pen") { ev.preventDefault(); return; }
+    // 行里的按钮（归档 / 恢复）保持浏览器原有的右键行为
+    if (ev.target instanceof Element && ev.target.closest(".rt-item-act")) return;
+    ev.preventDefault();
+    if (!li.isConnected) return;
+    // 键盘菜单键没有鼠标位置（坐标为 0）：贴在这一行左上
+    const box = li.getBoundingClientRect(), keyboard = !ev.clientX && !ev.clientY;
+    rtRowMenuOpen(entry, { x: keyboard ? box.left + 16 : ev.clientX, y: keyboard ? box.bottom - 8 : ev.clientY });
+  });
+}
+
+/** 会话列表行：包一层 <li>；触屏接左滑，单聊 / 群聊 / 对比三种行共用。传 entry 的行（未归档的单聊）还接长按菜单 */
+function rtSessionRow(id, item, act, note, entry) {
   // 触屏上从一开始就是左滑布局；列表重绘 / 切换视图时，滑开的行接着用左滑布局恢复成滑开态
   const swipe = rtSwipeEnabled() || ui.rt.swipeOpen === id;
   /** 运行中 / 等待处理 / 停止中的会话没有归档入口：按钮照样露出，点它说清现在为什么不能归档 */
@@ -908,6 +1074,7 @@ function rtSessionRow(id, item, act, note) {
   }, "归档") : null;
   const li = h("li", { class: `rt-li${swipe ? " rt-swipeable" : ""}`, "data-id": id }, item, act || blocked);
   if (act || blocked) rtSwipeRow(li, item);
+  if (entry) rtRowLongPress(li, entry);
   if (swipe && (act || blocked) && ui.rt.swipeOpen === id) rtSwipeShift(li, item, true);
   return li;
 }
@@ -946,17 +1113,64 @@ function rtListItem(e, a) {
     // 点左滑露出的入口直接归档（完成后列表里收起 + 顶部提示可撤销）
     onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); void rtArchive(e, !e.archived, ev.currentTarget); }
   }, rtArchiveBusy(e.id) ? (e.archived ? "恢复中…" : "归档中…") : e.archived ? "恢复" : "归档") : null;
-  return rtSessionRow(e.id, item, act, note);
+  // 已归档的会话不能再被引用，不接长按菜单
+  return rtSessionRow(e.id, item, act, note, e.archived ? null : e);
+}
+let rtHomeBootFlight = null;
+let rtHomeBootGen = -1;
+let rtHomeNewModuleGen = -1;
+function rtEnsureHomeData() {
+  const gen = ui.rt.gen || 0;
+  if (rtHomeBootFlight || rtHomeBootGen === gen) return;
+  const hadProfiles = ui.rt.profiles !== null;
+  const hadAccess = !!ui.rt.access;
+  const tasks = [];
+  if (!hadProfiles && typeof rtLoadProfiles === "function") tasks.push(rtLoadProfiles());
+  if (!hadAccess && typeof rtLoadAccess === "function") tasks.push(rtLoadAccess());
+  rtHomeBootGen = gen;
+  if (!tasks.length) return;
+  rtHomeBootFlight = Promise.allSettled(tasks).finally(() => {
+    rtHomeBootFlight = null;
+    const loaded = (!hadProfiles && ui.rt.profiles !== null) || (!hadAccess && !!ui.rt.access);
+    if (loaded && ui.view === "rt" && !rtId() && !rtPhone.matches) renderMain();
+  });
 }
 function rtCenter() {
   const id = rtId();
-  if (!id) return h("section", { class: "rt-center rt-empty-state" },
-    h("button", { type: "button", class: "btn rt-list-toggle", onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"),
-    h("span", { class: "rt-empty-icon", "aria-hidden": "true" }, rtMiniIcon(["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z", "M8.5 10h.01M12 10h.01M15.5 10h.01"], { size: 28 })),
-    h("h2", {}, "多运行时对话"),
-    h("p", { class: "muted" }, "在 Codex、Claude Code、Pi 和 Antigravity 上开对话、续聊、停止与审批。会话按工作目录分组，用完可以归档。"),
-    h("a", { class: "btn primary rt-empty-cta", href: rtNewModeHref(), onclick: () => { if (typeof rtMarkNewEntry === "function") rtMarkNewEntry("list"); } }, "＋ 新建会话"),
-    h("p", { class: "muted small" }, "可以开单聊，或者拉几个 Agent 建一个群聊；群聊里 @ 多人的那一轮可以切到对比视图。本机已有的历史会话在列表右上角的「更多 → 设置」里查看。"));
+  if (!id) {
+    if (!rtPhone.matches) {
+      rtEnsureHomeData();
+      if (ui.rt.launch && typeof rtLaunchView === "function") return rtLaunchView(ui.rt.launch);
+      if (typeof renderRtNew === "function") {
+        return h("section", { class: "rt-center rt-new-center rt-home-center", "aria-label": "合己工作台" },
+          h("button", { type: "button", class: "btn small rt-list-toggle", onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"),
+          renderRtNew({ home: true }));
+      }
+      const gen = ui.rt.gen || 0;
+      if (rtHomeNewModuleGen !== gen && window.piRouteModules?.has?.("rt-new")) {
+        rtHomeNewModuleGen = gen;
+        void window.piRouteModules.ensure("rt-new").then(() => {
+          if (ui.view === "rt" && !rtId() && !rtPhone.matches) renderMain();
+        }).catch(() => {});
+      }
+      return h("section", { class: "rt-center rt-empty-state rt-home-center", "aria-label": "合己工作台" },
+        h("button", { type: "button", class: "btn small rt-list-toggle", onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"),
+        h("div", { class: "rt-heji-hero" },
+          h("div", { class: "rt-heji-logo-wrap" },
+            h("img", { class: "rt-heji-logo rt-heji-logo-light", src: "/icons/heji-logo-light.png", alt: "合己 heji" }),
+            h("img", { class: "rt-heji-logo rt-heji-logo-dark", src: "/icons/heji-logo-dark.png", alt: "合己 heji" }),
+            h("span", { class: "rt-heji-sparkle s1", "aria-hidden": "true" }, "✦"),
+            h("span", { class: "rt-heji-sparkle s2", "aria-hidden": "true" }, "✦")),
+          h("h1", {}, "想让合己做什么？"),
+          h("p", { class: "rt-heji-sub" }, "正在准备即用输入区，也可直接新建或从左侧继续会话")),
+        h("a", { class: "btn primary rt-empty-cta", href: rtNewModeHref(), onclick: () => { if (typeof rtMarkNewEntry === "function") rtMarkNewEntry("list"); } }, "＋ 开始新对话"));
+    }
+    return h("section", { class: "rt-center rt-empty-state" },
+      h("button", { type: "button", class: "btn rt-list-toggle", onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"),
+      h("h2", {}, "合己对话"),
+      h("p", { class: "muted" }, "在 Codex、Claude Code、Pi 和 Antigravity 上直接发起任务、续聊、审批与对比。"),
+      h("a", { class: "btn primary rt-empty-cta", href: rtNewModeHref(), onclick: () => { if (typeof rtMarkNewEntry === "function") rtMarkNewEntry("list"); } }, "＋ 开始新对话"));
+  }
   return rtDetailCenter();
 }
 

@@ -5,12 +5,15 @@
  * - 解决冲突的那一轮失败 / 中断 / 结果未知（人主动停止那一轮 = 人接手，静默结束自动处理）；
  * - 连续 AUTO_RESOLVE_MAX 次仍冲突（例如 main 一直在变）。
  *
+ * 门禁失败后的自动修复重试（stage = "gate"）走同一条路：守候进程把修复任务发给会话并写状态，
+ * 那一轮结束后这里检查有没有新提交，有就自动重新登记部署，并把「会话修复用了多久」记进重试链（gate-retry）。
+ *
  * 冲突来源有两处，状态都记在 when-idle/auto-resolve/<会话>.json（见 scripts/deploy-when-idle.mjs）：
  * - 登记时变基到 main 冲突（本模块 begin，发出那一轮）；
  * - 守候进程部署前集成冲突（守候进程自己发出那一轮并写状态）。
  * 之后都由本模块在会话那一轮结束时（manager 的 session 事件，及启动时补查）接手。
  */
-import { AUTO_RESOLVE_MAX, autoResolveKey, autoResolvePrompt } from "../../../scripts/deploy-when-idle.mjs";
+import { AUTO_RESOLVE_MAX, autoResolveKey, autoResolvePrompt, readGateRetry, writeGateRetry } from "../../../scripts/deploy-when-idle.mjs";
 import type { RuntimeSessionManager, SessionBinding } from "@pi-agent/runtime-sessions";
 import { DeployConflictError, type AutoResolveState, type DeployQueue } from "./deploy-queue.js";
 
@@ -57,6 +60,16 @@ export function createDeployAutoResolver(mgr: RuntimeSessionManager, queue: Depl
     }
   };
 
+  /** 修复那一轮用了多久：从守候进程发出修复任务（状态写入时间）到现在 */
+  const recordFix = (pid: string, since: string): void => {
+    const chain = readGateRetry(pid);
+    const last = chain?.attempts.at(-1);
+    if (!chain || !last || last.fixMs !== undefined) return;
+    const start = Date.parse(last.fixStartedAt ?? since);
+    if (Number.isFinite(start)) last.fixMs = Math.max(0, Date.now() - start);
+    writeGateRetry(chain);
+  };
+
   const check = async (pid: string): Promise<void> => {
     const st = queue.autoResolveState(pid);
     if (!st) return;
@@ -94,16 +107,22 @@ export function createDeployAutoResolver(mgr: RuntimeSessionManager, queue: Depl
       const info = await queue.info(b);
       if (!info.eligible || !info.main || !info.worktree) { needsHuman(st, info.reason ?? "这个会话现在不能从页面部署"); return; }
       const wt = info.worktree;
+      const gate = st.stage === "gate";
       if (wt.changes.some((c) => c.status.includes("U") || c.status === "AA" || c.status === "DD")) { needsHuman(st, "会话留下了未解决的冲突，合并没有完成"); return; }
-      if (st.head && wt.head === st.head && !wt.changes.length) { needsHuman(st, `会话没有完成合并（多半是需要人来取舍，见它最后的回复）：${st.conflicts.join("、")}`); return; }
+      if (st.head && wt.head === st.head && !wt.changes.length) {
+        needsHuman(st, gate ? `会话没有提交新的修复（多半是需要人来取舍，见它最后的回复）：${st.conflicts.join("、")}` : `会话没有完成合并（多半是需要人来取舍，见它最后的回复）：${st.conflicts.join("、")}`);
+        return;
+      }
       try {
         const r = await queue.request({ session: b, expectedSha: info.main.sha, auto: true });
+        if (gate) recordFix(pid, st.at);
         mgr.noteDeployRequest(pid, ACTOR, r);
         queue.saveAutoResolve({ ...st, phase: "queued", requestId: r.request.id, operationId: undefined });
         mgr.store.audit({ type: "deploy-auto-resolve", platformSessionId: pid, phase: "queued", attempts: st.attempts, sha: r.request.sha });
         mgr.emit("session", { platformSessionId: pid });
       } catch (e) {
-        if (e instanceof DeployConflictError) await begin(b, e, { manual: false });
+        // 门禁重试途中又和 main 冲突：冲突的次数另算，重试链里的次数不受影响
+        if (e instanceof DeployConflictError) await begin(b, e, { manual: gate });
         else needsHuman(st, `解决冲突后重新提交部署失败：${(e as Error).message}`);
       }
     } finally { inFlight.delete(pid); }

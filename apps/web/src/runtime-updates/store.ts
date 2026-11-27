@@ -3,8 +3,9 @@
  * - runtimes：每个 runtime 最近一次检测到的稳定版发布记录（含更新日志原文，最多 40 版）、最新版、检测时间与错误
  * - installLog：平台观察到的「已装版本」变化（升级记录），升级由人手动做，平台只在下一次检测时发现并记下
  * - checks：检测历史
- * - analyses：人点「分析」后生成的收益 / 风险报告（每个 runtime 只留最新一份）
+ * - analyses：收益 / 风险报告（每个 runtime 只留最新一份）：检测到更新后自动生成，人也可以重新分析
  * - ignored：人选择「忽略这个版本」的版本号，红点与提示只对更新的版本再亮起
+ * - autoUpgrade / autoUpgrades：自动夜间升级的开关与安排（落后够多、收益够大、风险可控时才排队）
  * 蓝绿两个槽位共用这个文件：每次读取前看一眼修改时间，别人写过就重新载入。
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -14,9 +15,23 @@ import type { AnalysisValue } from "./analysis.js";
 
 export const MAX_CHECKS = 40;
 export const MAX_INSTALL_LOG = 60;
+export const MAX_AUTO_UPGRADES = 40;
 
 export interface ReleaseRecord extends ReleaseInfo { firstSeenAt: string }
-export interface RuntimeRecord { latest?: string; releases: ReleaseRecord[]; checkedAt?: string; error?: string; installed?: string; ignored?: string }
+export interface RuntimeRecord { latest?: string; releases: ReleaseRecord[]; checkedAt?: string; error?: string; installed?: string; ignored?: string; analysisError?: string }
+export type AnalysisTrigger = "auto" | "manual";
+/** 自动升级：分析通过后排队，到北京时间夜间窗口、且没有会话在跑时由平台开一个升级会话。 */
+export type AutoUpgradeStatus = "scheduled" | "started" | "done" | "failed" | "cancelled";
+export interface AutoUpgradeEntry {
+  id: string; kind: UpdateKind; from: string; to: string;
+  /** 计划执行的时刻（北京时间 03:00 对应的绝对时刻） */
+  at: string; createdAt: string;
+  status: AutoUpgradeStatus;
+  startedAt?: string; finishedAt?: string;
+  sessionId?: string; note?: string;
+  /** 因为还有会话在跑顺延了几次 */
+  postponed?: number;
+}
 export interface InstallLogEntry { kind: UpdateKind; from?: string; to: string; at: string }
 export type CheckTrigger = "schedule" | "catch-up" | "manual";
 export interface CheckRecord {
@@ -26,16 +41,18 @@ export interface CheckRecord {
   found: Array<{ kind: UpdateKind; version: string }>;
   errors: Array<{ kind: UpdateKind; error: string }>;
 }
-export interface AnalysisRecord { kind: UpdateKind; installed: string; latest: string; notesHash: string; at: string; costUsd: number; model?: string; value: AnalysisValue }
+export interface AnalysisRecord { kind: UpdateKind; installed: string; latest: string; notesHash: string; at: string; costUsd: number; model?: string; trigger?: AnalysisTrigger; value: AnalysisValue }
 export interface RuntimeUpdatesState {
   version: 1;
   runtimes: Partial<Record<UpdateKind, RuntimeRecord>>;
   installLog: InstallLogEntry[];
   checks: CheckRecord[];
   analyses: Partial<Record<UpdateKind, AnalysisRecord>>;
+  autoUpgrade: { enabled: boolean };
+  autoUpgrades: AutoUpgradeEntry[];
 }
 
-const empty = (): RuntimeUpdatesState => ({ version: 1, runtimes: {}, installLog: [], checks: [], analyses: {} });
+const empty = (): RuntimeUpdatesState => ({ version: 1, runtimes: {}, installLog: [], checks: [], analyses: {}, autoUpgrade: { enabled: true }, autoUpgrades: [] });
 
 export class RuntimeUpdatesStore {
   readonly file: string;
@@ -59,7 +76,9 @@ export class RuntimeUpdatesStore {
         runtimes: raw && typeof raw.runtimes === "object" && raw.runtimes ? raw.runtimes : {},
         installLog: Array.isArray(raw?.installLog) ? raw!.installLog! : [],
         checks: Array.isArray(raw?.checks) ? raw!.checks! : [],
-        analyses: raw && typeof raw.analyses === "object" && raw.analyses ? raw.analyses : {}
+        analyses: raw && typeof raw.analyses === "object" && raw.analyses ? raw.analyses : {},
+        autoUpgrade: { enabled: raw?.autoUpgrade?.enabled !== false },
+        autoUpgrades: Array.isArray(raw?.autoUpgrades) ? raw!.autoUpgrades! : []
       };
     } catch { return empty(); /* 文件坏了不能挡住检测：当作空台账，下一次写入会修好它 */ }
   }
@@ -68,6 +87,7 @@ export class RuntimeUpdatesStore {
     const s = this.state;
     s.checks = s.checks.slice(-MAX_CHECKS);
     s.installLog = s.installLog.slice(-MAX_INSTALL_LOG);
+    s.autoUpgrades = s.autoUpgrades.slice(-MAX_AUTO_UPGRADES);
     mkdirSync(dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(s));

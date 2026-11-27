@@ -89,6 +89,7 @@ function rtDetailRenderSoft() {
   const key = active && active.dataset ? active.dataset.key : undefined;
   const sel = key && "selectionStart" in active ? [active.selectionStart, active.selectionEnd] : null;
   rtPatchRecoveryState();
+  rtPatchTurnSummaryState();
   const composerSignature = rtComposerSignature(v);
   const signature = composerSignature + "|" + ui.rt.statusConfirmed;
   swap("#rt-sync", sessionSyncNote(ui.rt, () => refresh({ main: true, force: true, global: false }), "rt-sync"));
@@ -121,12 +122,37 @@ function rtPatchRecoveryState() {
   const box = document.querySelector(".rt-transcript");
   if (!box) return;
   const state = rtRecoveryState();
-  const signature = JSON.stringify([state?.end.key, state?.raw, state?.plan, state ? rtRecoveryCanSend(ui.rt.view.session) : null, ui.rt.access?.control, ui.rt.busy, ui.rt.statusConfirmed]);
+  const summaryMode = typeof rtTurnSummaryModeEnabled === "function" ? rtTurnSummaryModeEnabled() : false;
+  const signature = JSON.stringify([summaryMode, state?.end.key, state?.raw, state?.plan, state ? rtRecoveryCanSend(ui.rt.view.session) : null, ui.rt.access?.control, ui.rt.busy, ui.rt.statusConfirmed]);
   if (box.rtRecoverySignature === signature) return;
   const hadRecovery = box.rtHadRecovery;
   box.rtRecoverySignature = signature;
   box.rtHadRecovery = !!state;
   if (state || hadRecovery) rtRerenderTranscript(box);
+}
+
+/** 回合收束卡片依赖开关状态及异步到达的摘要 / 快捷回复与按钮忙态；变化时按需重绘时间线（保留阅读位置与展开状态）。 */
+function rtPatchTurnSummaryState() {
+  const box = document.querySelector(".rt-transcript");
+  if (!box) return;
+  const s = ui.rt.view?.session;
+  const id = s?.platformSessionId || "";
+  const summaryMode = typeof rtTurnSummaryModeEnabled === "function" ? rtTurnSummaryModeEnabled() : false;
+  const lastKey = rtLastAssistantKey();
+  const cur = id ? ui.rt.quickReplies?.[id] : null;
+  const curSig = cur && cur.key === lastKey ? [cur.state, cur.headline || "", cur.decision || "", cur.replies, cur.deployment || "", cur.deploymentSha || ""] : null;
+  const srvSig = s?.quickReplies && s.quickReplies.eventKey === lastKey ? [s.quickReplies.headline || "", s.quickReplies.decision || "", s.quickReplies.replies, s.quickReplies.deployment || ""] : null;
+  const summaryKeys = s?.turnSummaries ? Object.keys(s.turnSummaries).sort().map(k => [k, s.turnSummaries[k]?.headline || "", s.turnSummaries[k]?.decision || ""]) : null;
+  const deploySig = ui.rt.deploy?.id === id ? [!!ui.rt.deploy.busy, !!ui.rt.deploy.info?.eligible, typeof rtDeployMine === "function" ? !!rtDeployMine(ui.rt.deploy.info, id) : false] : null;
+  const busy = ui.rt.quickBusy && ui.rt.quickBusy.id === id ? [ui.rt.quickBusy.key, ui.rt.quickBusy.text] : null;
+  const imagePending = typeof rtImageDraft === "function" ? !!rtImageDraft(id).pending : !!(typeof rtImageDrafts !== "undefined" && rtImageDrafts?.[id]?.pending);
+  const signature = JSON.stringify([summaryMode, id, lastKey, curSig, srvSig, summaryKeys, deploySig, busy, !!ui.rt.busy, !!ui.rt.access?.control, !!rtRecoveryState(), imagePending, s?.status, s?.bindingRevision, !!s?.archived]);
+  if (box.rtTurnSummarySignature === signature) return;
+  const hadCard = !!box.querySelector?.(".rt-turn-card:not(.is-recovery)");
+  box.rtTurnSummarySignature = signature;
+  const wantsCard = summaryMode && (!!(id && lastKey && typeof rtTurnCardOwnsQuickReplies === "function" && rtTurnCardOwnsQuickReplies(id, lastKey, ui.rt.events))
+    || !!(summaryKeys && summaryKeys.length));
+  if (hadCard || wantsCard) rtRerenderTranscript(box);
 }
 
 /**
@@ -138,7 +164,7 @@ function rtComposerSignature(v) {
   const images = v.session?.platformSessionId ? rtImageDrafts[v.session.platformSessionId] : undefined;
   const outboxEdit = ui.rt.outboxEdit ? [ui.rt.outboxEdit, rtImageDrafts[rtOutboxKey(ui.rt.outboxEdit.messageId)]] : null;
   // 入口权限（ui.rt.access）也在里面：发送 / 排队的处理函数捕获了它，原地更新不换处理函数，权限变了必须重建
-  return JSON.stringify([v, ui.rt.access, ui.rt.sessionUsageLoading, ui.rt.sessionUsageError, ui.rt.runtimeGrants, ui.rt.busy, ui.rt.quickBusy, ui.rt.error, ui.rt.flash, ui.rt.deploy, ui.rt.deployWait, ui.rt.deploymentQueue, images, outboxEdit, ui.rt.outboxBusy, ui.rt.linkedRecommendationNotes, ui.rt.linkedNote, ui.rt.linkedNoteFor, ui.rt.linkedNoteBusy, ui.rt.linkedNoteError, rtLastAssistantKey(), ui.rt.quickReplies[v.session?.platformSessionId]]);
+  return JSON.stringify([v, typeof rtTurnSummaryModeEnabled === "function" && rtTurnSummaryModeEnabled(), ui.rt.coldPrompt, ui.rt.access, ui.rt.sessionUsageLoading, ui.rt.sessionUsageError, ui.rt.runtimeGrants, ui.rt.busy, ui.rt.quickBusy, ui.rt.error, ui.rt.flash, ui.rt.deploy, ui.rt.deployWait, ui.rt.deploymentQueue, images, outboxEdit, ui.rt.outboxBusy, ui.rt.linkedRecommendationNotes, ui.rt.linkedNote, ui.rt.linkedNoteFor, ui.rt.linkedNoteBusy, ui.rt.linkedNoteError, rtLastAssistantKey(), ui.rt.quickReplies[v.session?.platformSessionId]]);
 }
 
 /**
@@ -224,7 +250,7 @@ function rtDeployStateBadge(s) {
     // 冲突自动解决：头部只放短标签（完整说明在悬停提示和时间线末尾的状态行），长文字放进标签行会把标题挤没
     const ar = d.autoResolve;
     if (!ar || ar.phase === "queued") return null;
-    const node = ar.phase === "resolving" ? badge(`解决冲突中 ${ar.attempts}/${ar.max || 3}`, "accent") : badge("部署待处理", "bad");
+    const node = ar.phase === "resolving" ? badge(`${ar.stage === "gate" ? "自动修复" : "解决冲突中"} ${ar.attempts}/${ar.max || 3}`, "accent") : badge("部署待处理", "bad");
     node.title = rtAutoResolveText(d);
     return node;
   }
@@ -250,9 +276,17 @@ function rtAutoResolveText(d) {
   const ar = d && d.autoResolve;
   if (!ar || ar.phase === "queued") return "";
   const files = (ar.conflicts || []).join("、");
-  return ar.phase === "resolving"
-    ? `和 ${d.branch || "main"} 冲突（${files || "代码冲突"}）：会话正在自动合并解决（第 ${ar.attempts}/${ar.max || 3} 次），这一轮结束后自动重新提交部署`
-    : `自动部署需要你处理：${ar.reason || files || "会话没能自动解决冲突"}`;
+  const gate = ar.stage === "gate";
+  if (ar.phase !== "resolving") return `自动部署需要你处理：${ar.reason || files || (gate ? "会话没能自动修好门禁失败" : "会话没能自动解决冲突")}${rtGateRetryTail(d)}`;
+  return gate
+    ? `部署门禁没过（${files || "测试失败"}）：会话正在自动修复（第 ${ar.attempts}/${ar.max || 3} 次），这一轮结束后自动重新提交部署${rtGateRetryTail(d)}`
+    : `和 ${d.branch || "main"} 冲突（${files || "代码冲突"}）：会话正在自动合并解决（第 ${ar.attempts}/${ar.max || 3} 次），这一轮结束后自动重新提交部署`;
+}
+
+/** 自动重试的次数与分段耗时（服务端生成的一句话；没有重试记录时为空） */
+function rtGateRetryTail(d) {
+  const text = d && d.gateRetry && d.gateRetry.summary;
+  return text ? `。${text}` : "";
 }
 
 /** 额度用尽后的自动续聊说明：写明哪个窗口、几点自动继续，到点前可取消 */
@@ -265,6 +299,34 @@ function rtQuotaResumeNote(s, canControl) {
     : `额度暂时用尽，北京时间 ${when} 左右自动再试一次，不需要你操作`;
   return h("p", { class: "muted small rt-auto-resolve rt-quota-resume", role: "status" }, text,
     canControl ? h("button", { type: "button", class: "btn small", disabled: !!ui.rt.busy, onclick: () => void rtQuotaResumeCancel(s.platformSessionId) }, "取消自动继续") : null);
+}
+
+/* 缓存变冷：长上下文会话空闲超过缓存保留时间后再发消息，续聊要先把整段上下文重写一遍。
+   服务端先拒绝并带上数字（RT_CACHE_COLD），这里在输入框上方问用户：继续旧会话，或新开会话接续并归档旧会话。 */
+function rtColdCacheText(d) {
+  const hours = (d.idleMs || 0) / 3600000;
+  const idle = hours >= 1 ? `${hours.toFixed(hours >= 10 ? 0 : 1)} 小时` : `${Math.max(1, Math.round(hours * 60))} 分钟`;
+  return `这个会话已空闲约 ${idle}，缓存已过期；上下文约 ${Math.round((d.contextTokens || 0) / 1000)}k token，继续发送会先把整段重写一次，比较费额度。`;
+}
+
+function rtColdCachePanel(id, send) {
+  const c = ui.rt.coldPrompt;
+  if (!c || c.id !== id) return null;
+  const pick = (mode) => { ui.rt.coldPrompt = null; ui.rt.cacheChoice = { id, mode }; void send(c.quick); };
+  return h("div", { class: "rt-cold-cache", role: "alert" },
+    h("p", { class: "small rt-cold-cache-text" }, rtColdCacheText(c.details), " 新开会话会沿用工作目录和待办，并带上这个会话的记录位置，旧会话自动归档。"),
+    h("div", { class: "rt-cold-cache-actions" },
+      h("button", { type: "button", class: "btn small primary", disabled: !!ui.rt.busy, onclick: () => pick("new") }, "新开会话并归档旧会话"),
+      h("button", { type: "button", class: "btn small", disabled: !!ui.rt.busy, onclick: () => pick("continue") }, "继续旧会话"),
+      h("button", { type: "button", class: "btn small", onclick: () => { ui.rt.coldPrompt = null; rtRenderSoft(); } }, "先不发")));
+}
+
+/* 接续关系：新会话标明从哪个会话接续，被归档的旧会话标明已转到哪个新会话 */
+function rtHandoffNote(s) {
+  const link = (ref, label) => h("a", { href: `#/rt/${encodeURIComponent(ref.platformSessionId)}`, class: "rt-handoff-link" }, `${label}「${ref.title || ref.platformSessionId}」`);
+  if (s.handoff?.from) return h("p", { class: "muted small rt-auto-resolve rt-handoff-note", role: "status" }, "接续自 ", link(s.handoff.from, "旧会话"), "：缓存已过期，所以新开会话接着做，旧会话已归档。");
+  if (s.handoff?.to) return h("p", { class: "muted small rt-auto-resolve rt-handoff-note", role: "status" }, "缓存已过期，已转到 ", link(s.handoff.to, "新会话"), " 继续，这个会话已归档。");
+  return null;
 }
 
 async function rtQuotaResumeCancel(id) {
@@ -370,10 +432,48 @@ function rtTrackDeployMenu(button, menu) {
   rtDeployMenuObserver?.observe(menu);
 }
 
+function rtSetTurnSummaryMode(next) {
+  const enabled = !!next;
+  if (window.piTurnSummaryMode?.setEnabled) window.piTurnSummaryMode.setEnabled(enabled);
+  else {
+    try {
+      if (enabled) localStorage.setItem("pi-agent:turn-summary-mode:v1", "1");
+      else localStorage.removeItem("pi-agent:turn-summary-mode:v1");
+    } catch { /* 忽略 */ }
+    window.dispatchEvent(new CustomEvent("pi-turn-summary-mode-change", { detail: { enabled } }));
+  }
+  announce(enabled ? "已开启回合汇总模式" : "已关闭回合汇总模式");
+}
+if (!window.__rtTurnSummaryModeBound) {
+  window.__rtTurnSummaryModeBound = true;
+  window.addEventListener("pi-turn-summary-mode-change", () => {
+    if (typeof ui !== "undefined" && ui.view === "rt" && ui.rt?.view) rtRenderSoft();
+  });
+}
+
+function rtTurnSummaryMenuItem({ menuRow = false, onToggle } = {}) {
+  const on = typeof rtTurnSummaryModeEnabled === "function" ? rtTurnSummaryModeEnabled() : false;
+  return h("button", {
+    type: "button",
+    role: "menuitemcheckbox",
+    "aria-checked": String(on),
+    class: menuRow ? "rt-more-item rt-more-toggle" : "btn small rt-more-toggle",
+    onclick: () => {
+      if (onToggle) onToggle();
+      rtSetTurnSummaryMode(!on);
+    }
+  },
+    h("span", { class: "rt-more-label" }, "回合汇总模式"),
+    h("span", { class: `rt-more-state${on ? " on" : ""}` }, on ? "已开启" : "已关闭"));
+}
+
 function rtDesktopDeployMore(s) {
   const control = rtDeployControl(s);
-  if (!control) return null;
-  const menu = h("div", { id: "rt-deploy-more", popover: "auto", role: "dialog", class: "rt-deploy-more-menu", "aria-label": "会话部署操作" }, control);
+  const singleChat = !s.roomRef && !s.comparisonRef && !s.projectRef;
+  if (!control && !singleChat) return null;
+  const menu = h("div", { id: "rt-deploy-more", popover: "auto", role: "dialog", class: "rt-deploy-more-menu", "aria-label": "会话更多操作" },
+    control,
+    singleChat ? rtTurnSummaryMenuItem({ onToggle: () => { try { menu.hidePopover?.(); } catch { /* ignore */ } } }) : null);
   const button = h("button", { type: "button", class: "btn small rt-more-btn", "aria-label": "更多", "aria-expanded": "false", "aria-haspopup": "dialog", popovertarget: "rt-deploy-more" }, "⋯");
   menu.addEventListener("toggle", ev => {
     button.setAttribute("aria-expanded", String(ev.newState === "open"));
@@ -705,10 +805,12 @@ function rtHead(v) {
     const toggleSub = () => { if (ui.view !== "rt") return; ui.rt.subOpen = !subOpen; renderMain(); };
     const deployCtrl = managed && a && a.control ? rtDeployControl(s, { menuRow: true }) : null;
     const canArchive = managed && a && a.control && !busy;
-    // 「⋮」里只有部署 / 归档两件事：都没有（比如不是平台管理的会话、归档中）时不显示入口，避免弹出空菜单
+    const singleChat = managed && a && a.control && !s.roomRef && !s.comparisonRef && !s.projectRef;
+    // 「⋮」里放部署、归档与受管单聊的回合汇总模式开关；只读会话不弹出空菜单
     const moreActions = [
       deployCtrl ? h("div", { class: "rt-more-deploy" }, deployCtrl) : null,
       canArchive ? h("button", { type: "button", role: "menuitem", class: "rt-more-item", onclick: (ev) => { rtToggleMore(false); void rtArchive(entry, !entry.archived, ev.currentTarget); } }, h("span", { class: "rt-more-label" }, entry.archived ? "恢复" : "归档")) : null,
+      singleChat ? rtTurnSummaryMenuItem({ menuRow: true, onToggle: () => rtToggleMore(false) }) : null,
     ].filter(Boolean);
     if (!moreActions.length) ui.rt.moreOpen = false;
     const more = moreActions.length ? h("div", { class: `rt-more${ui.rt.moreOpen ? " open" : ""}` },
@@ -803,7 +905,7 @@ function rtDeployNoticeDone(sha, since, requestId, deployedSha) {
 /**
  * 部署各阶段统一显示一行「阶段 · 提交号」；进行中的阶段在标题后加本阶段已用时，说明、时间和操作点开查看。
  */
-function rtDeployStatusRow({ title, tone, summary, detail, sha, at, key, state, request, timed, totalMs }) {
+function rtDeployStatusRow({ title, tone, summary, detail, sha, at, key, state, request, timed, totalMs, extra }) {
   const description = detail || summary;
   const iso = at ? String(at).replace(" ", "T") : "";
   const ms = Date.parse(iso);
@@ -831,7 +933,8 @@ function rtDeployStatusRow({ title, tone, summary, detail, sha, at, key, state, 
       h("div", { class: "rt-system-actions" }, time,
         request ? h("button", { type: "button", class: "btn small", "aria-label": `${rtDeployLabel(request)}，查看部署进度`, onclick: (ev) => { ev.preventDefault(); rtOpenDeployProgress(request, ev.currentTarget); } }, "查看部署进度") : null,
         rtCopyButton(description, "复制", { announce: "已复制部署说明" })),
-      h("p", { class: "rt-system-detail" }, description)),
+      h("p", { class: "rt-system-detail" }, description),
+      extra ? extra() : null),
     null, `${rtId()}:deploy-status:${key}`));
 }
 /** 时间线末尾的部署状态行是否在显示（聊天页，且没在翻更早的记录）：部署说明只在它和悬停提示里出现 */
@@ -844,22 +947,26 @@ function rtDeployStatusNode(includeHistory = false) {
   const d = st && st.info;
   if (!d) return null;
   const mine = rtDeployMine(d, id);
+  const gateTarget = rtDeployGateTarget(id, includeHistory);
   if (mine) {
     // 结果通知已到达、只是排队文件还没被下一次轮询清掉：不要同时显示「部署中」和结果消息
     if (rtDeployNoticeDone(mine.sha, mine.requestedAt, mine.id)) return null;
     const started = !!mine.startedAt;
     const ready = mine.progress?.phase === "ready";
     const what = `${rtSha(mine.sha)}${mine.subject ? `（${mine.subject}）` : ""}`;
+    const gate = gateTarget?.kind === "mine" ? gateTarget.verify : null;
     return rtDeployStatusRow({
-      title: rtDeployLabel(mine),
+      extra: gate ? () => rtVerifyGateSection(gate, id) : null,
+      // 门禁失败后自动重试的部署：标题上直接带第几次，累计和分段耗时在折叠里
+      title: rtDeployLabel(mine) + (d.gateRetry ? ` · 第${d.gateRetry.attempts.length}次重试` : ""),
       sha: rtSha(mine.sha),
       request: mine,
       tone: started && !["idle", "waiting"].includes(mine.progress?.phase) ? "accent" : "warn",
       // 一行就能看完的短语：排队说在等什么，部署中说到哪一步；完整说明在折叠里
-      summary: started ? (mine.progress?.detail || "正在确认发布阶段") : (mine.wait?.short || "等所有会话停下来"),
-      detail: started
+      summary: (d.gateRetry ? `自动重试第 ${d.gateRetry.attempts.length} 次 · ` : "") + (started ? (mine.progress?.detail || "正在确认发布阶段") : (mine.wait?.short || "等所有会话停下来")),
+      detail: (started
         ? `${rtDeployWaitText(mine)}。点击「查看部署进度」看每一步。`
-        : `已登记部署 ${what}${mine.wait?.detail ? `：${mine.wait.detail}` : "：等所有会话停下来后开始"}。结果会更新到这条消息。`,
+        : `已登记部署 ${what}${mine.wait?.detail ? `：${mine.wait.detail}` : "：等所有会话停下来后开始"}。结果会更新到这条消息。`) + rtGateRetryTail(d),
       at: mine.progress?.since || mine.startedAt || mine.requestedAt,
       key: `deploy:${mine.id}:${started ? "started" : "pending"}`,
       state: started ? "started" : "pending",
@@ -869,8 +976,10 @@ function rtDeployStatusNode(includeHistory = false) {
   }
   const ar = d.autoResolve;
   if (ar && ar.phase !== "queued") {
+    const gate = gateTarget?.kind === "autoResolve" ? gateTarget.verify : null;
     return rtDeployStatusRow({
-      title: ar.phase === "resolving" ? "解决部署冲突中" : "部署待处理",
+      extra: gate ? () => rtVerifyGateSection(gate, id) : null,
+      title: ar.phase === "resolving" ? (ar.stage === "gate" ? `自动修复重试 ${ar.attempts}/${ar.max || 3}` : "解决部署冲突中") : "部署待处理",
       tone: ar.phase === "resolving" ? "accent" : "bad",
       summary: ar.phase === "resolving" ? "这一轮结束后自动重新提交部署" : `自动部署需要你处理：${ar.reason || (ar.conflicts || []).join("、") || "会话没能自动解决冲突"}`,
       detail: ar.phase === "resolving" ? `${rtAutoResolveText(d)}。` : rtAutoResolveText(d),
@@ -880,19 +989,9 @@ function rtDeployStatusNode(includeHistory = false) {
       timed: ar.phase === "resolving",
     });
   }
-  const last = d.last;
-  if (!last?.sha || rtDeployNoticeDone(last.sha, last.atMs ? new Date(last.atMs).toISOString() : last.at, last.requestId, last.deployedSha)) return null;
-  // 工具/推理事件可能没有 occurredAt；不能仅看数组末项。
-  const resultMs = Number(last.atMs) || Date.parse(String(last.at || "").replace(" ", "T")) || 0;
-  const timed = (ui.rt.events || []).map(e => ({ e, ms: Date.parse(e.occurredAt || "") })).filter(x => Number.isFinite(x.ms));
-  const eventMs = Math.max(0, ...timed.map(x => x.ms));
-  const session = ui.rt.view.session;
-  const turn = session.turns?.at(-1) || session.latestTurn;
-  const turnMs = Date.parse(turn?.startedAt || turn?.queuedAt || "") || 0;
-  const historical = resultMs && resultMs < Math.max(eventMs, turnMs);
-  const next = historical ? timed.find(x => x.ms > resultMs)?.e : null;
-  // 仅在加载窗口覆盖结果时间时补历史状态；已有真实通知时由上面的去重逻辑保留原位。
-  if (historical && (!includeHistory || !next || !timed.some(x => x.ms <= resultMs))) return null;
+  const lastState = rtDeployLastState(d, includeHistory);
+  if (!lastState) return null;
+  const { last, resultMs, historical, next } = lastState;
   const [title, tone] = RT_DEPLOY_DONE_LABEL[last.state] || RT_DEPLOY_DONE_LABEL.unknown;
   const what = `${rtSha(last.sha)}${last.subject ? `（${last.subject}）` : ""}`;
   // 提交号提到标题旁（与自动部署通知同口径），说明只在正文里说事
@@ -903,7 +1002,8 @@ function rtDeployStatusNode(includeHistory = false) {
     cancelled: "部署请求已取消。",
     expired: "等空闲超时，已放弃。",
   }[last.state] || "部署结果未知。";
-  const node = rtDeployStatusRow({ title, tone, sha: rtSha(last.deployedSha || last.sha), summary, at: resultMs ? new Date(resultMs).toISOString() : last.at, key: `deploy:${last.sha}:${last.state}:${last.at}`, state: last.state, totalMs: last.durationMs });
+  const gate = gateTarget?.kind === "last" ? gateTarget.verify : null;
+  const node = rtDeployStatusRow({ title, tone, sha: rtSha(last.deployedSha || last.sha), summary, at: resultMs ? new Date(resultMs).toISOString() : last.at, key: `deploy:${last.sha}:${last.state}:${last.at}`, state: last.state, totalMs: last.durationMs, extra: gate ? () => rtVerifyGateSection(gate, id) : null });
   if (historical) node.dataset.deployBefore = String(next.seq);
   return node;
 }
@@ -922,6 +1022,216 @@ function rtPatchDeployStatus(box = document.querySelector(".rt-transcript")) {
   if (tail) tail.before(node); else box.append(node);
   if (ui.rt.atBottom) box.scrollTop = box.scrollHeight;
 }
+const RT_VERIFY_STEP_ZH = { starting: "启动中", running: "运行中", succeeded: "通过", failed: "失败", timed_out: "超时", cancelled: "已取消", interrupted: "中断" };
+function rtVerifyNoticeDone(jobId) {
+  if (!jobId) return false;
+  return (ui.rt.events || []).some((e) => typeof e.text === "string" && e.text.includes(`[pi-agent 自动验证通知] 任务 ${jobId}`));
+}
+function rtCurrentVerify(id) {
+  const entry = typeof rtDirEntry === "function" ? rtDirEntry(id) : null;
+  if (entry && entry.verify) return entry.verify;
+  return ui.rt.verify && ui.rt.verify.id === id ? ui.rt.verify.data : null;
+}
+async function rtCancelVerify(id, jobId, btn) {
+  if (!id || !jobId) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api(`/api/runtime-sessions/${encodeURIComponent(id)}/verify/${encodeURIComponent(jobId)}/cancel`, { method: "POST", body: "{}" });
+    if (r?.verify) ui.rt.verify = { id, data: r.verify };
+    announce(r?.note || "已请求取消验证");
+    void rtLoadDir({ background: true });
+    rtPatchVerifyStatus();
+  } catch (e) {
+    announce(`取消验证失败：${e.message}`);
+    if (btn) btn.disabled = false;
+  }
+}
+function rtVerifySummary(v) {
+  return v.report?.summary
+    || (v.workerStale ? "心跳超过 30 秒未更新，验证服务可能已停止。" : "")
+    || (v.active && v.cancelRequested ? "已发送取消请求，正在清理步骤进程…" : "")
+    || v.stateReason
+    || (v.currentStep ? `正在执行步骤：${v.currentStep}` : (v.state === "created" || v.state === "queued" ? "已加入验证队列，等待执行…" : "等待结果…"));
+}
+/** 验证详情正文：独立验证行和并入部署行的「部署门禁」小节共用；merged 时时间与复制交给外层部署行 */
+function rtVerifyDetailBody(v, id, time, merged = false) {
+  const summary = rtVerifySummary(v);
+  const staleNote = v.report?.stale ? "注意：代码在验证期间又改过，此结果不能证明当前版本通过。" : "";
+  const copyText = [`${rtVerifyMeta(v).label}（${v.profile} · ${v.jobId}）`, summary, staleNote].filter(Boolean).join("\n");
+  const canControl = !!ui.rt.access?.control;
+  return h("div", {},
+    h("div", { class: "rt-system-actions" },
+      merged ? null : time,
+      h("span", { class: "muted small rt-verify-jobid" }, v.jobId),
+      v.active && !v.cancelRequested && canControl
+        ? h("button", { type: "button", class: "btn small", onclick: (ev) => { ev.preventDefault(); void rtCancelVerify(id, v.jobId, ev.currentTarget); } }, "取消验证")
+        : null,
+      merged ? null : rtCopyButton(copyText, "复制", { announce: "已复制验证摘要" })),
+    h("p", { class: "rt-system-detail" }, summary),
+    staleNote ? h("p", { class: "rt-system-detail muted small" }, staleNote) : null,
+    v.steps?.length ? h("ul", { class: "rt-verify-steps" }, ...v.steps.map((s) =>
+      h("li", { class: "rt-verify-step" },
+        h("span", { class: "rt-verify-step-name" }, s.name),
+        h("span", { class: `rt-verify-step-state ${s.state === "succeeded" ? "ok" : ["failed", "timed_out"].includes(s.state) ? "bad" : ""}`.trim() },
+          `${RT_VERIFY_STEP_ZH[s.state] || s.state}${s.exitCode != null && s.exitCode !== 0 ? `（退出码 ${s.exitCode}）` : ""}`)))) : null,
+    v.report?.locations?.length ? h("ul", { class: "rt-verify-locs" }, ...v.report.locations.slice(0, 3).map((l) =>
+      h("li", { class: "rt-verify-loc" }, `${l.file}:${l.line}${l.code ? ` ${l.code}` : ""}`))) : null);
+}
+/** 解析时间戳（兼容 "YYYY-MM-DD HH:MM:SS" 与 ISO 字符串），无效返回 NaN。 */
+function rtParseMs(at) {
+  if (typeof at === "number") return Number.isFinite(at) ? at : NaN;
+  if (!at) return NaN;
+  return Date.parse(String(at).replace(" ", "T"));
+}
+/** 验证任务是否不晚于对应部署结果（允许 60 秒落盘/时钟偏差），避免旧部署结果误吞更新的门禁。 */
+function rtVerifyMatchesDeployAt(v, deployMs) {
+  if (!Number.isFinite(deployMs) || deployMs <= 0) return true;
+  const verifyMs = rtParseMs(v.endedAt || v.startedAt || v.createdAt);
+  return !Number.isFinite(verifyMs) || verifyMs <= deployMs + 60_000;
+}
+/** 计算 d.last 部署结果状态行是否应在当前时间线渲染及其定位信息。 */
+function rtDeployLastState(d, includeHistory = true) {
+  const last = d?.last;
+  if (!last?.sha || rtDeployNoticeDone(last.sha, last.atMs ? new Date(last.atMs).toISOString() : last.at, last.requestId, last.deployedSha)) return null;
+  // 工具/推理事件可能没有 occurredAt；不能仅看数组末项。
+  const resultMs = Number(last.atMs) || rtParseMs(last.at) || 0;
+  const timed = (ui.rt.events || []).map(e => ({ e, ms: Date.parse(e.occurredAt || "") })).filter(x => Number.isFinite(x.ms));
+  const eventMs = Math.max(0, ...timed.map(x => x.ms));
+  const session = ui.rt.view?.session;
+  const turn = session?.turns?.at(-1) || session?.latestTurn;
+  const turnMs = Date.parse(turn?.startedAt || turn?.queuedAt || "") || 0;
+  const historical = resultMs && resultMs < Math.max(eventMs, turnMs);
+  const next = historical ? timed.find(x => x.ms > resultMs)?.e : null;
+  // 仅在加载窗口覆盖结果时间时补历史状态；已有真实通知时由上面的去重逻辑保留原位。
+  if (historical && (!includeHistory || !next || !timed.some(x => x.ms <= resultMs))) return null;
+  return { last, resultMs, historical, next };
+}
+/**
+ * 决定当前会话的 deploy-gate 验证应并入哪一条部署记录（进行中 / 自动修复 / 部署成功或失败状态行 / 真实自动部署通知），
+ * 不再在部署进行中或结束后拆成「验证」和「部署」两条并列系统消息。
+ */
+function rtDeployGateTarget(id, includeHistory = true) {
+  const v = rtCurrentVerify(id);
+  if (!v || v.profile !== "deploy-gate") return null;
+  const d = ui.rt.deploy && ui.rt.deploy.id === id ? ui.rt.deploy.info : null;
+  const mine = d && rtDeployMine(d, id);
+  if (mine && !rtDeployNoticeDone(mine.sha, mine.requestedAt, mine.id)) {
+    if (!mine.ended || !v.active) return { kind: "mine", verify: v };
+    return null;
+  }
+  const ar = d?.autoResolve;
+  if (ar && ar.phase !== "queued") {
+    return !v.active ? { kind: "autoResolve", verify: v } : null;
+  }
+  if (!v.active && d?.last?.sha) {
+    const lastState = rtDeployLastState(d, includeHistory);
+    if (lastState) {
+      return rtVerifyMatchesDeployAt(v, lastState.resultMs) ? { kind: "last", verify: v } : null;
+    }
+    const lastDone = rtDeployNoticeDone(d.last.sha, d.last.atMs ? new Date(d.last.atMs).toISOString() : d.last.at, d.last.requestId, d.last.deployedSha);
+    const lastMs = Number(d.last.atMs) || rtParseMs(d.last.at) || 0;
+    if (!lastDone && rtVerifyMatchesDeployAt(v, lastMs)) return { kind: "suppressed", verify: v };
+  }
+  if (!v.active) {
+    const events = ui.rt.events || [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (!rtDeploymentNotice(ev)) continue;
+      return rtVerifyMatchesDeployAt(v, rtParseMs(ev.occurredAt)) ? { kind: "notice", eventKey: ev.key, verify: v } : null;
+    }
+  }
+  return null;
+}
+function rtDeployGateVerify(id, mine) {
+  if (!mine || mine.ended) return null;
+  const v = rtCurrentVerify(id);
+  return v && v.profile === "deploy-gate" ? v : null;
+}
+function rtVerifyGateSection(v, id) {
+  const m = rtVerifyMeta(v);
+  return h("div", { class: "rt-deploy-gate", "data-deploy-gate-verify": v.state },
+    h("p", { class: "rt-system-detail muted small" }, `部署门禁 · ${m.label}`),
+    rtVerifyDetailBody(v, id, null, true));
+}
+/** 时间线里的「自动部署通知」折叠展开时附带对应的已结束 deploy-gate 详情。 */
+function rtDeployNoticeGateSection(e, sid) {
+  const target = rtDeployGateTarget(sid);
+  return target && target.kind === "notice" && target.eventKey === e.key ? rtVerifyGateSection(target.verify, sid) : null;
+}
+/** 验证数据异步到达或更新时，同步刷新已展开的「自动部署通知」里的门禁小节。 */
+function rtPatchDeployNoticeGate(box, id, target) {
+  for (const old of box.querySelectorAll(".rt-deployment-notice .rt-deploy-gate")) old.remove();
+  if (!target || target.kind !== "notice") return;
+  const row = [...box.querySelectorAll(".rt-deployment-notice")].find((n) => n.dataset.evKey === target.eventKey);
+  const details = row?.querySelector("details.rt-system-details");
+  if (!details?.open) return;
+  const body = [...details.children].find((el) => el.tagName !== "SUMMARY");
+  if (!body) return;
+  const gateNode = rtVerifyGateSection(target.verify, id);
+  const flags = body.querySelector(":scope > .rt-row-flags");
+  if (flags) flags.before(gateNode); else body.append(gateNode);
+}
+/** 会话详情时间线末尾的验证状态行：完全复用部署状态行的单行折叠样式。 */
+function rtVerifyStatusRow(v) {
+  const m = rtVerifyMeta(v);
+  if (!m) return null;
+  const id = rtId();
+  const iso = String(v.startedAt || v.createdAt || "").replace(" ", "T");
+  const ms = Date.parse(iso);
+  const time = Number.isFinite(ms)
+    ? h("time", { class: "rt-time", datetime: iso, title: "北京时间（UTC+8）" }, new Date(ms).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, hour: "2-digit", minute: "2-digit" }))
+    : null;
+  const elapsed = m.active && Number.isFinite(ms)
+    ? h("span", { class: "rt-system-elapsed", "data-rt-deploy-row-start": iso, title: "本次验证已用时" }, rtDeployDuration(Date.now() - ms))
+    : null;
+  const total = !elapsed && Number.isFinite(v.totalMs)
+    ? h("span", { class: "rt-system-elapsed", title: "本次验证总耗时" }, `总耗时${rtDeployDuration(v.totalMs)}`)
+    : null;
+  const head = h("span", { class: "rt-system-head" },
+    h("span", { class: `rt-system-result ${m.tone}`.trim() }, m.label),
+    elapsed || total,
+    h("span", { class: "rt-system-commit" }, `· ${v.profile}`),
+    h("span", { class: "rt-system-caret", "aria-hidden": "true" }, "›"));
+  const key = `verify:${v.jobId}:${v.active ? "active" : v.state}`;
+  return h("section", {
+    class: "rt-row rt-system-message rt-deploy-status rt-verify-status rt-system-compact",
+    "data-verify-status": key, "data-verify-state": v.state, role: "status", "aria-label": "验证状态"
+  }, rtLazyFold({ class: "rt-system-details" },
+    h("summary", { "aria-label": `${m.label}，展开或收起验证详情`, title: rtVerifySummary(v) }, head),
+    () => rtVerifyDetailBody(v, id, time),
+    null, `${id}:verify-status:${v.jobId}`));
+}
+/** 门禁验证已归属到部署状态行或部署通知，不再单独成行。 */
+function rtDeployGateMerged(id) {
+  return !!rtDeployGateTarget(id);
+}
+function rtVerifyStatusNode() {
+  if (!rtDeployStatusVisible()) return null;
+  const id = rtId();
+  if (!id || ui.rt.view?.session?.platformSessionId !== id) return null;
+  const v = rtCurrentVerify(id);
+  if (!v) return null;
+  if (!v.active && v.profile === "deploy-gate") return null;
+  if (!v.active && rtVerifyNoticeDone(v.jobId)) return null;
+  if (rtDeployGateMerged(id)) return null;
+  return rtVerifyStatusRow(v);
+}
+function rtPatchVerifyStatus(box = document.querySelector(".rt-transcript")) {
+  if (!box) return;
+  box.querySelector("[data-verify-status]")?.remove();
+  const id = rtId();
+  const target = rtDeployGateTarget(id);
+  // 门禁验证并在部署状态行里：验证数据变了要重绘部署行；若原本并入、现在切回独立验证，也同步清理残留门禁小节
+  if ((target && ["mine", "autoResolve", "last"].includes(target.kind)) || box.querySelector("[data-deploy-status] .rt-deploy-gate")) {
+    rtPatchDeployStatus(box);
+  }
+  rtPatchDeployNoticeGate(box, id, target);
+  const node = rtVerifyStatusNode();
+  if (!node) return;
+  const anchor = box.querySelector("[data-deploy-status]:not([data-deploy-before])") || box.querySelector(".rt-tail");
+  if (anchor) anchor.before(node); else box.append(node);
+  if (ui.rt.atBottom) box.scrollTop = box.scrollHeight;
+}
 /** 把占位气泡、「思考中」与部署状态维持在时间线末尾（真实行之前）：真实消息到达或发送失败后由 rtOutgoing 自动消失 */
 function rtPatchOutgoing() {
   const box = document.querySelector(".rt-transcript");
@@ -929,9 +1239,10 @@ function rtPatchOutgoing() {
   box.querySelectorAll("[data-outgoing], [data-thinking]").forEach((n) => n.remove());
   const nodes = [rtOutgoingNode(), rtThinkingNode()].filter(Boolean);
   // 状态行先占住末尾之前的位置；占位气泡与「思考中」紧贴状态行，不插到它后面
-  const anchor = box.querySelector("[data-deploy-status]:not([data-deploy-before])") || box.querySelector(".rt-tail");
+  const anchor = box.querySelector("[data-verify-status], [data-deploy-status]:not([data-deploy-before])") || box.querySelector(".rt-tail");
   for (const node of nodes) { if (anchor) anchor.before(node); else box.append(node); }
-  rtPatchDeployStatus();
+  rtPatchDeployStatus(box);
+  rtPatchVerifyStatus(box);
   if (ui.rt.atBottom) box.scrollTop = box.scrollHeight;
 }
 
@@ -966,6 +1277,7 @@ function rtTranscript(v) {
   rtThinkingNode(),
   h("div", { class: "rt-tail" }));
   rtPatchDeployStatus(box);
+  rtPatchVerifyStatus(box);
   // 手机下拉／PC 向上滚：在消息区顶端加载更早的记录，别让浏览器整页刷新
   sessionPullEarlier(box, { hasMore: () => !!ui.rt.hasMoreBefore, onLoad: () => rtLoadEarlier({ manual: true }) });
   // 首次渲染：跟随底部
@@ -1201,7 +1513,7 @@ async function rtInterruptSession(id) {
     await rtLoadView(id, ui.rt.gen); rtRenderSoft();
 }
 
-function rtComposer(v, recoveryText) {
+function rtComposer(v, recoveryText, directOpts) {
   const s = v.session;
   const id = s.platformSessionId;
   const a = ui.rt.access;
@@ -1234,7 +1546,10 @@ function rtComposer(v, recoveryText) {
   const queueSession = { ...s, outbox: [...outbox, ...deploymentMessages] };
   const storedDraft = ui.rt.drafts[id] ?? rtImageDraft(id).text ?? "";
   const draft = storedDraft || String(pendingSend?.prompt || "");
-  const enqueue = () => a?.draining ? send() : rtOutboxEnqueue(id, s);
+  const enqueue = async () => {
+    if (a?.draining) return send();
+    if (await rtQuotaLowGate(id, s)) return rtOutboxEnqueue(id, s);
+  };
   // quick：点击快捷回复时直接发送这段文字；不读取、不清空输入框里的草稿与图片
   const send = async (quick) => {
     if (ui.rt.statusConfirmed === false) return;
@@ -1251,6 +1566,7 @@ function rtComposer(v, recoveryText) {
       if (imageError) { ui.rt.error = imageError; rtRenderSoft(); return; }
       // 信封里可能还带着上次没确认的图片：正文和本地图片都空时也要允许重发
       if ((!text && !rtImageIds(id).length && !pending?.attachmentIds?.length) || ui.rt.busy) return;
+      if (!pending && !(await rtQuotaLowGate(id, s))) return;
     }
     const key = isQuick ? rtKey() : pending?.key || ui.rt.sendKey || (ui.rt.sendKey = rtKey());
     // 乐观上屏：输入框立刻清空，并把这条消息放到时间线末尾标「发送中」，后台再发请求；真实消息到达后自动替换
@@ -1262,9 +1578,12 @@ function rtComposer(v, recoveryText) {
     const submitOp = window.piTelemetry?.op?.('message-submit');
     try {
       const effort = pending ? pending.effort : ui.rt.turnEffort[id];
-      const envelope = pending || {key, prompt: text, attachmentIds: isQuick ? [] : rtImageIds(id), expectedRevision: s.bindingRevision, ...(effort ? {effort} : {})};
+      // 缓存变冷时用户在输入框上方选过「新开会话」或「继续旧会话」：只用这一次
+      const coldChoice = ui.rt.cacheChoice?.id === id ? ui.rt.cacheChoice.mode : "";
+      ui.rt.cacheChoice = null;
+      const envelope = pending || {key, prompt: text, attachmentIds: isQuick ? [] : rtImageIds(id), expectedRevision: s.bindingRevision, ...(effort ? {effort} : {}), ...(coldChoice ? {cacheHandoff: coldChoice} : {})};
       if (!isQuick) { rtImageDraft(id).pending = envelope; rtSaveImageDraft(id); }
-      const accepted=await api(`/api/runtime-sessions/${id}/turns`, { method: "POST", onDeploymentWait: () => { void rtLoadDeploymentQueue(id, sendGen).then(() => { if (rtReadCurrent(id, sendGen)) rtRenderSoft(); }); submitOp?.cancel('deploy-queued'); if (!isQuick) ui.rt.deployWait = { id, key }; if (rtReadCurrent(id, sendGen)) { ui.rt.flash = isQuick ? "消息已排队，部署完成后自动发送" : ""; rtRenderSoft(); } }, body: JSON.stringify({ idempotencyKey: key, prompt: envelope.prompt, attachmentIds: envelope.attachmentIds, expectedRevision: envelope.expectedRevision, ...(effort ? { effort } : {}) }) });
+      const accepted=await api(`/api/runtime-sessions/${id}/turns`, { method: "POST", onDeploymentWait: () => { void rtLoadDeploymentQueue(id, sendGen).then(() => { if (rtReadCurrent(id, sendGen)) rtRenderSoft(); }); submitOp?.cancel('deploy-queued'); if (!isQuick) ui.rt.deployWait = { id, key }; if (rtReadCurrent(id, sendGen)) { ui.rt.flash = isQuick ? "消息已排队，部署完成后自动发送" : ""; rtRenderSoft(); } }, body: JSON.stringify({ idempotencyKey: key, prompt: envelope.prompt, attachmentIds: envelope.attachmentIds, expectedRevision: envelope.expectedRevision, ...(effort ? { effort } : {}), ...(envelope.cacheHandoff ? { cacheHandoff: envelope.cacheHandoff } : {}) }) });
       submitOp?.success();
       await rtLoadDeploymentQueue(id, sendGen);
       if (ui.rt.deployWait?.id === id && ui.rt.deployWait.key === key) ui.rt.deployWait = null;
@@ -1274,6 +1593,12 @@ function rtComposer(v, recoveryText) {
         outgoing.accepted=true;
         const turn=accepted.session?.turns?.find(t=>t.operationId===accepted.operation?.operationId);
         if(turn?.clientMessageId)outgoing.eventKey='user:'+turn.clientMessageId;
+      }
+      if(accepted.handedOffFrom && accepted.session?.platformSessionId && accepted.session.platformSessionId!==id){
+        // 新开了接续会话（旧会话已归档）：直接切到新会话，消息已经作为它的第一轮发出
+        if(ui.rt.outgoing?.[id]===outgoing)delete ui.rt.outgoing[id];
+        if(rtReadCurrent(id,sendGen)){ui.rt.busy='';ui.rt.flash='';announce("已新开会话接续，旧会话已归档");location.hash=`#/rt/${encodeURIComponent(accepted.session.platformSessionId)}`;}
+        return;
       }
       if(rtReadCurrent(id,sendGen)){
         ui.rt.atBottom=true;
@@ -1285,7 +1610,10 @@ function rtComposer(v, recoveryText) {
       if (ui.rt.deployWait?.id === id && ui.rt.deployWait.key === key) ui.rt.deployWait = null;
       if(ui.rt.outgoing?.[id]===outgoing)delete ui.rt.outgoing[id]; if(rtReadCurrent(id,sendGen))rtPatchOutgoing();
       if (!isQuick) { ui.rt.drafts[id] = raw; rtSaveImageDraft(id, raw); }
-      if(rtReadCurrent(id,sendGen)){ui.rt.error = e.message; announce(`发送失败：${e.message}`);}
+      if(rtReadCurrent(id,sendGen)){
+        if (e.code === "RT_CACHE_COLD" && e.details) { ui.rt.error = ""; ui.rt.coldPrompt = { id, details: e.details, ...(isQuick ? { quick } : {}) }; announce("缓存已过期，请选择继续旧会话还是新开会话"); }
+        else { ui.rt.error = e.message; announce(`发送失败：${e.message}`); }
+      }
       // 冲突/拒绝：换新键再试；网络错误保留原键（重试不会重复执行）
       if (!isQuick && e.status && e.status < 500) { if(ui.rt.sendKey===key)ui.rt.sendKey = null; delete rtImageDraft(id).pending; rtSaveImageDraft(id); }
     }
@@ -1294,8 +1622,11 @@ function rtComposer(v, recoveryText) {
       void rtLoadView(id,sendGen).then(()=>{if(rtReadCurrent(id,sendGen)){rtRenderSoft();rtPatchOutgoing();}});
     }
   };
-  // 状态卡复用同一发送逻辑（幂等、权限和失败恢复均与输入区一致）。
-  if (typeof recoveryText === "string") return !blocked && !running && rtRecoveryCanSend(s) ? send(recoveryText) : undefined;
+  // 状态卡与回合收束卡片复用同一发送逻辑（幂等、权限和失败恢复均与输入区一致）。
+  if (typeof recoveryText === "string") {
+    if (directOpts && directOpts.quickReply) return !blocked && !running && s.sourceMode === "platform-managed" && a && a.control ? send(recoveryText) : undefined;
+    return !blocked && !running && rtRecoveryCanSend(s) ? send(recoveryText) : undefined;
+  }
   const stop = () => rtInterruptSession(id);
   const resume = async () => {
     if (ui.rt.statusConfirmed === false) return;
@@ -1317,6 +1648,8 @@ function rtComposer(v, recoveryText) {
     rtComposerFlash(),
     rtAutoResolveNote(id),
     rtRecoveryState() ? null : rtQuotaResumeNote(s, !!(a && a.control)),
+    rtHandoffNote(s),
+    rtColdCachePanel(id, send),
     pendingSend && !deployQueued && !deploymentMessages.some(m => m.key === pendingSend.key) ? rtPendingSendNote(id, pendingSend, send, blocked) : null,
     s.conflict && a && a.control ? h("p", { class: "small" }, "确认没有 CLI / Desktop 在继续这个会话后，可以", h("button", { type: "button", class: "btn small", disabled: ui.rt.statusConfirmed === false || !!ui.rt.busy, onclick: resume }, "核对并恢复写入")) : null,
     queueSession.outbox.length ? rtOutboxPanel(queueSession, { canEdit: canQueue && canRun, canRemove: !blocked && rtOutboxAllowed(s) && !!canRun, running }) : null,
@@ -1426,6 +1759,22 @@ function rtOutboxDraftImages(attachments) {
 }
 
 /** 加入排队：先清空输入框（可以接着写下一条），失败时把内容放回去 */
+/**
+ * 余量 <3% 时发送 / 排队前的提醒：true = 照常发送；false = 已取消，或已预约到下个周期（并进入预约列表）。
+ * 自己长按选了预约时间的发送不走这里。
+ */
+async function rtQuotaLowGate(id, s) {
+  if (ui.rt.quotaLowOpen) return false;
+  if (!rtOutboxAllowed(s) || !rtOutboxHasDraft(id)) return true;
+  const low = rtQuotaLowInfo(s.runtimeKind, s.requestedModel || "", rtPickRateLimit(s, ui.rt.view?.rateLimit));
+  if (!low) return true;
+  ui.rt.quotaLowOpen = true;
+  let choice;
+  try { choice = await rtQuotaLowPrompt(low, "message"); } finally { ui.rt.quotaLowOpen = false; }
+  if (choice.action === "send") return true;
+  if (choice.action === "wait" && await rtOutboxEnqueue(id, s, low.at)) rtShowScheduledList();
+  return false;
+}
 async function rtOutboxEnqueue(id, s, scheduledFor) {
   if (ui.rt.statusConfirmed === false || ui.rt.outboxBusy === "enqueue" || rtImageDraft(id).pending) return;
   const imageError = rtImageError(id, s.runtimeKind, s.requestedModel || "");
@@ -1437,11 +1786,13 @@ async function rtOutboxEnqueue(id, s, scheduledFor) {
   const saved = rtImageDrafts[id];
   delete rtImageDrafts[id]; ui.rt.drafts[id] = ""; rtSaveImageDraft(id, "");
   ui.rt.outboxBusy = "enqueue"; ui.rt.error = ""; rtRenderSoft();
+  let ok = false;
   try {
     await rtOutboxCall(id, "outbox", { messageId, ...(scheduledFor ? { scheduledFor } : {}), prompt: text, attachmentIds: images.map(i => i.attachmentId), ...(effort ? { effort } : {}) });
     if (ui.rt.queueKey === messageId) ui.rt.queueKey = null;
     for (const i of images) rtImageFiles.delete(i.localId);
     announce(scheduledFor ? `已预约于 ${rtScheduleLabel(scheduledFor)}` : "已加入排队，本轮结束后按顺序发出");
+    ok = true;
   } catch (e) {
     // 放回输入框：期间又写了新内容就接在后面，不覆盖
     const now = String(ui.rt.drafts[id] ?? "");
@@ -1452,6 +1803,7 @@ async function rtOutboxEnqueue(id, s, scheduledFor) {
   }
   ui.rt.outboxBusy = "";
   if (rtId() === id) rtRenderSoft();
+  return ok;
 }
 
 async function rtOutboxAction(id, busy, fn, done) {
@@ -1683,12 +2035,12 @@ function rtQuickCacheRead(id, key) {
   const hit = rtQuickCacheAll()[id];
   if (!hit || hit.key !== key || !Array.isArray(hit.replies)) return null;
   const replies = hit.replies.filter((x) => x && x.label && x.text);
-  return replies.length ? { replies, ...(hit.deployment ? { deployment: hit.deployment } : {}), ...(hit.deploymentSha ? { deploymentSha: hit.deploymentSha } : {}) } : null;
+  return replies.length ? { replies, ...(hit.headline ? { headline: hit.headline } : {}), ...(hit.decision ? { decision: hit.decision } : {}), ...(hit.deployment ? { deployment: hit.deployment } : {}), ...(hit.deploymentSha ? { deploymentSha: hit.deploymentSha } : {}) } : null;
 }
 function rtQuickCacheWrite(id, key, entry) {
   try {
     const all = rtQuickCacheAll();
-    if (entry && entry.state === "ready" && entry.replies.length) all[id] = { key, at: Date.now(), replies: entry.replies, ...(entry.deployment ? { deployment: entry.deployment } : {}), ...(entry.deploymentSha ? { deploymentSha: entry.deploymentSha } : {}) };
+    if (entry && entry.state === "ready" && entry.replies.length) all[id] = { key, at: Date.now(), replies: entry.replies, ...(entry.headline ? { headline: entry.headline } : {}), ...(entry.decision ? { decision: entry.decision } : {}), ...(entry.deployment ? { deployment: entry.deployment } : {}), ...(entry.deploymentSha ? { deploymentSha: entry.deploymentSha } : {}) };
     else delete all[id];
     // 只保留最近用到的会话，避免这个本地记录无限增长。
     const items = Object.entries(all).sort((a, b) => Number(b[1]?.at || 0) - Number(a[1]?.at || 0));
@@ -1706,11 +2058,11 @@ function rtServerQuickReplies(id, key) {
   const q = s && s.platformSessionId === id ? s.quickReplies : null;
   if (!q || q.eventKey !== key || !Array.isArray(q.replies)) return null;
   const replies = q.replies.filter((x) => x && x.label && x.text);
-  return replies.length ? { replies, ...(q.deployment ? { deployment: q.deployment } : {}), ...(q.deploymentSha ? { deploymentSha: q.deploymentSha } : {}) } : null;
+  return replies.length ? { replies, ...(q.headline ? { headline: q.headline } : {}), ...(q.decision ? { decision: q.decision } : {}), ...(q.deployment ? { deployment: q.deployment } : {}), ...(q.deploymentSha ? { deploymentSha: q.deploymentSha } : {}) } : null;
 }
 function rtAdoptServerQuickReplies(id, key, srv) {
   const cur = ui.rt.quickReplies[id];
-  const same = cur && cur.key === key && cur.server && JSON.stringify(cur.replies) === JSON.stringify(srv.replies) && cur.deployment === srv.deployment && cur.deploymentSha === srv.deploymentSha;
+  const same = cur && cur.key === key && cur.server && JSON.stringify(cur.replies) === JSON.stringify(srv.replies) && (cur.headline || "") === (srv.headline || "") && (cur.decision || "") === (srv.decision || "") && cur.deployment === srv.deployment && cur.deploymentSha === srv.deploymentSha;
   if (same) return cur;
   const entry = { key, state: "ready", server: true, ...srv };
   ui.rt.quickReplies[id] = entry;
@@ -1735,7 +2087,7 @@ function rtLoadQuickReplies(id, key) {
     // 服务端看到的最后一条助手消息和本地不同（本地记录还没追上）：等本地更新后再按新 key 请求
     const replies = r.eventKey === key && Array.isArray(r.replies) ? r.replies.filter((x) => x && x.label && x.text) : [];
     // deployment=failed 是部署失败通知的可靠标记：自动重新部署必须同时看到它、首项 action 和「重新部署」文案。
-    const next = { key, state: r.state === "ready" && r.eventKey === key ? "ready" : "none", replies, ...(r.deployment ? { deployment: r.deployment } : {}), ...(r.deploymentSha ? { deploymentSha: r.deploymentSha } : {}) };
+    const next = { key, state: r.state === "ready" && r.eventKey === key ? "ready" : "none", replies, ...(r.headline ? { headline: r.headline } : {}), ...(r.decision ? { decision: r.decision } : {}), ...(r.deployment ? { deployment: r.deployment } : {}), ...(r.deploymentSha ? { deploymentSha: r.deploymentSha } : {}) };
     ui.rt.quickReplies[id] = next;
     // 服务端暂时不可用（模型没配置 / 生成失败）不覆盖上次的好结果；明确没有推荐才清掉
     if (r.state !== "unavailable" && r.eventKey === key) rtQuickCacheWrite(id, key, next);
@@ -1743,7 +2095,7 @@ function rtLoadQuickReplies(id, key) {
     const now = ui.rt.quickReplies[id];
     if (now?.key !== key) return;
     // 核对失败：有本机缓存就继续显示（点击时仍会重新核对），不再反复请求
-    ui.rt.quickReplies[id] = now.stale && now.state === "ready" ? { key, state: "ready", replies: now.replies, ...(now.deployment ? { deployment: now.deployment } : {}), ...(now.deploymentSha ? { deploymentSha: now.deploymentSha } : {}) } : { key, state: "error", replies: [] };
+    ui.rt.quickReplies[id] = now.stale && now.state === "ready" ? { key, state: "ready", replies: now.replies, ...(now.headline ? { headline: now.headline } : {}), ...(now.decision ? { decision: now.decision } : {}), ...(now.deployment ? { deployment: now.deployment } : {}), ...(now.deploymentSha ? { deploymentSha: now.deploymentSha } : {}) } : { key, state: "error", replies: [] };
   }).finally(() => { if (rtReadCurrent(id, gen)) rtRenderSoft(); });
 }
 
@@ -1882,10 +2234,8 @@ function rtQuickReplyButton(attrs, ...children) {
   return button;
 }
 
-function rtQuickReplyBar(id, revision, send, disabled) {
-  if (rtRecoveryState()) return null;
-  const key = rtLastAssistantKey();
-  if (!key) return null;
+function rtResolveQuickReplies(id, key, { fetch = true } = {}) {
+  if (!id || !key) return null;
   let cur = ui.rt.quickReplies[id];
   // 服务端已经算好并随会话详情到达：直接用，不请求、不等本机缓存
   const srv = rtServerQuickReplies(id, key);
@@ -1894,22 +2244,66 @@ function rtQuickReplyBar(id, revision, send, disabled) {
     // 本机有这条消息上次的结果：先显示，后台核对
     const cached = rtQuickCacheRead(id, key);
     cur = ui.rt.quickReplies[id] = cached ? { key, state: "ready", stale: true, ...cached } : undefined;
-    queueMicrotask(() => rtLoadQuickReplies(id, key));
+    if (fetch) queueMicrotask(() => rtLoadQuickReplies(id, key));
     if (!cur) return null;
-  } else if (cur.stale && !cur.fetching) queueMicrotask(() => rtLoadQuickReplies(id, key));
-  if (cur.state !== "ready" || !cur.replies.length) return null;
+  } else if (fetch && cur.stale && !cur.fetching) queueMicrotask(() => rtLoadQuickReplies(id, key));
+  return cur;
+}
+
+/** 构造一组快捷回复按钮；供输入框上方条与回合收束卡片「要你决定」区共用，绝不重复渲染。 */
+function rtRenderQuickReplyGroup(id, key, revision, cur, send, disabled, { inCard = false } = {}) {
   const qd = rtQuickDeployState(id);
   // 等本次渲染落地后再自动执行，避免在 render 里直接触发网络写操作。
   queueMicrotask(() => rtMaybeAutoRedeploy(id, key, revision, cur, disabled));
-  return h("div", { class: "rt-quick-replies", "data-session": id, "data-event": key, "data-revision": revision, hidden: rtOutboxHasDraft(id), role: "group", "aria-label": "快捷回复（点击直接发送）" },
-    ...cur.replies.map((r) => {
-      const busy = rtQuickBusyMatches(id, key, r.text);
-      return r.action === "deploy" ? rtQuickDeployChip(id, key, revision, r, send, disabled, qd, busy) : r.action === "archive" ? rtQuickArchiveChip(id, key, revision, r, disabled, busy) : rtQuickReplyButton({
+  return h("div", {
+    class: inCard ? "rt-quick-replies rt-tc-btns" : "rt-quick-replies",
+    "data-session": id, "data-event": key, "data-revision": revision,
+    hidden: !inCard && rtOutboxHasDraft(id),
+    role: "group", "aria-label": "快捷回复（点击直接发送）"
+  }, ...cur.replies.map((r, idx) => {
+    const busy = rtQuickBusyMatches(id, key, r.text);
+    const node = r.action === "deploy" ? rtQuickDeployChip(id, key, revision, r, send, disabled, qd, busy)
+      : r.action === "archive" ? rtQuickArchiveChip(id, key, revision, r, disabled, busy)
+      : rtQuickReplyButton({
         type: "button", class: "chip rt-quick-reply", disabled, title: r.text, "aria-label": `发送：${r.text}`, "aria-busy": busy ? "true" : null,
         // 发送时立即收起；失败后恢复，可再点或改为手动输入
         onclick: () => void rtQuickReplyClick(id, key, revision, r.text, send)
       }, rtQuickBusyMark(busy), r.label);
-    }));
+    if (inCard && idx === 0) node.classList.add("is-primary");
+    return node;
+  }));
+}
+
+/** 当前会话是否允许展示可点击的快捷回复（与 rtComposer 保持完全一致口径）。 */
+function rtQuickReplyCanShow(v = ui.rt.view) {
+  const s = v?.session;
+  const a = ui.rt.access;
+  if (!s || !a || !a.control || s.sourceMode !== "platform-managed") return false;
+  if (s.roomRef || s.comparisonRef || s.projectRef || s.archived || s.conflict || (s.worktree && s.worktree.removedAt) || !s.nativeSessionId) return false;
+  const running = ["creating", "running", "waiting-input", "stopping"].includes(s.status) || (s.turns || []).some((t) => t.status === "queued");
+  if (running || rtRecoveryState()) return false;
+  return true;
+}
+
+/** 回合收束卡片内嵌的快捷回复按钮组：只在最新一轮且有权限执行时显示。 */
+function rtTurnCardQuickReplies(id, key) {
+  const v = ui.rt.view;
+  if (!v || v.session?.platformSessionId !== id || rtLastAssistantKey() !== key || !rtQuickReplyCanShow(v)) return null;
+  const cur = rtResolveQuickReplies(id, key, { fetch: true });
+  if (!cur || cur.state !== "ready" || !cur.replies.length) return null;
+  const send = (text) => rtComposer(ui.rt.view, text, { quickReply: true });
+  return rtRenderQuickReplyGroup(id, key, v.session.bindingRevision, cur, send, !!ui.rt.busy || !!rtImageDraft(id).pending, { inCard: true });
+}
+
+function rtQuickReplyBar(id, revision, send, disabled) {
+  if (rtRecoveryState()) return null;
+  const key = rtLastAssistantKey();
+  if (!key) return null;
+  const cur = rtResolveQuickReplies(id, key, { fetch: true });
+  if (!cur || cur.state !== "ready" || !cur.replies.length) return null;
+  // 最新一轮已经由「回合收束卡片」承接快捷回复时，输入区上方不再重复显示。
+  if (typeof rtTurnCardOwnsQuickReplies === "function" && rtTurnCardOwnsQuickReplies(id, key, ui.rt.events)) return null;
+  return rtRenderQuickReplyGroup(id, key, revision, cur, send, disabled);
 }
 
 /** 这个会话能从页面部署（有「空闲时部署」按钮或被主工作区阻塞）时返回部署状态；不能或还没读到时返回 null */

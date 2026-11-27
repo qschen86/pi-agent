@@ -112,3 +112,31 @@ export function parseReleasesAtom(xml: string): Array<{ tag: string; updated?: s
   }
   return out;
 }
+
+/** `agy changelog` 的输出：`1.5.16:` 一行起头，后面每条以 `· ` 开头（条目可能很长，但都在一行里）。 */
+export function parseAgyChangelog(text: string): Array<{ version: string; notes: string }> {
+  const out: Array<{ version: string; notes: string }> = [];
+  let current: { version: string; lines: string[] } | null = null;
+  const flush = () => { if (current) out.push({ version: current.version, notes: current.lines.join("\n") }); };
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const head = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?):\s*$/.exec(line.trim());
+    if (head) { flush(); current = { version: head[1]!, lines: [] }; continue; }
+    const item = /^\s*[·•]\s+(.+)$/.exec(line);
+    if (item && current) current.lines.push(`- ${item[1]!.trim()}`);
+  }
+  flush();
+  return out;
+}
+
+/** antigravity.google/docs/changelog 的页面（服务端渲染 HTML）：CLI 面板里每个 `rel-cli-X.Y.Z` 条目取日期与全部列表项。 */
+export function parseAgyChangelogPage(html: string): Array<{ version: string; notes: string; publishedAt?: string }> {
+  const out: Array<{ version: string; notes: string; publishedAt?: string }> = [];
+  for (const block of String(html ?? "").split(/<article\b/).slice(1)) {
+    const head = /\bid="rel-cli-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"(?:[^>]*\bdata-release-time="(\d+)")?/.exec(block.slice(0, 600));
+    if (!head) continue;
+    const items = [...block.matchAll(/<li class="rn-item[^"]*">([\s\S]*?)<\/li>/g)].map((m) => decode(m[1]!.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()).filter(Boolean);
+    const at = head[2] ? new Date(Number(head[2])) : undefined;
+    out.push({ version: head[1]!, notes: items.map((t) => `- ${t}`).join("\n"), ...(at && Number.isFinite(at.getTime()) ? { publishedAt: at.toISOString() } : {}) });
+  }
+  return out;
+}

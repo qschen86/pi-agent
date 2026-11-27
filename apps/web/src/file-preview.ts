@@ -75,7 +75,8 @@ async function locateByTail(workspace:string,input:string):Promise<string|undefi
 /** 前文目录提示：消息里另写过的目录（如「在 docs/x/evidence/ 下」）；省略目录的相对路径先按这些目录拼，找不到再按末尾吻合找 */
 export const PREVIEW_HINT_MAX=8;
 const exists=(path:string)=>realpath(path).then(()=>true,()=>false);
-export async function readPreviewFile(scope:FileScope,input:string,hints:readonly string[]=[]){
+/** 定位 + 授权：点开读取（readPreviewFile）和消息渲染前的预检（checkPreviewFile）共用同一套判断，预检说能点就一定点得开 */
+async function resolvePreviewTarget(scope:FileScope,input:string,hints:readonly string[]){
  if(!isAbsolute(scope.workspace))return fail('无法定位消息所属工作目录',400,'RT_INPUT');
  const workspace=await workspaceLocation(scope.workspace);
  const roots=await Promise.all(scope.roots.map(r=>realpath(r).catch(()=>'')));
@@ -100,6 +101,21 @@ export async function readPreviewFile(scope:FileScope,input:string,hints:readonl
  }
  const info=await stat(path);if(!info.isFile())return fail('该地址不是文件',400,'RT_INPUT');
  if(info.size>PREVIEW_FILE_MAX)return fail('文件过大，预览上限为 25 MB',413,'FILE_TOO_LARGE');
+ return {target,path,info};
+}
+/** 只判断「用户点开能不能读到」，不读正文；失败原因就是点开时会看到的那句 */
+export async function checkPreviewFile(scope:FileScope,input:string,hints:readonly string[]=[]):Promise<{ok:true}|{ok:false;reason:string}>{
+ try{await resolvePreviewTarget(scope,input,hints);return {ok:true};}
+ catch(e){return {ok:false,reason:e instanceof FilePreviewError||e instanceof RuntimeError?e.message:'文件不可读取'};}
+}
+/** 消息渲染前的批量预检：refs 是重复的 ref 参数，每个是 {"path":..,"hints":[..]} 的 JSON；一次最多 30 条，逐条并发判断 */
+export const PREVIEW_CHECK_MAX=30;
+export async function checkPreviewFiles(scope:FileScope,rawRefs:readonly string[]){
+ const refs=rawRefs.slice(0,PREVIEW_CHECK_MAX).map(raw=>{try{const v=JSON.parse(raw);return typeof v?.path==='string'?{path:v.path as string,hints:Array.isArray(v.hints)?(v.hints as unknown[]).filter((h):h is string=>typeof h==='string'):[]}:null;}catch{return null;}});
+ return {files:await Promise.all(refs.map(async(ref,i)=>ref?{path:ref.path,...await checkPreviewFile(scope,ref.path,ref.hints)}:{path:'',ok:false as const,reason:`第 ${i+1} 条引用格式无效`}))};
+}
+export async function readPreviewFile(scope:FileScope,input:string,hints:readonly string[]=[]){
+ const {target,path,info}=await resolvePreviewTarget(scope,input,hints);
  const fd=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW).catch(()=>fail('文件不存在或没有读取权限',404,'RT_NOT_FOUND'));
  try{
   const current=await fd.stat();const again=await realpath(target).catch(()=>'');

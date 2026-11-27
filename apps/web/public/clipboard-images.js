@@ -14,13 +14,29 @@
     }
     return null;
   }
-  let nativeReady = false, nativeLinks = false;
-  const nativeStatus = window.piAndroidShell?.available ? window.piAndroidShell.call('shell.status').then(status => { nativeReady = status.capabilities?.includes('clipboard.read') === true; nativeLinks = status.capabilities?.includes('clipboard.links') === true; changed(); }).catch(() => {}) : Promise.resolve();
+  let nativeReady = false, nativeLinks = false, nativePrefs = false, userToggled = false;
+  const nativeStatus = window.piAndroidShell?.available ? window.piAndroidShell.call('shell.status').then(status => {
+    nativeReady = status.capabilities?.includes('clipboard.read') === true;
+    nativeLinks = status.capabilities?.includes('clipboard.links') === true;
+    nativePrefs = status.capabilities?.includes('clipboard.prefs') === true;
+    if (userToggled) {
+      if (nativePrefs) void window.piAndroidShell.call('clipboard.setEnabled', { enabled: !!optedIn }).catch(() => {});
+    } else if (typeof status.clipboard?.enabled === 'boolean') {
+      if (optedIn !== status.clipboard.enabled) { optedIn = status.clipboard.enabled; revision++; }
+      try { localStorage.setItem(preferenceKey, optedIn ? '1' : '0'); } catch {}
+    } else if (nativePrefs && optedIn) {
+      void window.piAndroidShell.call('clipboard.setEnabled', { enabled: true }).catch(() => {});
+    }
+    changed();
+  }).catch(() => {}) : Promise.resolve();
   const supported = () => nativeReady || isSecureContext && !!navigator.clipboard?.read && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && !(/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1) && /Chrome|Chromium/i.test(navigator.userAgent);
   const enabled = () => supported() && optedIn && !['denied', 'prompt'].includes(permissionState);
   function setEnabled(on) {
-    optedIn = on; revision++;
+    userToggled = true; optedIn = on; revision++;
     try { localStorage.setItem(preferenceKey, on ? '1' : '0'); } catch {}
+    if (nativePrefs && window.piAndroidShell?.available) {
+      void window.piAndroidShell.call('clipboard.setEnabled', { enabled: !!on }).catch(() => {});
+    }
     changed();
   }
   if (!window.piAndroidShell?.available && supported()) void navigator.permissions?.query({ name: 'clipboard-read' }).then(permission => {

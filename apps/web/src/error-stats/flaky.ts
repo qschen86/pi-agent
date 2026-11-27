@@ -66,12 +66,12 @@ export function composeFlakyTodo(i: FlakyTodoInput): { text: string; analysis: {
   const title = `自动检查不稳定：${label}`.slice(0, 40);
   const status = entry
     ? `已自动暂时隔离：它照常运行、结果照常记录，但红了不再拦住上线；到北京时间 ${beijingStamp(Date.parse(entry.expiresAt))} 到期，到期后恢复拦截，仍不稳定会再次被隔离。`
-    : "还没有被隔离（只隔离浏览器类检查，且同时最多隔离 12 个）。它红了会先自动重跑一次，重跑通过才放行。";
+    : "还没有被隔离（只隔离浏览器类检查，且同时最多隔离 12 个）。它红了会先自动重跑一次；等待超时这类负载噪声则只记一笔、直接放行。";
   const why = [i.kinds.timeout ? `等待超时 ${i.kinds.timeout} 次` : "", i.kinds.assertion ? `断言没过 ${i.kinds.assertion} 次` : "", i.kinds.unknown ? `原因未记录 ${i.kinds.unknown} 次` : ""].filter(Boolean).join("，");
   const lines = [
     `[错误统计 · 门禁自动检查不稳定] ${title}`,
     `指纹：${i.s.fingerprint}`,
-    `这是什么：部署前的自动检查里，「${label}」近 ${GATE_FLAKY_WINDOW_DAYS} 天有 ${i.recent7} 次第一次没通过、单独重跑才通过（近 ${i.windowDays} 天共 ${i.s.total} 次）。时好时坏说明多半不是功能坏了，而是检查本身对机器忙闲或等待时间太敏感。`,
+    `这是什么：部署前的自动检查里，「${label}」近 ${GATE_FLAKY_WINDOW_DAYS} 天有 ${i.recent7} 次第一次没通过、随后放行（近 ${i.windowDays} 天共 ${i.s.total} 次）。时好时坏说明多半不是功能坏了，而是检查本身对机器忙闲或等待时间太敏感。`,
     why ? `失败原因：${why}${i.kinds.lastError ? `；最近一条：${i.kinds.lastError}` : ""}` : "",
     `现状：${status}`,
     `影响：每次重跑会拉长部署，并拖慢排队中的其他部署。隔离期间，这块界面如果真的被改坏，要等夜间回归（最长约一天）才会发现。`,

@@ -48,7 +48,49 @@ function fileIcon(type){
  for(const [key,value] of Object.entries({viewBox:'0 0 24 24',fill:'none',stroke:'currentColor','stroke-width':'1.7','stroke-linecap':'round','stroke-linejoin':'round','aria-hidden':'true'}))svg.setAttribute(key,value);
  const path=document.createElementNS(svg.namespaceURI,'path');path.setAttribute('d',paths[type]||paths.file);svg.append(path);return svg;
 }
-function fileChip(reference,context=fileRenderContext){
+/* 渲染前预检：胶囊先照常显示，服务端（和点开时同一套定位 + 授权判断）确认读不到，就换成不可点的灰字——不可点的东西不该长得像按钮。
+   预检请求失败、结果缺失一律不动胶囊（宁可多一个点不开的，也不误伤能开的）。 */
+const FILE_CHECK_OK_MS=120000,FILE_CHECK_BAD_MS=8000,FILE_CHECK_BATCH=20;
+const fileCheckCache=new Map(),fileCheckWaiting=new Map(),fileCheckInflight=new Map();let fileCheckTimer=0;
+function fileChipUnavailable(el,reason){
+ const path=el.getAttribute('data-file-path')||'',label=el.getAttribute('aria-label')?.match(/^预览 (.*?)：/)?.[1]||path.split('/').pop();
+ return h('span',{class:'file-chip-unavailable','data-file-unavailable':'true','data-file-path':path,title:`${reason||'文件读不到'}：${path}`},label);
+}
+function fileCheckFlush(){
+ fileCheckTimer=0;const groups=new Map();
+ for(const [key,entry] of fileCheckWaiting){let g=groups.get(entry.base);if(!g)groups.set(entry.base,g=[]);g.push([key,entry]);}
+ for(const [key,entry] of fileCheckWaiting)fileCheckInflight.set(key,entry);
+ fileCheckWaiting.clear();
+ for(const [base,items] of groups)for(let i=0;i<items.length;i+=FILE_CHECK_BATCH){
+  const chunk=items.slice(i,i+FILE_CHECK_BATCH);
+  const query=new URLSearchParams();for(const [,entry] of chunk)query.append('ref',JSON.stringify({path:entry.path,hints:entry.hints}));
+  if(chunk[0][1].memberId)query.set('memberId',chunk[0][1].memberId);
+  fetch(`${base}/file-check?${query}`,{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(data=>{
+   const files=Array.isArray(data?.files)?data.files:null;
+   chunk.forEach(([key,entry],index)=>{
+    const result=files?.[index];if(!result||typeof result.ok!=='boolean')return;
+    fileCheckCache.set(key,{ok:result.ok,reason:result.reason,at:Date.now()});
+    for(const waiter of entry.waiters)waiter(result);
+   });
+  }).catch(()=>{}).finally(()=>{for(const [key] of chunk)fileCheckInflight.delete(key);});
+ }
+}
+function fileWatchAvailability(el,context){
+ const base=fileBase(context),path=el.getAttribute?.('data-file-path');
+ if(!base||!path||context?.inert||typeof fetch!=='function')return el;
+ let hints=[];try{hints=JSON.parse(el.getAttribute('data-file-hints')||'[]')||[];}catch{}
+ const key=`${base}|${context?.memberId||''}|${path}|${hints.join('\n')}`;
+ const apply=result=>{if(result.ok||!el.parentNode)return;el.replaceWith(fileChipUnavailable(el,result.reason));};
+ const hit=fileCheckCache.get(key);
+ if(hit&&Date.now()-hit.at<(hit.ok?FILE_CHECK_OK_MS:FILE_CHECK_BAD_MS)){if(!hit.ok)setTimeout(()=>apply(hit),0);return el;}
+ let entry=fileCheckWaiting.get(key)||fileCheckInflight.get(key);
+ if(!entry)fileCheckWaiting.set(key,entry={base,path,hints,memberId:context?.memberId,waiters:[]});
+ entry.waiters.push(apply);
+ if(!fileCheckTimer)fileCheckTimer=setTimeout(fileCheckFlush,40);
+ return el;
+}
+function fileChip(reference,context=fileRenderContext){return fileWatchAvailability(fileChipBuild(reference,context),context);}
+function fileChipBuild(reference,context=fileRenderContext){
  // 缩略图里的引用只当文字：缩略图本身就是一个按钮，不能再套按钮，也不该在这里被点
  if(context?.inert)return h('span',{class:'file-chip-inert'},reference.label||String(reference.path||'').split('/').pop());
  if(context?.baseDir&&!/^(?:\/|~\/|file:\/\/)/i.test(reference.path))reference={...reference,path:fileResolveRelative(reference.path,context.baseDir)};
@@ -70,9 +112,11 @@ function fileChip(reference,context=fileRenderContext){
   img.addEventListener('error',()=>button.replaceWith(fileChip(reference,{...context,thumbs:false})),{once:true});
   return button;
  }
- return fileChipPlain(reference,context,type);
+ return fileChipPlainBuild(reference,context,type);
 }
-function fileChipPlain(reference,context=fileRenderContext,type=fileType(reference.path)){
+/** 退回的普通胶囊（缩略图读不到时）同样要预检：它是新建的元素，不在原来那次预检的范围里 */
+function fileChipPlain(reference,context=fileRenderContext,type=fileType(reference.path)){return fileWatchAvailability(fileChipPlainBuild(reference,context,type),context);}
+function fileChipPlainBuild(reference,context=fileRenderContext,type=fileType(reference.path)){
  const name=reference.path.split('/').pop();
  return h('button',{type:'button',class:'file-chip','data-file-type':type,'data-file-path':reference.path,'data-file-hints':reference.hints?.length?JSON.stringify(reference.hints):null,title:reference.path,'aria-label':`预览 ${reference.label||name}：${reference.path}`,onclick:ev=>openFilePreview(reference,context,ev.currentTarget)},fileIcon(type),h('span',{class:'file-chip-label'},reference.label||name),reference.line?h('span',{class:'file-chip-line'},`:${reference.line}`):null);
 }

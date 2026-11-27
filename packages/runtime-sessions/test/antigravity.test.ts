@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +38,7 @@ const update = (sessionId, u) => send({ method: "session/update", params: { sess
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (mode === "record-process" && ["session/new","session/resume","session/set_mode","session/prompt"].includes(m.method)) {
-    require("node:fs").appendFileSync(__dirname + "/process-requests", JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), bypass: bypassFlag, method: m.method, params: m.params }) + "\\n");
+    require("node:fs").appendFileSync(__dirname + "/process-requests", JSON.stringify({ pid: process.pid, cwd: process.cwd(), argv: process.argv.slice(2), bypass: bypassFlag, method: m.method, params: m.params }) + "\\n");
   }
   if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { resume: {}, close: {}, load: {}, list: {} }, _meta: { antigravity: { systemPrompt: { append: true } } } }, agentInfo: { name: "Fake ACP", version: "1" } } });
   if (mode === "record-mcp" && ["session/new","session/resume"].includes(m.method)) {
@@ -299,7 +299,7 @@ describe("antigravity driver (fake agy over ACP)", () => {
     const start = {
       workspace: dir, prompt: "read a shared conversation", clientMessageId: "share-first",
       roleInstructions: "Try native tools first, then ask the shared reader.",
-      platformBrowser: { socketPath: "/first.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
+      platformBrowser: { socketPath: "/first.sock", pointerPath: "/stable-session.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
     };
     expect((await (await driver.startTurn(start, sink)).done).status).toBe("completed");
     const next = {
@@ -308,16 +308,40 @@ describe("antigravity driver (fake agy over ACP)", () => {
     };
     expect((await (await driver.startTurn(next, sink)).done).status).toBe("completed");
     const [created, resumed] = readFileSync(join(dir, "mcp-requests"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-    const server = (socketPath: string) => ({
-      name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", socketPath], env: [],
-    });
+    const server = {
+      name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", "/stable-session.sock"], env: [],
+    };
     expect(created).toMatchObject({
-      method: "session/new", params: { mcpServers: [server("/first.sock")],
+      method: "session/new", params: { mcpServers: [server],
         _meta: { antigravity: { systemPrompt: { append: start.roleInstructions } } } },
     });
     expect(resumed).toMatchObject({
-      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [server("/next.sock")] },
+      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [server] },
     });
+    // 无 pointerPath 时回退到 socketPath（兼容旧调用方）
+    const fallback = {
+      workspace: dir, prompt: "fallback", clientMessageId: "share-fallback", nativeSessionId: "sess-0",
+      platformBrowser: { socketPath: "/fallback.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
+    };
+    expect((await (await driver.startTurn(fallback, sink)).done).status).toBe("completed");
+    const third = JSON.parse(readFileSync(join(dir, "mcp-requests"), "utf8").trim().split("\n")[2]!);
+    expect(third).toMatchObject({
+      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [{ name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", "/fallback.sock"], env: [] }] },
+    });
+  });
+
+  it("固定 agy ACP 进程启动 cwd 为 stateDir，不继承宿主蓝绿槽目录导致切槽缓存失效", async () => {
+    const { realpathSync } = await import("node:fs");
+    const { driver, dir } = setup("record-process");
+    const { sink } = sinkOf();
+    const ws = join(dir, "session-ws");
+    mkdirSync(ws, { recursive: true });
+    expect((await (await driver.startTurn({ workspace: ws, prompt: "hello", clientMessageId: "cwd-1" }, sink)).done).status).toBe("completed");
+    const records = readFileSync(join(dir, "process-requests"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { cwd: string; method: string; params: { cwd?: string } });
+    const created = records.find((r) => r.method === "session/new")!;
+    expect(realpathSync(created.cwd)).toBe(realpathSync(join(dir, "probe")));
+    expect(realpathSync(created.cwd)).not.toBe(realpathSync(process.cwd()));
+    expect(created.params.cwd).toBe(ws);
   });
 
   it("platform_browser 截图：ACP 不回传 MCP rawOutput 时仍关联 receiptId 并通过截图来源校验", async () => {
@@ -502,6 +526,8 @@ describe("antigravity driver (fake agy over ACP)", () => {
     const base = (await driver.fingerprint("abc", {}))!.value;
     expect(base).toBe("s3i2");
     // 模拟 agy 收尾：往别的表写一大块，然后 WAL checkpoint（主库变大、mtime 推后、WAL 归零）——真实误报就是这个形状
+    const past = new Date(Date.now() - 2_000);
+    utimesSync(db, past, past);
     const before = statSync(db);
     const conn = new DatabaseSync(db);
     conn.exec("CREATE TABLE IF NOT EXISTS gen_metadata (idx integer primary key, data blob)");

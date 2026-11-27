@@ -11,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { beijingStamp, nextBeijingRunAt } from "../platform-time.js";
 import { dailyBeijingSchedule, registerPlatformScheduledTask } from "../platform-scheduled-tasks.js";
-import { CodexResetFetchError, codexAuthPath, collectResetSnapshot, readCodexAuth, windowStats, type FetchJson, type LedgerStats, type ResetCredit } from "./collect.js";
+import { CodexResetFetchError, codexAuthPath, collectResetSnapshot, collectAvailableCredits, readCodexAuth, windowStats, type FetchJson, type LedgerStats, type ResetCredit } from "./collect.js";
 import { CodexResetStore, type LatestSnapshot, type ScanRecord, type ScanTrigger } from "./store.js";
 
 export const SCHEDULE_HOUR = 23;
@@ -48,6 +48,7 @@ export interface CodexResetServiceOptions {
   log?: (message: string) => void;
   /** 测试注入：默认走真实接口 */
   collect?: typeof collectResetSnapshot;
+  collectAvailable?: typeof collectAvailableCredits;
 }
 
 export class CodexResetService {
@@ -55,6 +56,8 @@ export class CodexResetService {
   private readonly options: CodexResetServiceOptions;
   private readonly now: () => Date;
   private running = false;
+  private badgeRefresh: Promise<void> | null = null;
+  private badgeRetryAt = 0;
   private lastError: string | null = null;
 
   constructor(options: CodexResetServiceOptions) {
@@ -151,6 +154,29 @@ export class CodexResetService {
     };
   }
 
+  /** 跟随额度更新卡数；并发合并，失败保留最后快照并允许后续重试。 */
+  async refreshBadge(): Promise<void> {
+    if (this.badgeRefresh) return this.badgeRefresh;
+    if (this.now().getTime() < this.badgeRetryAt) return;
+    this.badgeRefresh = (async () => {
+      try {
+        const available = await (this.options.collectAvailable ?? collectAvailableCredits)({
+          authPath: this.authPath(), now: this.now,
+          ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {})
+        });
+        this.store.setLatest({
+          ...available, at: this.now().toISOString(),
+          historyWindowStart: this.store.state.latest?.historyWindowStart ?? null
+        });
+        this.store.save();
+        this.badgeRetryAt = this.now().getTime() + 60_000;
+      } catch {
+        this.badgeRetryAt = this.now().getTime() + 15_000;
+      }
+    })().finally(() => { this.badgeRefresh = null; });
+    return this.badgeRefresh;
+  }
+
   /** 勾在额度组件右上角用的小结：只要张数与最近一张过期时刻（不含任何卡片明细）。 */
   badge(): { availableCount: number; soonestExpiry: string | null } {
     const latest = this.store.state.latest;
@@ -158,7 +184,7 @@ export class CodexResetService {
     const valid = (latest?.credits ?? []).filter((c) => (c.status || "available") === "available" && (!c.expiresAt || Date.parse(c.expiresAt) > now));
     const expiries = valid.map((c) => c.expiresAt).filter((v): v is string => !!v).sort();
     return {
-      availableCount: valid.length || latest?.availableCount || 0,
+      availableCount: latest?.availableCount === 0 ? 0 : latest?.credits.length ? valid.length : latest?.availableCount ?? 0,
       soonestExpiry: expiries[0] ?? null
     };
   }

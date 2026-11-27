@@ -5,10 +5,10 @@ import { mountLinkPreviewRoutes } from './link-preview.js';
 import { mountCommunicationsRoutes } from './communications-routes.js';
 import { readOnlyPermissionMode } from '../../../packages/runtime-sessions/src/permissions.js';
 import type { CalendarEvent } from "./calendar.js";
-import { RuntimeRecordAuth } from "./runtime-record-auth.js";
+import { RuntimeRecordAuth, stableRecordRoot } from "./runtime-record-auth.js";
 import { resolveRecordSources, relationSources } from "./note-relation-service.js";
-import { homedir, tmpdir } from "node:os";
-import { existsSync, mkdtempSync } from "node:fs";
+import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { entryKey, parseEntryKey } from "./note-relations.js";
 import { RelationError, type RelationContext } from "./note-relation-types.js";
 import {RuntimeMemoryPort} from './memory/port.js';
@@ -63,6 +63,7 @@ import { mountRuntimeRoutes, type RuntimeAuthCapability, type RuntimeAuthService
 import { mountUploadRequestDiagnostics } from "./upload-diagnostics.js";
 import { launchTimingLine, mountDocumentLog, mountSlowRequestLog } from "./slow-diagnostics.js";
 import type { DeployQueue } from "./deploy-queue.js";
+import { mountVerifyRoutes, type VerifyService } from "./verify-routes.js";
 import {SessionSyncJournal} from './session-sync.js';
 import {RuntimeSyncSources} from './runtime-sync-source.js';
 import {announceHandoff, streamLifetime} from './stream-lifetime.js';
@@ -90,11 +91,14 @@ import {ArtifactLibrary, ARTIFACT_CSP} from './artifacts.js';
 import { ArtifactCollections } from './artifact-collections.js';
 import { ArtifactTagger } from './artifact-tagging.js';
 import { mountArtifactCollectionRoutes } from './artifact-collection-routes.js';
-import { readPreviewFile, temporaryFileReferences } from './file-preview.js';
+import { checkPreviewFile, readPreviewFile, temporaryFileReferences } from './file-preview.js';
 import {EvalArtifacts, EVAL_CSP, evalEtag} from './eval-artifacts.js';
 import { StockLedger } from './stock-ledger.js';
 import { authenticateApiRequest } from './device-auth.js';
 import { anonymousDevicePairRequest, mountDevicePairRoutes } from './device-pair-routes.js';
+import { RemoteConnectStore } from './remote-connect-store.js';
+import { RemoteConnectService } from './remote-connect-service.js';
+import { mountRemoteConnectRoutes } from './remote-connect-routes.js';
 import { mountStockLedgerRoutes } from './stock-ledger-routes.js';
 import { NavigationPreferences, NavigationPreferencesError } from './navigation-preferences.js';
 import { LedgerChatService } from './ledger-chat.js';
@@ -116,6 +120,7 @@ import { mountDiagramRoutes, type PlantUmlRenderer } from './diagram-render.js';
 import { GameCompanionError, GameCompanionService } from './game-companion.js';
 import type { ServerDiagnostics } from './diagnostics/server-diagnostics.js';
 import { diagnosticsOf, mountDiagnosticsRoutes, mountRequestIds, requestIdOf } from './diagnostics/routes.js';
+import type { CacheAlertService } from './cache-alerts.js';
 import { RepairSessions, type RuntimeLike as RepairRuntime } from './diagnostics/repair.js';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../public");
@@ -129,8 +134,13 @@ const PUBLIC_STATIC = new Set([
   "/favicon.svg", "/manifest.webmanifest", "/sw.js", "/image-intake-store.js", "/apple-touch-icon.png",
   "/icons/app-icon.svg", "/icons/app-icon-maskable.svg",
   "/icons/icon-192.png", "/icons/icon-512.png", "/icons/icon-maskable-512.png",
-  "/icons/icon-mark-192.png", "/icons/icon-mark-512.png", "/icons/app-icon-mark.svg"
+  "/icons/icon-mark-192.png", "/icons/icon-mark-512.png", "/icons/app-icon-mark.svg",
+  "/icons/heji-logo-light.png", "/icons/heji-logo-dark.png"
 ]);
+const BRAND_LOGO_STATIC: Record<string, string> = {
+  "/icons/heji-logo-light.png": "icons/heji-logo-light.png",
+  "/icons/heji-logo-dark.png": "icons/heji-logo-dark.png"
+};
 const MIME: Record<string, string> = {
   html: "text/html; charset=utf-8",
   js: "text/javascript; charset=utf-8",
@@ -216,7 +226,7 @@ export function reconcileSessionNoteRefs(svc: ConsoleService, runtime: RuntimeSe
   } catch (e) { console.error("会话关联待办对账失败：", e); return 0; }
 }
 
-export function createWebApp(svc: ConsoleService, options: { port?: number; dataDir?: string; googleCalendar?: GoogleCalendarService; publicHosts?: string[]; login?: LoginOptions; runtime?: RuntimeSessionManager; runtimeAuth?: RuntimeAuthService; rooms?: RoomService; revealFile?: (absPath: string) => Promise<void>; deployQueue?: DeployQueue;sessionSyncEnabled?:boolean;sessionSyncJournal?:SessionSyncJournal;shutdownSignal?:AbortSignal;submissionsServing?:()=>Promise<boolean>;proxyPort?:number;codexReset?:CodexResetService;runtimeUpdates?:RuntimeUpdatesService; webPush?: WebPushConfig; staticCompression?:boolean;staticEncodingDir?:string;staticReleaseDir?:string; shareFile?: string; evalDir?: string; gameCompanion?: GameCompanionService; plantUml?: PlantUmlRenderer;
+export function createWebApp(svc: ConsoleService, options: { port?: number; dataDir?: string; googleCalendar?: GoogleCalendarService; publicHosts?: string[]; login?: LoginOptions; runtime?: RuntimeSessionManager; runtimeAuth?: RuntimeAuthService; rooms?: RoomService; revealFile?: (absPath: string) => Promise<void>; deployQueue?: DeployQueue; verifyService?: VerifyService; sessionSyncEnabled?:boolean;sessionSyncJournal?:SessionSyncJournal;shutdownSignal?:AbortSignal;submissionsServing?:()=>Promise<boolean>;proxyPort?:number;codexReset?:CodexResetService;runtimeUpdates?:RuntimeUpdatesService; webPush?: WebPushConfig; staticCompression?:boolean;staticEncodingDir?:string;staticReleaseDir?:string; shareFile?: string; evalDir?: string; gameCompanion?: GameCompanionService; plantUml?: PlantUmlRenderer;
   /** 股票页左侧记账助手用的模型端口（默认 DeepSeek Flash + 高推理；不传则页面提示暂时不可用） */
   ledgerChatPort?: ModelInvocationPort;
   /** 心愿挑战岛打卡纪念卡小诗（默认 DeepSeek Flash，关闭推理）。 */
@@ -236,7 +246,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   /** Agent 日历：Codex automations / Pi launchd 定时任务的扫描目录（测试注入） */
   agentCalendar?: AgentCalendarScanOptions;
   /** V1.4 故障诊断：请求 ID、服务端事件、前端事件与证据包（main.ts 创建；不传则只有请求 ID） */
-  memorySyncEnabled?: boolean; diagnostics?: ServerDiagnostics } = {}): Hono & { appSwitches: AppSwitches | null } {
+  memorySyncEnabled?: boolean; diagnostics?: ServerDiagnostics; cacheAlerts?: CacheAlertService } = {}): Hono & { appSwitches: AppSwitches | null; remoteConnect: RemoteConnectService | null } {
   const app = new Hono();
   // 日历服务按需创建：通知等测试替身没有 dataDir，不应因为无关接口而报错。
   let googleCalendar: GoogleCalendarService | undefined = options.googleCalendar;
@@ -250,8 +260,10 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   };
   if(svc.noteRelations){svc.noteRelations.resolveExternal=ref=>calendarService().resolveRelationEntry(ref);svc.noteRelations.externalAuthorized=ref=>calendarService().relationAuthorized(ref);}
   let recordAuth:RuntimeRecordAuth|undefined;
-  if(options.runtime?.setRecordAccessProvider){recordAuth=new RuntimeRecordAuth(mkdtempSync(join(tmpdir(),"pi-record-clients-")),`http://127.0.0.1:${options.proxyPort??options.port??8780}`);options.runtime.setRecordAccessProvider((binding,turn)=>recordAuth!.issue(binding.platformSessionId,turn));options.runtime.on('session',({platformSessionId}:{platformSessionId:string})=>{const binding=options.runtime!.store.binding(platformSessionId);recordAuth?.retain(platformSessionId,binding&&!binding.archived?binding.turns.filter(t=>t.status==='running'||t.status==='waiting-input').map(t=>t.clientMessageId):[]);});options.runtime.on("archived",({platformSessionId}:{platformSessionId:string})=>recordAuth?.revoke(platformSessionId));options.shutdownSignal?.addEventListener("abort",()=>recordAuth?.dispose(),{once:true});}
+  if(options.runtime?.setRecordAccessProvider){recordAuth=new RuntimeRecordAuth(stableRecordRoot(),`http://127.0.0.1:${options.proxyPort??options.port??8780}`);options.runtime.setRecordAccessProvider((binding,turn)=>recordAuth!.issue(binding.platformSessionId,turn));options.runtime.on('session',({platformSessionId}:{platformSessionId:string})=>{const binding=options.runtime!.store.binding(platformSessionId);recordAuth?.retain(platformSessionId,binding&&!binding.archived?binding.turns.filter(t=>t.status==='running'||t.status==='waiting-input').map(t=>t.clientMessageId):[]);});options.runtime.on("archived",({platformSessionId}:{platformSessionId:string})=>recordAuth?.revoke(platformSessionId));options.shutdownSignal?.addEventListener("abort",()=>recordAuth?.dispose(),{once:true});}
   const staticEncodings=new StaticEncodings(options.staticEncodingDir??join(PUBLIC_DIR,".precompressed"),options.staticCompression??process.env["PI_WEB_STATIC_COMPRESSION"]!=="0");
+  const verifyService = options.verifyService;
+
   const staticRelease=new StaticRelease(options.staticReleaseDir??join(PUBLIC_DIR,'.release'));
   const artifacts = new ArtifactLibrary();
   // 股票账户记账：页面与 agent 共用一套接口；写入后通过站内 SSE 让其它标签页刷新。
@@ -431,6 +443,16 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
   const authId = (c: Context): string | undefined => c.get("authSession" as never) as string | undefined;
   const pairFile = options.login?.sessionFile ? `${options.login.sessionFile}.pairs.json` : ledgerDir ? appData(ledgerDir, 'auth').path('device-pairs.json') : undefined;
   if (auth && pairFile) mountDevicePairRoutes(app, auth, pairFile);
+  const remoteFile = ledgerDir ? appData(ledgerDir, 'auth').path('remote-connect.json') : options.login?.sessionFile ? `${options.login.sessionFile}.remote.json` : undefined;
+  const remoteConnect = remoteFile ? new RemoteConnectService({
+    store: new RemoteConnectStore(remoteFile),
+    targetOrigin: `http://127.0.0.1:${port}`,
+    ...(auth ? { auth } : {}),
+  }) : null;
+  if (remoteConnect) {
+    mountRemoteConnectRoutes(app, remoteConnect);
+    options.shutdownSignal?.addEventListener('abort', () => remoteConnect.close(), { once: true });
+  }
   const localIntakeBinding = randomBytes(32).toString('hex');
   mountLinkPreviewRoutes(app);
   app.get('/api/image-intake/access', c => {
@@ -481,6 +503,12 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     return c.json({ ok: true });
   });
   mountDiagnosticsRoutes(app, diagnostics);
+  app.get("/api/diagnostics/cache-alerts/:id", (c) => {
+    c.header("Cache-Control", "private, no-store");
+    if (!options.cacheAlerts) return c.json({ error: "缓存异常监控未开启", code: "CACHE_ALERTS_OFF" }, 404);
+    const bundle = options.cacheAlerts.readBundle(c.req.param("id"));
+    return bundle ? c.json(bundle) : c.json({ error: "没有这个缓存证据包", code: "CACHE_ALERT_NOT_FOUND" }, 404);
+  });
   app.post("/api/auth/logout", (c) => {
     const id = authId(c);
     if (auth && id) auth.revoke(id, "退出登录");
@@ -730,6 +758,16 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
         shutdown: () => flows.shutdown(),
       };
     })() : undefined);
+    // 回合结束时检查回复里写给用户的文件路径：用与点开时同一套定位 + 授权判断（checkPreviewFile），读不到的自动反馈给 runtime
+    if (options.runtime && typeof options.runtime.setDeliverableChecker === 'function') {
+      const mgr = options.runtime;
+      mgr.setDeliverableChecker(async ({ pid, workspace, runtimeKind, refs }) => {
+        const scope = { workspace, roots: mgr.workspaceRoots(runtimeKind as RuntimeKind), referencedFiles: mgr.store.binding(pid) ? temporaryFileReferences(mgr.store.events(pid)) : [] };
+        const bad: Array<{ ref: string; reason: string }> = [];
+        for (const ref of refs) { const r = await checkPreviewFile(scope, ref.path, ref.hints); if (!r.ok) bad.push({ ref: ref.path, reason: r.reason }); }
+        return bad;
+      });
+    }
     mountRuntimeRoutes(app, options.runtime, {
       ...(defaultRuntimeAuth ? { runtimeAuth: defaultRuntimeAuth } : {}),
       ...(options.codexReset ? { codexReset: options.codexReset } : {}),
@@ -744,6 +782,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
       ...(options.submissionsServing ? { submissionsServing: options.submissionsServing } : {}),
       ...(options.revealFile ? { revealFile: options.revealFile } : {}),
       ...(options.deployQueue ? { deployQueue: options.deployQueue } : {}),
+      ...(verifyService ? { verifyService } : {}),
       providerBalances: (providers) => svc.modelBalances(providers, { waitMs: 0 }),
       cachedBalances: (providers) => svc.modelBalancesCached(providers),
       // 页面级通知合并进 runtime 实时流：浏览器只保留一条 SSE（app=1）。
@@ -770,6 +809,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     });
   }
 
+  if (verifyService) mountVerifyRoutes(app, verifyService);
   let publicMemoryService: PublicMemoryService | undefined;
   const memorySync = options.runtime && ledgerDir ? new MemorySyncService({root:appData(ledgerDir,'memory').path('memory'),runtime:options.runtime,...(options.memorySyncEnabled === undefined ? {} : {enabled:options.memorySyncEnabled})}) : undefined;
   if(memorySync && options.runtime) {
@@ -877,8 +917,10 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
       }, deviceOf),
       billing: () => readBilling(dataDir),
       dataDir,
+      cacheHealth: (now) => runtime.cacheHealthSummary(7, now),
       signature: () => [
         stamp(join(runtime.store.dir, "usage.json")), stamp(join(runtime.store.dir, "bindings.json")), stamp(join(runtime.store.dir, "turn-origins.jsonl")),
+        stamp(join(runtime.store.dir, "cache-monitor-samples.jsonl")),
         stamp(appData(dataDir, "resources").path("deepseek-usage.jsonl")), stamp(appData(dataDir, "resources").foreign("shell", "runtime-billing.json")),
         stamp(join(process.env["PI_AGENT_GUI_ROOT"] ?? join(homedir(), ".pi-agent-gui"), "when-idle", "history.log"))
       ].join("|")
@@ -1364,7 +1406,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     const url = new URL(c.req.url);
     if (appSwitchEdition === 'homebrew' && /^\/open-source-release\.(?:js|css)$/.test(url.pathname)) return c.json({ error: "not found" }, 404);
     const archived = staticRelease.get(url.pathname);
-    const file = archived ? url.pathname : STATIC[url.pathname];
+    const file = archived ? url.pathname : STATIC[url.pathname] ?? BRAND_LOGO_STATIC[url.pathname];
     if (!file) return c.json({ error: "not found" }, 404);
     const ext = file.slice(file.lastIndexOf(".") + 1);
     const content = archived ?? (url.pathname==='/' ? staticRelease.html : url.pathname==='/sw.js' ? staticRelease.worker : undefined) ?? readFileSync(join(PUBLIC_DIR, file));
@@ -1398,7 +1440,7 @@ export function createWebApp(svc: ConsoleService, options: { port?: number; data
     return c.text("Internal Server Error", 500);
   });
   // 装配入口（main.ts）要用开关去管后台监听（局域网端口等），所以挂在返回值上。
-  return Object.assign(app, { appSwitches });
+  return Object.assign(app, { appSwitches, remoteConnect });
 }
 async function handle(c: Context, fn: () => Promise<unknown>, okStatus: 200 | 201 = 200, timing = false): Promise<Response> {
   try {

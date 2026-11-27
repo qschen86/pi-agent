@@ -307,9 +307,35 @@ export function isAssetVersionLine(line: string): boolean {
 /** 去掉 ?v= 后面的值，只留资源路径与标签结构：用来判断两侧是不是同一行只差版本号 */
 const stripAssetVersion = (line: string): string => line.replace(/(\?v=)[^"]*/g, "$1");
 
+/** 整个冲突行只有一条指向本地 js/css 的 script / link 标签（捕获资源路径）；掺了别的标记就不是这一行的对手 */
+const ASSET_TAG_LINE = /^\s*<(?:script|link)\b[^>]*(?:src|href)="\/([^"?]+\.(?:js|css))(?:\?[^"]*)?"[^>]*>(?:<\/script>)?\s*$/;
+const assetTagPath = (line: string): string => ASSET_TAG_LINE.exec(line)?.[1] ?? "";
+
 /**
- * index.html 的冲突块如果两侧只差资源版本号（?v=...），就取 base（变基时是 main）一侧解决——版本号稍后按文件字节重算。
- * 只要有一个冲突块掺了别的内容（改了标签、换了资源、增删行）就整体不解决，交回会话。
+ * 一个冲突块能自动合并到哪一步：只允许「各自往同一处追加资源标签」和「同一标签只差 ?v=」两种变化。
+ * - 有 base 段（宿主让 git 用 diff3 样式）：base 里的标签两侧都还在，新增的按 ours 顺序 + theirs 独有的接在后面；
+ * - 没有 base 段：只认两侧同一批资源、逐行只差版本号（保持旧行为）。
+ * 任何一侧删掉或换掉原有标签、同一资源改了标签本身、掺入非资源标签行，都返回 undefined 交回会话。
+ */
+function mergedAssetTags(ours: string[], theirs: string[], base: string[], hasBase: boolean): string[] | undefined {
+  if (!ours.length || !theirs.length) return undefined;
+  if (!hasBase) {
+    if (ours.length !== theirs.length) return undefined;
+    return ours.every((line, k) => isAssetVersionLine(line) && isAssetVersionLine(theirs[k]!) && stripAssetVersion(line) === stripAssetVersion(theirs[k]!)) ? ours : undefined;
+  }
+  const ourPaths = ours.map(assetTagPath), theirPaths = theirs.map(assetTagPath), basePaths = base.map(assetTagPath);
+  if ([...ourPaths, ...theirPaths, ...basePaths].includes("")) return undefined;
+  if (!basePaths.every((path) => ourPaths.includes(path) && theirPaths.includes(path))) return undefined;
+  for (const line of theirs) {
+    const same = ours.find((mine) => assetTagPath(mine) === assetTagPath(line));
+    if (same !== undefined && stripAssetVersion(same) !== stripAssetVersion(line)) return undefined;
+  }
+  return [...ours, ...theirs.filter((line) => !ourPaths.includes(assetTagPath(line)))];
+}
+
+/**
+ * index.html 的冲突块按资源标签合并：版本号稍后按文件字节重算。
+ * 只要有一个冲突块掺了别的内容（改了标签结构、删掉或换掉资源、掺入非资源标签行）就整体不解决，交回会话。
  */
 export function resolveAssetVersionConflicts(text: string): { ok: true; content: string; hunks: number } | { ok: false; reason: string } {
   const lines = text.split("\n");
@@ -317,23 +343,19 @@ export function resolveAssetVersionConflicts(text: string): { ok: true; content:
   let hunks = 0;
   for (let i = 0; i < lines.length; i++) {
     if (!/^<{7}(?: |$)/.test(lines[i]!)) { out.push(lines[i]!); continue; }
-    const ours: string[] = [], theirs: string[] = [];
-    let phase: "ours" | "base" | "theirs" | "done" = "ours";
+    const ours: string[] = [], theirs: string[] = [], base: string[] = [];
+    let phase: "ours" | "base" | "theirs" | "done" = "ours", hasBase = false;
     for (i++; i < lines.length; i++) {
       const l = lines[i]!;
-      if (phase === "ours" && /^\|{7}(?: |$)/.test(l)) { phase = "base"; continue; }
+      if (phase === "ours" && /^\|{7}(?: |$)/.test(l)) { phase = "base"; hasBase = true; continue; }
       if ((phase === "ours" || phase === "base") && /^={7}(?: |$)/.test(l)) { phase = "theirs"; continue; }
       if (phase === "theirs" && /^>{7}(?: |$)/.test(l)) { phase = "done"; break; }
-      if (phase === "ours") ours.push(l); else if (phase === "theirs") theirs.push(l);
+      if (phase === "ours") ours.push(l); else if (phase === "base") base.push(l); else if (phase === "theirs") theirs.push(l);
     }
     if (phase !== "done") return { ok: false, reason: "冲突标记不完整" };
-    if (!ours.length || ours.length !== theirs.length) return { ok: false, reason: "两侧行数不同" };
-    for (let k = 0; k < ours.length; k++) {
-      const a = ours[k]!, b = theirs[k]!;
-      if (!isAssetVersionLine(a) || !isAssetVersionLine(b) || stripAssetVersion(a) !== stripAssetVersion(b))
-        return { ok: false, reason: `冲突行不是同一资源的版本号：${a.trim().slice(0, 120)}` };
-    }
-    out.push(...ours);
+    const merged = mergedAssetTags(ours, theirs, base, hasBase);
+    if (!merged) return { ok: false, reason: `冲突块不是同一批资源标签的合并：${(ours[0] ?? theirs[0] ?? "").trim().slice(0, 120)}` };
+    out.push(...merged);
     hunks++;
   }
   return hunks ? { ok: true, content: out.join("\n"), hunks } : { ok: false, reason: "没有找到版本号冲突块" };
@@ -396,7 +418,8 @@ async function tryResolveAssetVersionRebase(repoRoot: string, worktree: string, 
  */
 export async function rebaseSessionWorktree(repoRoot: string, worktree: string, baseRef: string): Promise<{ ok: true; head: string; autoResolvedAssets?: number } | { ok: false; conflicts: string[]; detail: string }> {
   try {
-    await wtGit(repoRoot, worktree, ["rebase", "--quiet", `refs/heads/${baseRef}`]);
+    // diff3 样式带上 base 段：才能分清「两边各自追加了标签」和「换掉了原有标签」，前者可以自动合并
+    await wtGit(repoRoot, worktree, ["-c", "merge.conflictStyle=diff3", "rebase", "--quiet", `refs/heads/${baseRef}`]);
     return { ok: true, head: (await wtGit(repoRoot, worktree, ["rev-parse", "HEAD"])).trim() };
   } catch (e) {
     const conflicts = await unmergedFiles(repoRoot, worktree);

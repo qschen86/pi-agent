@@ -574,11 +574,18 @@ export class CodexDriver implements RuntimeDriver {
         break;
       }
       case "thread/tokenUsage/updated": {
-        const u = p["tokenUsage"] as { total?: Record<string, number> } | undefined;
+        const u = p["tokenUsage"] as { total?: Record<string, number>; last?: Record<string, number>; modelContextWindow?: number } | undefined;
         if (u?.total) {
           // 每次 tokenUsage 更新对应一次模型请求；把累计次数随快照一起保存
           a.requestCount += 1;
-          a.sink.usage(codexUsage(u.total, "session", "codex:thread/tokenUsage/updated", new Date().toISOString(), "complete", a.requestCount));
+          // last = 最近一次请求的用量，它的输入就是这次请求带上的上下文大小（只用来判断缓存冷了续跑贵不贵，不参与求和）
+          const ctx = u.last?.["inputTokens"];
+          const win = u.modelContextWindow;
+          a.sink.usage({
+            ...codexUsage(u.total, "session", "codex:thread/tokenUsage/updated", new Date().toISOString(), "complete", a.requestCount),
+            ...(typeof ctx === "number" && ctx > 0 ? { contextTokens: ctx } : {}),
+            ...(typeof win === "number" && win > 0 ? { contextWindow: win } : {})
+          });
         }
         break;
       }

@@ -88,9 +88,9 @@ export function defaultPlatformScheduledTasks(): PlatformScheduledTaskDefinition
       app: "平台",
       scene: "质量保障",
       name: "每日完整回归",
-      schedule: dailyBeijingSchedule(4, 0),
-      canonicalSchedule: dailyBeijingSchedule(4, 0),
-      description: "每天北京时间 04:00 执行完整回归；launchd 每小时检查一次，过了北京时间 04:00 且当天还没跑过才启动。",
+      schedule: dailyBeijingSchedule(3, 0),
+      canonicalSchedule: dailyBeijingSchedule(3, 0),
+      description: "每天北京时间 03:00 执行完整回归，只在 03:00–07:00 窗口内跑和重试（7 点后是部署高峰，不再占重型名额）；launchd 每小时检查一次，有部署请求排队时先让部署。",
       source: "com.pi-agent.nightly-regression"
     },
     {
@@ -102,6 +102,17 @@ export function defaultPlatformScheduledTasks(): PlatformScheduledTaskDefinition
       schedule: "RRULE:FREQ=HOURLY;INTERVAL=1",
       description: "每小时检查每日完整回归是否按时完成，未完成时建待办。",
       source: "com.pi-agent.nightly-regression-check"
+    },
+    {
+      id: "deploy-review",
+      launchdLabel: "com.pi-agent.deploy-review",
+      app: "平台",
+      scene: "部署效率",
+      name: "每周部署复盘",
+      schedule: "RRULE:FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0;BYSECOND=0",
+      canonicalSchedule: "RRULE:FREQ=WEEKLY;BYDAY=MO;BYHOUR=10;BYMINUTE=0;BYSECOND=0",
+      description: "每周一北京时间 10:00 统计最近 7 天与再往前 7 天的部署数据（提交到上线耗时、失败率、门禁各段耗时、等名额、复用命中、偶发红用例），新建一个 Pi 平台会话做复盘：找出最大的瓶颈、给出改进建议并建待办，只分析不改代码。launchd 每小时检查一次，错过了会补跑。",
+      source: "com.pi-agent.deploy-review"
     },
     {
       id: "health-guard",

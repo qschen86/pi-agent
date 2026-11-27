@@ -23,6 +23,7 @@ function rtDeploymentNotice(event) {
   const result = summary.startsWith("已上线：") ? ["部署成功", "ok"]
     : summary.startsWith("不用部署：") ? ["已在线上", "ok"]
     : /^部署 .*没有成功/.test(summary) ? ["部署失败", "bad"]
+    : /^部署 [a-f0-9]{7,40} 门禁未通过，自动重试/.test(summary) ? ["自动重试", "warn"]
     : summary.startsWith("等空闲超时") ? ["部署超时", "warn"]
     : summary.startsWith("没有部署 ") ? ["未部署", "warn"] : ["部署结果", ""];
   const body = (match[2] || "").trim();
@@ -595,6 +596,40 @@ function rtGroupByWorkspace(entries) {
 /* ------------------------------ Markdown ------------------------------ */
 
 const RT_SAFE_URL = /^https?:\/\//i;
+/** 本机 / 局域网地址：只有开着平台的那台机器（或同一局域网）能打开，手机走公网入口点了必然打不开 */
+const RT_LOCAL_HOST = /^(?:localhost|0\.0\.0\.0|\[::1?\]|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|[^.]+\.local)$/i;
+function rtLocalOnlyUrl(href) {
+  try { return RT_LOCAL_HOST.test(new URL(href).hostname) && !RT_LOCAL_HOST.test(location.hostname); } catch { return false; }
+}
+/**
+ * 端面：Android 壳里 window.piAndroidShell 可用，那是在 App 内；手机浏览器、桌面网页都是网页。
+ * 平台自己也在手机 App 里跑同一套页面，所以站内入口要跟着端面走：在 App 里点就在 App 内换页，
+ * 在网页里点就留在网页内。壳只把「自己入口的页面路径（/、/login）」当 App 文档，
+ * 别的入口域名（同一实例的其它公开域名、局域网入口）会交给系统浏览器打开——
+ * 所以跨入口的站内地址不能原样交给链接，否则同一个会话引用 chip 会从 App 跳到网页版。
+ */
+function rtFaceIsApp() {
+  try { return !!window.piAndroidShell?.available; } catch { return false; }
+}
+/** 站内路由地址 → 端内可用的 hash（#/rt/…、#/notes…）；不是站内路由就返回 null。 */
+function rtFaceRoute(href) {
+  let url;
+  try { url = new URL(href, location.href); } catch { return null; }
+  if (!/^https?:$/.test(url.protocol) || (url.pathname !== "/" && url.pathname !== "") || url.search) return null;
+  return /^#\/[\w~%][\w~%./=&?+-]*$/.test(url.hash) ? url.hash : null;
+}
+/** 端内优先的站内地址：在 App 里把其它入口的站内路由收进当前入口（不交给系统浏览器），网页里原样保留。 */
+function rtFaceHref(href) {
+  return (rtFaceIsApp() && rtFaceRoute(href)) || href;
+}
+/** 外链：本机地址在当前入口打不开时只留文字（鼠标悬停说明原因）；其余照常新窗口打开，
+ *  只有站内路由在 App 里改成端内换页（同一处路由，不在系统浏览器里另开一个网页）。 */
+function rtExternalLink(href, children) {
+  if (rtLocalOnlyUrl(href)) return h("span", { class: "rt-local-link", "data-local-only": "true", title: `仅开着平台的那台电脑能打开：${href}` }, children);
+  const face = rtFaceHref(href);
+  if (face !== href) return h("a", { href: face }, children);
+  return h("a", { href, target: "_blank", rel: "noopener noreferrer" }, children);
+}
 
 /** Session references are presentation only; the original message remains intact. */
 function rtMessageSessionReference(label, target, tail = "") {
@@ -618,7 +653,7 @@ function rtMessageSessionReference(label, target, tail = "") {
       }
     }
   }
-  return { label: label.replace(/\\([\\[\]])/g, "$1"), href: url.origin === location.origin ? url.hash : url.href, sessionId: route[1], details, consumed };
+  return { label: label.replace(/\\([\\[\]])/g, "$1"), href: rtFaceHref(url.origin === location.origin ? url.hash : url.href), sessionId: route[1], details, consumed };
 }
 
 function rtMessageSessionChip(ref) {
@@ -737,10 +772,10 @@ function rtInlineText(text) {
       const ref = typeof fileReference === "function" ? fileReference(target, true, true) : null;
       // 目录（末段没有扩展名）预览不了，就不做成可点胶囊：只显示作者写的文字
       const directory = !ref && typeof fileHasExtension === "function" && /^(?:\/|~\/|file:\/\/|\.\.?\/)/.test(target) && !fileHasExtension(target);
-      out.push(ref ? fileChip({...ref,label:m[6]}) : directory ? h("span", { class: "rt-path-text", title: target }, rtInline(m[6])) : RT_SAFE_URL.test(target) ? h("a", { href: target, target: "_blank", rel: "noopener noreferrer" }, rtInline(m[6])) : `${m[6]} (${m[7]})`);
+      out.push(ref ? fileChip({...ref,label:m[6]}) : directory ? h("span", { class: "rt-path-text", title: target }, rtInline(m[6])) : RT_SAFE_URL.test(target) ? rtExternalLink(target, rtInline(m[6])) : `${m[6]} (${m[7]})`);
     }
     else if (m[8] || m[9]) out.push(h("em", {}, rtInline(m[8] || m[9])));
-    else if (m[10]) out.push(h("a", { href: m[10], target: "_blank", rel: "noopener noreferrer" }, m[10]));
+    else if (m[10]) out.push(rtExternalLink(m[10], m[10]));
     last = re.lastIndex;
   }
   if (last < text.length) out.push(...rtBareSessionTextParts(text.slice(last)));

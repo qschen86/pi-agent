@@ -3,9 +3,11 @@
  * - GET  /api/runtime-updates                  各 runtime 的已装版本、最新稳定版、新增功能、更新记录、分析报告
  * - GET  /api/runtime-updates/summary          只有红点需要的小结（轻量）
  * - POST /api/runtime-updates/check            立即检测一轮（已有一轮在跑时 409）
- * - POST /api/runtime-updates/:kind/analyze    人点「分析收益与风险」：生成（或返回已有的）分析报告；{ force: true } 重新生成
+ * - POST /api/runtime-updates/:kind/analyze    重新分析：{ force: true } 重新生成；后台跑，立即返回 202，页面轮询概览看进度
  * - POST /api/runtime-updates/:kind/ignore     忽略当前最新版；{ undo: true } 取消忽略
  * - POST /api/runtime-updates/:kind/upgrade    人点「升级」：返回由另一个 runtime 执行的会话方案（工作目录、首条消息、权限）；Codex 400
+ * - POST /api/runtime-updates/auto-upgrade     自动夜间升级开关 { enabled }；打开后按条件重新评估并排队
+ * - POST /api/runtime-updates/:kind/auto-upgrade  取消这个 runtime 还没开始的自动升级
  * 平台不直接执行升级：方案由设置页交给新建会话流程，在另一个 runtime 的会话里跑。登录、Host、Origin 校验沿用控制台 /api 已有的中间件。
  */
 import type { Hono } from "hono";
@@ -38,9 +40,26 @@ export function mountRuntimeUpdatesRoutes(app: Hono, service: RuntimeUpdatesServ
     const kind = kindOf(c.req.param("kind"));
     if (!kind) return c.json({ error: "未知的 runtime", code: "RUNTIME_KIND" }, 400);
     const body = await c.req.json<{ force?: unknown }>().catch(() => ({} as { force?: unknown }));
-    const result = await service.analyze(kind, body.force === true);
-    if (result.ok) return c.json({ ok: true, cached: result.cached, analysis: result.analysis });
+    // 分析要几十秒到几分钟：后台跑，接口立即返回，避免网关超时（504）
+    const result = service.startAnalyze(kind, "manual", body.force === true);
+    if (result.ok) return c.json({ ok: true, started: result.started, ...(result.started ? {} : { cached: true, analysis: result.analysis }) }, result.started ? 202 : 200);
     return c.json({ error: result.error, code: result.code }, result.code === "ANALYZING" ? 409 : result.code === "NO_UPDATE" ? 400 : 502);
+  });
+  app.post("/api/runtime-updates/auto-upgrade", async (c) => {
+    c.header("Cache-Control", "private, no-store");
+    if (!service) return off(c);
+    const body = await c.req.json<{ enabled?: unknown }>().catch(() => ({} as { enabled?: unknown }));
+    const enabled = body.enabled !== false;
+    service.setAutoUpgradeEnabled(enabled);
+    if (enabled) void service.runAutoUpgradePass().catch(() => undefined);
+    return c.json({ ok: true, enabled });
+  });
+  app.post("/api/runtime-updates/:kind/auto-upgrade", (c) => {
+    c.header("Cache-Control", "private, no-store");
+    if (!service) return off(c);
+    const kind = kindOf(c.req.param("kind"));
+    if (!kind) return c.json({ error: "未知的 runtime", code: "RUNTIME_KIND" }, 400);
+    return service.cancelAutoUpgrade(kind) ? c.json({ ok: true }) : c.json({ error: "这个版本没有待执行的自动升级", code: "NO_AUTO_UPGRADE" }, 400);
   });
   app.post("/api/runtime-updates/:kind/upgrade", (c) => {
     c.header("Cache-Control", "private, no-store");

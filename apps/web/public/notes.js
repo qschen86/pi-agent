@@ -1972,10 +1972,12 @@ function noteInstallTodaySwipe(body) {
     body.style.transform = dx ? `translateX(${dx}px)` : "";
     body.style.opacity = dx ? String(Math.max(0.25, 1 - Math.abs(dx) / (width * 0.9))) : "";
   };
-  const clearOffset = () => { body.style.transition = ""; body.style.transform = ""; body.style.opacity = ""; section()?.classList.remove("is-sliding"); };
+  const clearOffset = () => { delete body.dataset.todayTouch; body.style.transition = ""; body.style.transform = ""; body.style.opacity = ""; section()?.classList.remove("is-sliding"); };
   body.addEventListener("pointerdown", (ev) => {
     drag = null;
+    delete body.dataset.todayTouch;
     if (ev.pointerType !== "touch" || ev.target.closest?.(NOTE_TODAY_SWIPE_IGNORE) || body.dataset.todayLeaving) return;
+    body.dataset.todayTouch = "1";
     drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, width: body.clientWidth || window.innerWidth || 1, active: false };
   });
   body.addEventListener("pointermove", (ev) => {
@@ -1985,7 +1987,7 @@ function noteInstallTodaySwipe(body) {
     if (!s.active) {
       if (Math.max(Math.abs(dx), Math.abs(dy)) < 10) return;
       // 竖滑留给页面滚动；方向不对（人的卡片往右、Agent 的卡片往左）也不接管
-      if (!noteTodaySwipeNext(dx, dy)) { drag = null; return; }
+      if (!noteTodaySwipeNext(dx, dy)) { delete body.dataset.todayTouch; drag = null; return; }
       s.active = true;
       body.style.transition = "none";
       section()?.classList.add("is-sliding");
@@ -1998,6 +2000,7 @@ function noteInstallTodaySwipe(body) {
   });
   body.addEventListener("pointerup", (ev) => {
     const s = drag; drag = null;
+    delete body.dataset.todayTouch;
     try { body.releasePointerCapture?.(ev.pointerId); } catch { /* 没有捕获就忽略 */ }
     if (!s || !s.active || s.id !== ev.pointerId) return;
     const dx = ev.clientX - s.x;
@@ -2028,6 +2031,7 @@ function noteInstallTodaySwipe(body) {
   });
   body.addEventListener("pointercancel", () => {
     const s = drag; drag = null;
+    delete body.dataset.todayTouch;
     if (s?.active) clearOffset();
   });
 }
