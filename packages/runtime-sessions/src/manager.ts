@@ -1,8 +1,10 @@
+import {startCapabilityAccess} from './capability-access.js';
+import type {CapabilityGateway} from '@pi-agent/capability-gateway';
 import {startPlatformBrowser, verifyScreenshotReceipt, screenshotReportProblems} from "./platform-browser.js";
 import {SCREENSHOT_INSTRUCTIONS} from "../../pi-runtime/src/screenshot-policy.mjs";
 import {LINK_READ_INSTRUCTIONS} from "./public-link-reader.js";
 import { webActivity, type WebActivityItem } from "./web-activity.js";
-import { runtimeRecordInstructions, platformChecks, platformInjections, type PlatformCheckItem, type PlatformInjectionItem } from "./platform-injection.js";
+import { PROCESS_CLEANUP_INSTRUCTIONS, runtimeRecordInstructions, platformChecks, platformInjections, type PlatformCheckItem, type PlatformInjectionItem } from "./platform-injection.js";
 import { snapshotWorkspace, changedFilesSince, type WorkspaceSnapshot } from "./workspace-evidence.js";
 import { beforeAfterFact, readProbeStates, READER_PROBE_IDS, type ProbeReaders } from "./memory-probes.js";
 import { activeRulesOf, composeFeedback, probeIdsOf, ENFORCEMENT_PROMPT_MARK, enforcementRule, MAX_ENFORCEMENT_RETRIES, runModelRules, runRules, ruleTitleOf, turnEvidence, unfinishedChainStart, type ActiveRule, type ModelRuleJudge } from "./memory-enforcement.js";
@@ -11,6 +13,7 @@ import { sessionImageIndex } from "./image-index.js";
 import { PLATFORM_SKILLS_ROOT, preparePlatformPrompt, prependPlatformPreamble, type PlatformSkillInfo } from "./platform-skills.js";
 import { PlatformSkillSwitches } from "./platform-skill-switches.js";
 import { UI_REPORT_FIX, UI_SKILL_ID, uiReportProblems } from "./ui-report-check.js";
+import { DELIVERABLE_FIX, deliverableProblems, type DeliverableFileChecker } from "./deliverable-check.js";
 import { evaluationPermission, normalizeEvaluation } from "./evaluation.js";
 import type { EvaluationBoundary } from "./evaluation.js";
 import { COMPARE_WORKTREE_PERMISSION_MODES, defaultPermissionMode, effectivePermissionMode, permissionOption, permissionOptions, readOnlyPermissionMode } from "./permissions.js";
@@ -29,10 +32,13 @@ import type { PermissionMode } from "./permissions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { dirname, join } from "node:path";
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { assessCacheHandoff, buildTranscript, estimateContextTokens, handoffPreamble, handoffTitle, handoffTail, type CacheHandoffAssessment } from "./cache-handoff.js";
+import { buildTurnCacheStats, CacheMonitor, computePrefixFingerprint, summarizeCacheHealth, type CacheAlertEvent, type CacheHealthSummary, type PrefixFingerprint } from "./cache-monitor.js";
+import { buildTurnContextStats } from "./context-stats.js";
 import { PiDriver } from "./pi.js";
 import { ClaudeDriver } from "./claude.js";
-import { AntigravityDriver } from "./antigravity.js";
+import { AntigravityDriver, ANTIGRAVITY_IDENTITY_SOURCE, ANTIGRAVITY_IDENTITY_FINGERPRINT } from "./antigravity.js";
 import { CodexDriver, underRoots } from "./codex.js";
 import { DriverStageError } from "./driver.js";
 import type { ApprovalDecision, DriverApproval, DriverEvent, HistoryItem, HistoryRead, NativeFingerprint, RuntimeDriver, TurnHandle, TurnResult, TurnSink } from "./driver.js";
@@ -43,7 +49,7 @@ import { SharedSlots } from "./shared-slots.js";
 import type { AdmissionClass, ProjectAdmissionPolicy } from "./shared-slots.js";
 import { RuntimeStore } from "./store.js";
 import type {
-  ApprovalRequest, ComparisonGroup, ComparisonLane, ComparisonRef, DirectoryEntry, IdentityScope, NoteSessionLink, OperationRecord, ProjectedEvent, QuickActionBadge, RateLimitSnapshot, StoredQuickReplies, RuntimeKind, RuntimeProfile,
+  ApprovalRequest, ComparisonGroup, ComparisonLane, ComparisonRef, DirectoryEntry, IdentityScope, NoteSessionLink, OperationRecord, ProjectedEvent, QuickActionBadge, RateLimitSnapshot, StoredQuickReplies, StoredTurnSummary, RuntimeKind, RuntimeProfile,
   OutboxMessage, RuntimeSettings, SessionBinding, SessionPurpose, SessionStatus, TurnRecord, UsageRecord, UsageSummary
 } from "./types.js";
 import { COMPARE_MAX_LANES, REQUIRED_FOR_CREATE, RUNTIME_KINDS, RUNTIME_LABEL } from "./types.js";
@@ -77,7 +83,7 @@ export function sessionDisplayWorkspace(b: Pick<SessionBinding, "workspace" | "w
 }
 
 export class RuntimeError extends Error {
-  constructor(message: string, readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 503, readonly code: string) { super(message); }
+  constructor(message: string, readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 503, readonly code: string, readonly details?: Record<string, unknown>) { super(message); }
 }
 
 export interface ManagerOptions {
@@ -102,12 +108,35 @@ export interface ManagerOptions {
   platformSkills?: { root?: string; switchesFile?: string };
   /** 卡住看门狗阈值（测试用毫秒注入；不传就是 2/5/10 分钟提醒、20 分钟自动中止） */
   stallGuard?: { shellMs?: number[]; browserMs?: number[]; abortMs?: number; tickMs?: number };
-  /** 认证失败后自动补一次在线认证的延迟（测试用毫秒注入；不传就是 5 秒） */
+  /** 认证失败后首次自动补一次在线认证的延迟（测试用毫秒注入；不传就是 5 秒） */
   authAutoVerifyDelayMs?: number;
+  /** 首次自动复核仍未恢复后的低频复核间隔（测试用毫秒注入；不传就是 2 分钟） */
+  authAutoVerifyRetryMs?: number;
   /** 检查 runtime 二进制是否升级的间隔（测试用毫秒注入；不传就是 60 秒） */
   binaryWatchMs?: number;
+  /** 当前部署代码版本（用于缓存监控区分同版本飘移与跨版本发版变更） */
+  platformSha?: string;
+  /** Antigravity 数据目录覆盖（测试用） */
+  antigravityDataDir?: string;
+  /** Codex 数据目录覆盖（测试用） */
+  codexHome?: string;
+  /** 缓存监控触发异常时的回调 */
+  onCacheAlert?: (event: CacheAlertEvent) => void;
 }
 
+interface StallEntry {
+  key: string; name: string; input: string; startedAt: number;
+  /** 最近一次看到新输出的时刻；没回传过输出就等于 startedAt */
+  lastActiveAt: number;
+  /** 命令自己声明的静默等待（sleep N），不计入卡住时长 */
+  waitMs: number;
+  sawOutput: boolean; lastOutput: string; turnNo?: number;
+  /** 登记时事件在会话里的序号：之后才出现的助手消息说明这个工具已经返回 */
+  seq: number;
+  alerted: Set<number>; aborted: boolean;
+  /** 会话在等审批 / 提问时暂停计时，记下暂停的起点 */
+  pausedAt?: number;
+}
 interface Running {
   turnNo: number;
   operationId: string;
@@ -115,11 +144,22 @@ interface Running {
   stopRequested?: boolean;
   approvals: Set<string>;
   closeBrowser?:()=>Promise<void>;
+  cacheProbe?: {
+    turnStartedAtMs: number;
+    prevTurnEndedAtMs?: number;
+    prevContextTokens?: number;
+    prevModel?: string;
+    prevPrefix?: PrefixFingerprint;
+    prefix: PrefixFingerprint;
+    beforeUsageCount: number;
+    codexBefore?: { input: number; cachedInput: number };
+  };
 }
 
 interface PendingApproval { resolve: (d: ApprovalDecision) => void; timer?: NodeJS.Timeout }
 
 export interface CreateInput {
+  capabilityGateway?: boolean;
   recordSourceRefs?: import("./types.js").EntryRef[];
   scheduledFor?: string;
   browserProfileId?: string;
@@ -154,6 +194,8 @@ export interface CreateInput {
   deferWhenDraining?: boolean;
   /** 在会话自己的 git worktree 里改（从 main 切出）；只用于普通单会话 */
   worktree?: boolean;
+  /** 内部：缓存变冷后从旧会话接续（handoffSession 设置，接口不接受）：接管旧会话的 worktree，并记下来源 */
+  handoff?: { from: NonNullable<NonNullable<SessionBinding["handoff"]>["from"]>; at: string; reason: NonNullable<SessionBinding["handoff"]>["reason"]; idleMs?: number; contextTokens?: number; adoptWorktree?: SessionBinding["worktree"] };
 }
 
 export interface SessionView {
@@ -301,6 +343,13 @@ const RATE_STALE_MS = 15 * 60_000;
  */
 const STALL_GUARD = { shellMs: [120_000, 300_000, 600_000], browserMs: [300_000, 600_000, 900_000], abortMs: 1_200_000, tickMs: 5_000 };
 const STALL_BROWSER = /^(?:platform_browser|platform_browser\.browser|mcp__platform_browser__browser|mcp_platform_browser(?:_[0-9a-f]+)?_browser|browser)$/i;
+/**
+ * 不登记计时的工具：等真人回答的提问，以及子 Agent 容器（它的耗时是内部工具之和，内部工具各自计时）。
+ * 等审批 / 提问期间其余工具的计时另外暂停，见 sweepStalls。
+ */
+const STALL_EXEMPT = /^(?:AskUserQuestion|request_user_input|Agent|Task)$/;
+/** 明确还在跑的状态；空或未知状态的非 partial 事件按已结束处理（Codex 的 webSearch 状态恒为空串）。 */
+const TOOL_IN_FLIGHT = /^(?:pending|inProgress|in_progress|running)$/i;
 function stallMinutes(ms: number): number { return Math.max(1, Math.round(ms / 60_000)); }
 /** 工具入参的展示形态：runtime 把入参序列化成 JSON，提醒里只该看到命令本身。 */
 function stallCommand(raw: string): string {
@@ -348,10 +397,12 @@ const RATE_AUTO_REFRESH_MS = 60_000;
 /** 自动刷新失败或快照过期后的最小重试间隔，避免每次轮询都启动原生查询。 */
 const RATE_AUTO_RETRY_MS = 30_000;
 /**
- * 真实调用报认证失败后自动补一次在线认证的延迟：等本轮原生进程收尾，也给用户重新登录留出时间。
- * 只认在线认证证据（Claude 的 authVerified），没通过就保留「待登录」，不降级成启动失败。
+ * 真实调用报认证失败后首次自动补一次在线认证的延迟：等本轮原生进程收尾，也给瞬时令牌刷新留出时间。
+ * 首次未通过时转入低频复核（AUTH_AUTO_VERIFY_RETRY_MS），只认在线认证证据（Claude/Antigravity 的 authVerified），
+ * 没通过就保留「待登录」，不降级成启动失败。
  */
 const AUTH_AUTO_VERIFY_DELAY_MS = 5_000;
+const AUTH_AUTO_VERIFY_RETRY_MS = 120_000;
 const BINARY_WATCH_MS = 60_000;
 
 type SampledRateLimit = Omit<RateLimitSnapshot, "identityScopeId" | "runtimeKind">;
@@ -380,6 +431,8 @@ export function mergeSampledRateLimit(prev: SampledRateLimit | undefined, s: Sam
 }
 
 export class RuntimeSessionManager extends EventEmitter {
+  private capabilityGateway?: ()=>CapabilityGateway;
+  setCapabilityGateway(gateway:CapabilityGateway|(()=>CapabilityGateway)):void {this.capabilityGateway=typeof gateway==='function'?gateway:()=>gateway;}
   private recordAccessProvider?: (binding: SessionBinding, turnId: string) => {contextFile:string;clientPath:string};
   setRecordAccessProvider(provider: (binding:SessionBinding,turnId:string)=>{contextFile:string;clientPath:string}): void {this.recordAccessProvider=provider;}
 
@@ -409,6 +462,24 @@ export class RuntimeSessionManager extends EventEmitter {
   private enforcement = new Map<string, { turnNo: number; attempt: number; since: number }>();
   /** 「界面打磨」交付检查的补救进度（与记忆强约束分开计数，同样最多 MAX_ENFORCEMENT_RETRIES 次） */
   private uiReportEnforcement = new Map<string, { turnNo: number; attempt: number; since: number }>();
+  /** 交付物可达性检查的补救进度（同样最多 MAX_ENFORCEMENT_RETRIES 次；不在时间线给用户加提示） */
+  private deliverableEnforcement = new Map<string, { turnNo: number; attempt: number; since: number }>();
+  private deliverableChecker: DeliverableFileChecker | undefined;
+  setDeliverableChecker(fn: DeliverableFileChecker | undefined): void { this.deliverableChecker = fn; }
+  setCacheAlertHandler(fn: ((event: CacheAlertEvent) => void) | undefined): void { this.cacheMonitor.setAlertHandler(fn); }
+  cacheHealthSummary(days = 7, now = new Date()): CacheHealthSummary {
+    const sinceMs = now.getTime() - Math.max(1, Math.min(30, days)) * 86_400_000;
+    return summarizeCacheHealth({
+      samples: this.cacheMonitor.readSamples(sinceMs),
+      bindings: this.store.allBindings(),
+      usage: this.store.allUsage(),
+      days,
+      now,
+      ...(this.antigravityDataDir ? { antigravityDataDir: this.antigravityDataDir } : {}),
+      ...(this.codexHome ? { codexHome: this.codexHome } : {}),
+      piSessionsDir: join(this.store.dir, "pi-sessions")
+    });
+  }
   /** 回合开始时的工作区快照（强约束「按结果取证」用）：会话 → 回合号 → 快照；只留最近几轮，校验结束就清掉 */
   private workspaceBaselines = new Map<string, Map<number, WorkspaceSnapshot>>();
   /** 取证项（发布状态、线上部署）回合开始时的状态：会话 → 回合号 → 取证项 id → 状态；和工作区快照同一生命周期 */
@@ -420,14 +491,15 @@ export class RuntimeSessionManager extends EventEmitter {
   /** runtime → 认证失败后的自动复核计时（每类只排一个，避免重试风暴） */
   private authVerifyTimers = new Map<RuntimeKind, NodeJS.Timeout>();
   private readonly authAutoVerifyDelayMs: number;
+  private readonly authAutoVerifyRetryMs: number;
   /** runtime 二进制升级自检：上一轮看到的指纹（连续两轮不变才动手，避免升级写文件到一半就探测）与已自动探测过的指纹（同一指纹只探一次） */
   private binarySeen = new Map<RuntimeKind, string>();
   private binaryProbed = new Map<RuntimeKind, string>();
   private binaryWatchTimer?: NodeJS.Timeout;
   /** 正在等 runtime 应答的插话：`${pid}|${messageId}` */
   private steeringInFlight = new Set<string>();
-  /** 卡住看门狗：会话 → 当前在跑的工具；只有非终态工具在表里，本轮结束就清 */
-  private stalls = new Map<string, { key: string; name: string; input: string; startedAt: number; /** 最近一次看到新输出的时刻；没回传过输出就等于 startedAt */ lastActiveAt: number; /** 命令自己声明的静默等待（sleep N），不计入卡住时长 */ waitMs: number; sawOutput: boolean; lastOutput: string; turnNo?: number; alerted: Set<number>; aborted: boolean }>();
+  /** 卡住看门狗：会话 → 工具 key → 在跑的工具；只有非终态工具在表里，本轮结束就清。并行工具各自计时。 */
+  private stalls = new Map<string, Map<string, StallEntry>>();
   private stallTimer?: NodeJS.Timeout;
   private readonly stallGuard: { shellMs: number[]; browserMs: number[]; abortMs: number; tickMs: number };
   private readonly titleWorker?: SessionTitleWorker;
@@ -443,12 +515,20 @@ export class RuntimeSessionManager extends EventEmitter {
   private rateLimitAttempts = new Map<string, number>();
   private rateLimitFailures = new Set<string>();
   readonly attachments: AttachmentStore;
+  readonly cacheMonitor: CacheMonitor;
+  private readonly platformSha: string;
+  private readonly antigravityDataDir?: string;
+  private readonly codexHome?: string;
   readonly recovered: Promise<void>;
 
   constructor(opts: ManagerOptions) {
     super();
     this.setMaxListeners(200);
     this.store = new RuntimeStore(opts.dataDir);
+    this.platformSha = opts.platformSha ?? process.env["PI_AGENT_WEB_SHA"] ?? "local";
+    this.antigravityDataDir = opts.antigravityDataDir;
+    this.codexHome = opts.codexHome;
+    this.cacheMonitor = new CacheMonitor(this.store.dir, ...(opts.onCacheAlert ? [{ onAlert: opts.onCacheAlert }] : []));
     const migrated = this.store.migratePiNativePermissions();
     if (migrated.length) this.store.audit({ type: "pi-native-default-migration", sessions: migrated });
     // 已归档会话的逐次用量压缩成每小时 × 模型合计（一次性；之后每次归档时压缩）。失败不影响启动。
@@ -466,6 +546,7 @@ export class RuntimeSessionManager extends EventEmitter {
     this.approvalTtlMs = opts.approvalTtlMs ?? 0;
     this.stallGuard = { ...STALL_GUARD, ...(opts.stallGuard ?? {}) };
     this.authAutoVerifyDelayMs = opts.authAutoVerifyDelayMs ?? AUTH_AUTO_VERIFY_DELAY_MS;
+    this.authAutoVerifyRetryMs = opts.authAutoVerifyRetryMs ?? AUTH_AUTO_VERIFY_RETRY_MS;
     this.questionTtlMs = opts.questionTtlMs ?? 0;
     this.historyCacheMs = opts.historyCacheMs ?? 30_000;
     if (opts.platformSkills) {
@@ -540,8 +621,11 @@ export class RuntimeSessionManager extends EventEmitter {
       workspaceRootsByRuntime: { ...cur.workspaceRootsByRuntime, ...next.workspaceRootsByRuntime },
       enabledModelsByRuntime: { ...cur.enabledModelsByRuntime, ...next.enabledModelsByRuntime },
       defaultSessionByRuntime: { ...cur.defaultSessionByRuntime, ...next.defaultSessionByRuntime },
+      quotaLowPromptByRuntime: { ...cur.quotaLowPromptByRuntime, ...next.quotaLowPromptByRuntime },
       maxRunningPerProfile: capacity
     };
+    const ch = merged.cacheHandoff;
+    if (ch !== undefined && (typeof ch !== "object" || ch === null || (ch.enabled !== undefined && typeof ch.enabled !== "boolean") || (ch.thresholdTokens !== undefined && (!Number.isInteger(ch.thresholdTokens) || ch.thresholdTokens < 10_000 || ch.thresholdTokens > 2_000_000)))) throw new RuntimeError("缓存接续设置不对：enabled 为布尔，thresholdTokens 为 1 万–200 万的整数", 400, "RT_INPUT");
     for (const kind of RUNTIME_KINDS) {
       const models = merged.enabledModelsByRuntime?.[kind];
       if (models === undefined) continue;
@@ -663,6 +747,7 @@ export class RuntimeSessionManager extends EventEmitter {
       this.store.audit({ type: "identity-changed", runtimeKind: kind, from: prev.identity.identityScopeId, to: identity.identityScopeId });
     }
     this.store.saveProfile(profile);
+    if (profile.state !== "needs-login" || !profile.lastAuthFailure) this.cancelAuthVerify(kind);
     if (authenticated && identity && out.rateLimit) this.store.saveRateLimit({ ...out.rateLimit, identityScopeId: identity.identityScopeId, runtimeKind: kind });
     this.emit("profiles", {});
     return profile;
@@ -680,7 +765,15 @@ export class RuntimeSessionManager extends EventEmitter {
     }
     const key = this.profileId(kind);
     const fp = createHash("sha256").update(id.fingerprint).digest("hex").slice(0, 24);
-    const p = this.store.getOrCreateIdentityPartition(key, fp);
+    const previous = this.profile(kind)?.identity;
+    // 移除旧版套餐指纹时保留当前分区，不修改会话绑定、不合并更早的分区或额度。
+    const legacy = kind === "antigravity" && id.source === ANTIGRAVITY_IDENTITY_SOURCE
+      && id.fingerprint === ANTIGRAVITY_IDENTITY_FINGERPRINT && id.authMode === "google-oauth"
+      && previous?.source === "agy acp session/new _meta.antigravity.tier"
+      && previous.authMode === id.authMode && previous.derivation === "persistent-partition"
+      ? this.store.identityPartitions()[key] : undefined;
+    const migrateFrom = legacy && legacy.partitionId === previous?.identityScopeId ? legacy : undefined;
+    const p = this.store.getOrCreateIdentityPartition(key, fp, migrateFrom);
     return { ...base, identityScopeId: p.partitionId, derivation: "persistent-partition", accountKnown: false };
   }
 
@@ -829,7 +922,11 @@ export class RuntimeSessionManager extends EventEmitter {
     const platformSessionId = `rt-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     // 独立 worktree：从仓库的 main 切出这个会话专用的 worktree，会话在里面改（改动全属于它，可以由宿主提交）
     let worktree: SessionBinding["worktree"];
-    if (input.worktree) {
+    let createdWorktree = false;
+    if (input.handoff?.adoptWorktree) {
+      // 接续：沿用旧会话的 worktree 和分支（未提交的改动都在里面）；旧会话归档时不再删除它
+      worktree = structuredClone(input.handoff.adoptWorktree);
+    } else if (input.worktree) {
       const info = await gitWorkspaceInfo(workspace);
       if (!info) throw new RuntimeError("工作目录不在 git 仓库里（或仓库还没有提交），不能用独立 worktree", 400, "RT_INPUT");
       if (!underRoots(info.repoRoot, this.workspaceRoots(input.runtimeKind))) throw new RuntimeError(`仓库根 ${info.repoRoot} 不在允许的工作目录根里，worktree 放不进去`, 400, "RT_INPUT");
@@ -844,6 +941,7 @@ export class RuntimeSessionManager extends EventEmitter {
         throw new RuntimeError(`子目录 ${info.subdir} 没有提交进 ${base.ref}，worktree 里没有它`, 400, "RT_INPUT");
       }
       worktree = { repoRoot: info.repoRoot, path, branch, baseRef: base.ref, baseCommit: base.commit, subdir: info.subdir };
+      createdWorktree = true;
       workspace = inner;
     }
     const operationId = `op-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -855,6 +953,8 @@ export class RuntimeSessionManager extends EventEmitter {
       title: input.title?.trim() ? bounded(input.title.trim(), 80).text : generateTitle ? "正在生成标题…" : autoSessionTitle(prompt),
       titleSource: input.title?.trim() ? "user" : generateTitle ? "pending" : "prompt",
       ...(generateTitle ? { titleGeneration: pendingSessionTitle(bounded(prompt, LIMITS.message).text) } : {}),
+      // 外部连接是平台级能力：新会话默认带上，账号授权见设置 → 外部连接；仅显式传 false 才关闭。
+      ...(input.capabilityGateway !== false ? {capabilityGateway:true} : {}),
       ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
       workspace, ...(model ? { requestedModel: model } : {}), ...(effort ? { requestedEffort: effort } : {}), permissionMode, permissionLabel: permissions.label,
       ...(input.runtimeKind === "pi" ? { piPermissionPolicyVersion: 1 as const } : {}),
@@ -866,6 +966,7 @@ export class RuntimeSessionManager extends EventEmitter {
       ...(input.platformSkillsExclude?.length ? { platformSkillsExclude: [...input.platformSkillsExclude] } : {}),
       ...(input.recommendationRef ? { recommendationRef: structuredClone(input.recommendationRef) } : {}),
       ...(worktree ? { worktree } : {}),
+      ...(input.handoff ? { handoff: { from: input.handoff.from, at: input.handoff.at, reason: input.handoff.reason, ...(input.handoff.idleMs !== undefined ? { idleMs: input.handoff.idleMs } : {}), ...(input.handoff.contextTokens !== undefined ? { contextTokens: input.handoff.contextTokens } : {}) } } : {}),
       ...(input.admissionClass ? { admissionClass: input.admissionClass } : {}),
       ...(evaluation ? { evaluation } : {}),
       ...(input.evaluationPolicyHash ? { evaluationPolicyHash: input.evaluationPolicyHash } : {}),
@@ -903,7 +1004,7 @@ export class RuntimeSessionManager extends EventEmitter {
     }
     let publication: { session: SessionBinding; operation: OperationRecord; replayed: boolean };
     try { publication = this.store.createSessionOperation(binding, op); }
-    catch (e) { if (worktree) void removeSessionWorktreeIfMerged(worktree.repoRoot, worktree.path, worktree.branch, worktree.baseRef).catch(() => undefined); throw e; }
+    catch (e) { if (worktree && createdWorktree) void removeSessionWorktreeIfMerged(worktree.repoRoot, worktree.path, worktree.branch, worktree.baseRef).catch(() => undefined); throw e; }
     if (publication.replayed) return publication;
     this.attachments.attach(attachments.map(a => a.attachmentId), actor, platformSessionId);
     const userEvent = this.store.upsertEvent(platformSessionId, {
@@ -1008,8 +1109,8 @@ export class RuntimeSessionManager extends EventEmitter {
   setEvidenceReaders(readers: ProbeReaders): void { this.evidenceReaders = readers; }
   private pendingPrompts = new Map<string, { prompt: string; attachmentIds?: string[]; presetSessionId?: string; model?: string; effort?: string }>();
 
-  private imageInputHash(input: { prompt: string; model?: string; effort?: string; workspace?: string; runtimeKind?: string; browserProfileId?: string; permissionMode?: string; role?: unknown; noteRef?: unknown; recordSourceRefs?: unknown; recommendationRef?: unknown; scheduledFor?: string }, images: ImageAttachment[]): string {
-    return createHash("sha256").update(JSON.stringify({ prompt: input.prompt, images: images.map(a => ({id: a.attachmentId, hash: a.sha256})), model: input.model ?? null, effort: input.effort ?? null, workspace: input.workspace ?? null, runtime: input.runtimeKind ?? null, permission: input.permissionMode ?? null, ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}), role: input.role ?? null, ...(input.recordSourceRefs?{recordSourceRefs:input.recordSourceRefs}:{}), ...(input.scheduledFor !== undefined ? { scheduledFor: input.scheduledFor } : {}), ...(input.recommendationRef ? { recommendationRef: input.recommendationRef } : {}) })).digest("hex");
+  private imageInputHash(input: { prompt: string; model?: string; effort?: string; workspace?: string; runtimeKind?: string; capabilityGateway?: boolean; browserProfileId?: string; permissionMode?: string; role?: unknown; noteRef?: unknown; recordSourceRefs?: unknown; recommendationRef?: unknown; scheduledFor?: string }, images: ImageAttachment[]): string {
+    return createHash("sha256").update(JSON.stringify({ prompt: input.prompt, images: images.map(a => ({id: a.attachmentId, hash: a.sha256})), model: input.model ?? null, effort: input.effort ?? null, workspace: input.workspace ?? null, runtime: input.runtimeKind ?? null, permission: input.permissionMode ?? null, ...(input.capabilityGateway?{capabilityGateway:true}:{}), ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}), role: input.role ?? null, ...(input.recordSourceRefs?{recordSourceRefs:input.recordSourceRefs}:{}), ...(input.scheduledFor !== undefined ? { scheduledFor: input.scheduledFor } : {}), ...(input.recommendationRef ? { recommendationRef: input.recommendationRef } : {}) })).digest("hex");
   }
   private checkImageInput(profile: RuntimeProfile, model: string | undefined, images: ImageAttachment[]): void {
     if (!images.length) return;
@@ -1401,6 +1502,7 @@ export class RuntimeSessionManager extends EventEmitter {
     const operationId = `op-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     const turnNo = Math.max(0, ...b.turns.map((t) => t.turnNo)) + 1;
     const clientMessageId = randomUUID();
+    const scheduledFor = input.outbox ? b.outbox?.find(m => m.messageId === input.outbox!.messageId)?.scheduledFor : undefined;
     const operation: OperationRecord = { operationId, idempotencyKey: key, inputHash, ...(attachments.length ? { imageInput: { prompt, attachmentIds: attachments.map(a => a.attachmentId), owner: actor, effort } } : {}), kind: "turn", platformSessionId, ...(!b.nativeSessionId && b.runtimeKind !== "codex" ? { presetNativeId: randomUUID() } : {}), state: "prepared", createdAt: now, updatedAt: now, turnNo, steps: [{ at: now, step: "prepared", detail: `续聊第 ${turnNo} 轮，沿原生 ID ${b.nativeSessionId}` }] };
     let retitle = false;
     const publication = this.store.appendSessionOperation(platformSessionId, Number(input.expectedRevision), (x) => {
@@ -1412,7 +1514,7 @@ export class RuntimeSessionManager extends EventEmitter {
         x.outbox!.splice(i, 1);
         if (!x.outbox!.length) delete x.outbox;
       }
-      x.turns.push({ turnNo, status: "queued", operationId, promptPreview: bounded(prompt, LIMITS.preview).text, clientMessageId, ...(effort ? { effort } : {}) });
+      x.turns.push({ turnNo, ...(scheduledFor ? { scheduledFor } : {}), status: "queued", operationId, promptPreview: bounded(prompt, LIMITS.preview).text, clientMessageId, ...(effort ? { effort } : {}) });
       // 预约首条到点才产生第 1 轮：创建时因为还没有输入而失败的标题任务，改用这条用户消息重试一次。
       if (input.outbox && turnNo === 1 && x.titleGeneration?.state === "failed" && x.titleGeneration.errorCode === "TITLE_EMPTY_INPUT") {
         x.titleGeneration = pendingSessionTitle(bounded(prompt, LIMITS.message).text);
@@ -1843,7 +1945,7 @@ export class RuntimeSessionManager extends EventEmitter {
       }
       this.continuationFinalizers.delete(pid);
       try {
-        const sent = await this.enforceMemoryRules(pid, turnNo, stopRequested) || await this.enforceUiReport(pid, turnNo, stopRequested);
+        const sent = await this.enforceMemoryRules(pid, turnNo, stopRequested) || await this.enforceUiReport(pid, turnNo, stopRequested) || await this.enforceDeliverables(pid, turnNo, stopRequested);
         if (!sent) await this.drainOutbox(pid);
       } catch { await this.drainOutbox(pid); }
       // A notification arriving during asynchronous evidence collection defers checks again.
@@ -2065,6 +2167,7 @@ export class RuntimeSessionManager extends EventEmitter {
       return;
     }
     let handle: TurnHandle;
+    let capabilityAccess: Awaited<ReturnType<typeof startCapabilityAccess>> | undefined;
     let platformBrowser: Awaited<ReturnType<typeof startPlatformBrowser>> | undefined;
     try {
       if (b.evaluationPolicyHash && this.evaluationPolicy(b.runtimeKind)?.policyHash !== b.evaluationPolicyHash) throw new DriverStageError("Evaluation policy changed; not dispatched", "create");
@@ -2107,11 +2210,48 @@ export class RuntimeSessionManager extends EventEmitter {
       if (!b.evaluation && !(b.roomRef && b.permissionMode === readOnlyPermissionMode(b.runtimeKind))) {
         platformBrowser = await startPlatformBrowser({sessionId:pid,turnId:turn.clientMessageId,workspace:b.workspace,outputDir:join(b.workspace,".platform-browser",pid),event:e=>sink.event(e)});
         run.closeBrowser=platformBrowser.dispose;
-        roleInstructions=[roleInstructions,SCREENSHOT_INSTRUCTIONS,LINK_READ_INSTRUCTIONS].filter(Boolean).join("\n\n");
+        roleInstructions=[roleInstructions,SCREENSHOT_INSTRUCTIONS,LINK_READ_INSTRUCTIONS,PROCESS_CLEANUP_INSTRUCTIONS].filter(Boolean).join("\n\n");
+      }
+      if (b.capabilityGateway && this.capabilityGateway && !b.evaluation && !b.roomRef && b.permissionMode !== readOnlyPermissionMode(b.runtimeKind) && b.permissionMode !== 'plan' && b.runtimeKind !== 'antigravity') {
+        capabilityAccess=await startCapabilityAccess(this.capabilityGateway(),{sessionId:pid,turnId:turn.clientMessageId,approve:async (req,signal)=>{
+          const result=await sink.approval({nativeRequestId:req.id,kind:'tool',title:req.title,action:req.action,scope:req.scope,source:'外部能力网关',params:req.params,requiresExplicitApproval:true},signal);return result.approve;
+        }});
+        const closeBrowser=run.closeBrowser;run.closeBrowser=async()=>{await capabilityAccess?.dispose();await closeBrowser?.();};
+      }
+      if (!b.evaluation) {
+        const preUsage = this.store.usageFor(pid);
+        const lastCache = this.cacheMonitor.lastSessionState(pid);
+        const prevEndedIso = b.turns.filter((t) => t.turnNo < turnNo && t.endedAt).sort((a, c) => c.turnNo - a.turnNo)[0]?.endedAt;
+        const prevTurnEndedAtMs = lastCache?.endedAtMs ?? (prevEndedIso ? Date.parse(prevEndedIso) : undefined);
+        const prevContextTokens = lastCache?.contextTokens ?? estimateContextTokens(preUsage)?.tokens;
+        const profile = this.profile(b.runtimeKind);
+        const cliVersion = b.runtimeKind === "claude-code" ? (profile?.sdkVersion ?? profile?.binaryVersion ?? "unknown") : (profile?.binaryVersion ?? "unknown");
+        const readOnlyRoom = !!(b.roomRef && b.permissionMode === readOnlyPermissionMode(b.runtimeKind));
+        const codexSnap = b.runtimeKind === "codex" ? preUsage.filter((r) => r.counterMode === "cumulative").at(-1) : undefined;
+        run.cacheProbe = {
+          turnStartedAtMs: Date.now(),
+          ...(prevTurnEndedAtMs !== undefined && Number.isFinite(prevTurnEndedAtMs) ? { prevTurnEndedAtMs } : {}),
+          ...(prevContextTokens !== undefined ? { prevContextTokens } : {}),
+          ...(lastCache?.model ?? b.effectiveModel ?? b.requestedModel ? { prevModel: lastCache?.model ?? b.effectiveModel ?? b.requestedModel } : {}),
+          ...(lastCache?.prefix ? { prevPrefix: lastCache.prefix } : {}),
+          prefix: computePrefixFingerprint({
+            runtimeKind: b.runtimeKind,
+            ...(roleInstructions ? { roleInstructions } : {}),
+            ...(platformBrowser ? { platformBrowser: platformBrowser.access } : {}),
+            ...(capabilityAccess ? {capabilityGateway:capabilityAccess.access}:{}),
+            readOnlyRoom,
+            ...(selectedModel ?? b.effectiveModel ?? b.requestedModel ? { model: selectedModel ?? b.effectiveModel ?? b.requestedModel } : {}),
+            platformSha: this.platformSha,
+            cliVersion
+          }),
+          beforeUsageCount: preUsage.length,
+          ...(codexSnap && typeof codexSnap.input === "number" ? { codexBefore: { input: codexSnap.input, cachedInput: codexSnap.cachedInput ?? 0 } } : {})
+        };
       }
       await this.markWorkspaceBaseline(b, turnNo);
       handle = await this.driver(b.runtimeKind).startTurn({
         platformSessionId: b.platformSessionId,
+        ...(capabilityAccess ? {capabilityGateway:capabilityAccess.access}:{}),
         ...(platformBrowser ? {platformBrowser:platformBrowser.access}:{}),
         ...(recordAccess?{recordReadRoots:[recordAccess.contextFile,recordAccess.clientPath]}:{}),
         ...(b.nativeSessionId ? { nativeSessionId: b.nativeSessionId } : {}),
@@ -2129,6 +2269,7 @@ export class RuntimeSessionManager extends EventEmitter {
         ...(priorRequestCount !== undefined ? { priorRequestCount } : {})
       }, sink);
     } catch (e) {
+      await capabilityAccess?.dispose();
       await platformBrowser?.dispose();
       this.running.delete(pid);
       const err = e as Error;
@@ -2178,6 +2319,7 @@ export class RuntimeSessionManager extends EventEmitter {
     if (run.stopRequested) void handle.interrupt().catch(() => {});
     const result = await handle.done;
     const closeBrowser = async () => {
+      await capabilityAccess?.dispose();
       await platformBrowser?.dispose();
       if(platformBrowser?.receipts.length){
         const events=this.store.events(pid),failed=platformBrowser.receipts.filter(r=>!verifyScreenshotReceipt(r,pid,events));
@@ -2202,11 +2344,13 @@ export class RuntimeSessionManager extends EventEmitter {
       this.store.stepOperation(operationId, "native-rejected", `${rejection === "quota" ? "额度" : "认证"}拒绝执行，名额按未执行释放：${bounded(result.reason ?? result.code ?? "", 400).text}`, "failed");
       this.observeSlot(op, b, "not-executed");
     } else this.sharedSlots.markUnknown(b.identityScopeId, operationId, result.reason ?? "Native terminal result unconfirmed");
+    const cacheProbe = run.cacheProbe;
     this.running.delete(pid);
-    this.finishTurn(pid, turnNo, terminal ? result
+    const finalTurnResult = terminal ? result
       : result.processEnded && result.status !== "unknown" ? result
-      : rejection ? { ...result, status: "failed" }
-      : { ...result, status: "unknown", reason: [result.reason ?? "原生终态尚未确认", result.processEnded ? "进程已结束，名额已释放" : ""].filter(Boolean).join("；") }, run.stopRequested === true);
+      : rejection ? { ...result, status: "failed" as const }
+      : { ...result, status: "unknown" as const, reason: [result.reason ?? "原生终态尚未确认", result.processEnded ? "进程已结束，名额已释放" : ""].filter(Boolean).join("；") };
+    this.finishTurn(pid, turnNo, finalTurnResult, run.stopRequested === true, cacheProbe);
     // 额度：本轮结束后刷新一次（失败不影响会话）
     void this.refreshRateLimit(b.runtimeKind).catch(() => {});
     if (turnNo === 1 && b.nativeSessionId && this.store.binding(pid)?.titleGeneration) {
@@ -2218,6 +2362,76 @@ export class RuntimeSessionManager extends EventEmitter {
       }).catch(() => {});
     }
     this.schedule();
+  }
+
+  private observeTurnCache(pid: string, turnNo: number, probe: NonNullable<Running["cacheProbe"]>, endedAtMs?: number): import("./types.js").TurnCacheStats | undefined {
+    try {
+      const cur = this.store.binding(pid);
+      if (!cur || cur.evaluation) return undefined;
+      const allUsage = this.store.usageFor(pid);
+      const turnUsage = allUsage.slice(probe.beforeUsageCount);
+      const nextCtx = estimateContextTokens(allUsage)?.tokens;
+      const turn = cur.turns.find((t) => t.turnNo === turnNo);
+      const turnEndedAtMs = endedAtMs ?? (turn?.endedAt ? Date.parse(turn.endedAt) : Date.now());
+      const model = cur.effectiveModel ?? cur.requestedModel ?? probe.prefix.model;
+      const codexSnap = cur.runtimeKind === "codex" ? allUsage.filter((r) => r.counterMode === "cumulative").at(-1) : undefined;
+      const events = this.store.events(pid);
+      const compactDetected = events.some((e) => e.turnNo === turnNo && e.kind === "notice" && /压缩|compact/i.test(e.text ?? ""));
+      const input = {
+        platformSessionId: pid,
+        ...(cur.nativeSessionId ? { nativeSessionId: cur.nativeSessionId } : {}),
+        ...(cur.title ? { sessionTitle: cur.title } : {}),
+        runtimeKind: cur.runtimeKind,
+        model,
+        ...(probe.prevModel ? { prevModel: probe.prevModel } : {}),
+        turnNo,
+        turnStartedAtMs: probe.turnStartedAtMs,
+        turnEndedAtMs: Number.isFinite(turnEndedAtMs) ? turnEndedAtMs : Date.now(),
+        ...(probe.prevTurnEndedAtMs !== undefined ? { prevTurnEndedAtMs: probe.prevTurnEndedAtMs } : {}),
+        ...(probe.prevContextTokens !== undefined ? { prevContextTokens: probe.prevContextTokens } : {}),
+        ...(probe.prevPrefix ? { prevPrefix: probe.prevPrefix } : {}),
+        prefix: { ...probe.prefix, model },
+        turnUsageRecords: turnUsage,
+        ...(probe.codexBefore ? { codexBefore: probe.codexBefore } : {}),
+        ...(codexSnap && typeof codexSnap.input === "number" ? { codexAfter: { input: codexSnap.input, cachedInput: codexSnap.cachedInput ?? 0 } } : {}),
+        compactDetected,
+        ...(this.antigravityDataDir ? { antigravityDataDir: this.antigravityDataDir } : {}),
+        ...(this.codexHome ? { codexHome: this.codexHome } : {})
+      };
+      const sample = this.cacheMonitor.observeTurn(input, nextCtx);
+      if (sample && (sample.severity === "degraded" || sample.severity === "severe")) {
+        this.store.audit({
+          type: "cache-monitor-anomaly",
+          platformSessionId: pid,
+          runtimeKind: cur.runtimeKind,
+          turnNo,
+          hitRate: Number(sample.hitRate.toFixed(4)),
+          wastedTokens: sample.wastedTokens,
+          severity: sample.severity,
+          sameVersionPrefixDrift: sample.sameVersionPrefixDrift
+        });
+      }
+      return buildTurnCacheStats(input, sample);
+    } catch { return undefined; /* 缓存监控失败绝不影响会话主流程 */ }
+  }
+
+  private observeTurnContext(pid: string, turnNo: number, probe?: Running["cacheProbe"], cacheStats?: import("./types.js").TurnCacheStats): import("./types.js").TurnContextStats | undefined {
+    try {
+      const cur = this.store.binding(pid);
+      if (!cur || cur.evaluation) return undefined;
+      const allUsage = this.store.usageFor(pid);
+      const events = this.store.events(pid);
+      const model = cur.effectiveModel ?? cur.requestedModel ?? probe?.prefix.model;
+      return buildTurnContextStats({
+        runtimeKind: cur.runtimeKind,
+        ...(model ? { model } : {}),
+        turnNo,
+        events,
+        usageRecords: allUsage,
+        ...(probe?.prevContextTokens !== undefined ? { prevContextTokens: probe.prevContextTokens } : {}),
+        ...(cacheStats?.firstCall?.totalIn ? { fallbackTotalTokens: cacheStats.firstCall.totalIn } : {})
+      });
+    } catch { return undefined; /* 上下文统计失败绝不影响会话主流程 */ }
   }
 
   private bindNative(pid: string, nativeId: string, info: { effectiveModel?: string; modelSource: string; effectiveEffort?: string; effortSource?: string; title?: string; titleKind?: "name" | "summary" | "preview" }): void {
@@ -2237,7 +2451,7 @@ export class RuntimeSessionManager extends EventEmitter {
     }, undefined, { bump: !b.nativeSessionId }); // Titles are metadata; do not invalidate a pending turn's operation revision.
   }
 
-  private finishTurn(pid: string, turnNo: number, r: TurnResult, stopRequested: boolean): void {
+  private finishTurn(pid: string, turnNo: number, r: TurnResult, stopRequested: boolean, cacheProbe?: Running["cacheProbe"]): void {
     // 本轮结束：看门狗计时随本轮失效，不能跨轮累计
     this.stalls.delete(pid);
     this.armStallSweep();
@@ -2266,10 +2480,14 @@ export class RuntimeSessionManager extends EventEmitter {
     });
     this.clearUndeliveredSteers(pid);
     const nt = b.turns.find((t) => t.turnNo === turnNo)?.nativeTurnId;
+    const cacheStats = status === "completed" && cacheProbe ? this.observeTurnCache(pid, turnNo, cacheProbe, Date.parse(now)) : undefined;
+    const contextStats = this.observeTurnContext(pid, turnNo, cacheProbe, cacheStats);
     this.store.upsertEvent(pid, {
       // 与原生历史里的 turn 结束记录同 key：回补时合并，不重复显示
       key: nt ? `turn:${nt}` : `platform:turn-end:${turnNo}`, kind: "turn-status", status, text: b.statusReason ?? "", turnNo,
-      source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded", recordedAt: now, occurredAt: now
+      source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded", recordedAt: now, occurredAt: now,
+      ...(cacheStats ? { cacheStats } : {}),
+      ...(contextStats ? { contextStats } : {})
     });
     this.emitEvent(pid);
     this.emit("session", { platformSessionId: pid });
@@ -2303,7 +2521,8 @@ export class RuntimeSessionManager extends EventEmitter {
   }
 
   /**
-   * 平台技能「界面打磨」的交付检查（ui-report-check.ts）：本轮用了这个技能，最终回复里就必须有技能脚本生成的检查报告。
+   * 平台技能「界面打磨」的轻量交付检查（ui-report-check.ts）：放行纯对话需求澄清轮次；
+   * 当本轮实际交付原型预览（preview.html）或体检/落地报告（report.html）时，核对脚本签名与哈希。
    * 不通过就把缺什么、怎么补作为系统消息续发给同一会话，最多 MAX_ENFORCEMENT_RETRIES 次；仍不通过就在时间线留一条通知。
    * 返回 true = 已经续发了一轮（排队消息暂不出队）。任何失败都只是不检查。
    */
@@ -2326,17 +2545,51 @@ export class RuntimeSessionManager extends EventEmitter {
         this.store.audit({ type: "ui-report-enforcement-exhausted", platformSessionId: pid, turnNo });
         return false;
       }
-      this.ingest(pid, { key: `ui-report-enforce:${turnNo}`, kind: "notice", text: `「界面打磨」的交付物未交付，已自动反馈给模型要求补齐（第 ${attempt + 1} 次）：${problems.join(" ")}`, source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded" }, turnNo);
+      this.ingest(pid, { key: `ui-report-enforce:${turnNo}`, kind: "notice", text: `「界面打磨」的交付物未通过校验，已自动反馈给模型要求补齐（第 ${attempt + 1} 次）：${problems.join(" ")}`, source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded" }, turnNo);
       this.emit("session", { platformSessionId: pid });
       const key = `ur-${pid}-${turnNo}-${attempt}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
       const prompt = [
         `${ENFORCEMENT_PROMPT_MARK}这是平台自动发的检查反馈（第 ${attempt + 1} 次，最多 ${MAX_ENFORCEMENT_RETRIES} 次），不是用户的新需求。`,
-        "检查项：「界面打磨」必须交付对应阶段的脚本产物（检查报告或设计手册）", `问题：${problems.join("\n")}`, `怎么改：\n${UI_REPORT_FIX}`,
+        "检查项：「界面打磨」交付交互原型（preview.html）或验收报告（report.html）时，必须由技能脚本生成并校验通过", `问题：${problems.join("\n")}`, `怎么改：\n${UI_REPORT_FIX}`,
         "请按上面的步骤补齐后重新汇报；不需要道歉或解释，也不要重复已经完成的内容。"
       ].join("\n\n");
       const r = await this.sendTurn(pid, { idempotencyKey: key, prompt, expectedRevision: b.bindingRevision }, "system:ui-report-enforcement");
       if (r.operation.turnNo !== undefined) this.uiReportEnforcement.set(pid, { turnNo: r.operation.turnNo, attempt: attempt + 1, since });
       this.store.audit({ type: "ui-report-enforcement-sent", platformSessionId: pid, turnNo, attempt });
+      return true;
+    } catch { return false; }
+  }
+
+  /**
+   * 交付物可达性检查（deliverable-check.ts）：回复里写给用户的文件路径必须点得开（与点击时同一套定位 + 授权判断），
+   * 且不能把本机地址当链接发给用户。不通过只把「哪个不行、怎么改」作为系统消息续发给同一会话，最多 MAX_ENFORCEMENT_RETRIES 次；
+   * 用尽后静默停下（只记审计，不在时间线给用户加提示）。返回 true = 已经续发了一轮。任何失败都只是不检查。
+   */
+  private async enforceDeliverables(pid: string, turnNo: number, stopRequested: boolean): Promise<boolean> {
+    try {
+      const b = this.store.binding(pid);
+      if (!b || stopRequested || this.shuttingDown || this.draining || b.archived || b.conflict || b.outbox?.length || b.turns.at(-1)?.turnNo !== turnNo) return false;
+      if (b.evaluation || b.projectRef || b.role || (b.roomRef && b.permissionMode === readOnlyPermissionMode(b.runtimeKind))) return false;
+      const events = this.store.events(pid);
+      const start = unfinishedChainStart(b.turns, turnNo);
+      const prev = this.deliverableEnforcement.get(pid), inChain = prev !== undefined && prev.turnNo >= start && prev.turnNo <= turnNo;
+      const attempt = inChain ? prev.attempt : 0, since = inChain ? Math.min(prev.since, start) : start;
+      const problems = await deliverableProblems({ pid, workspace: b.workspace, runtimeKind: b.runtimeKind, assistantText: turnEvidence(events, turnNo).assistantText, checkFiles: this.deliverableChecker });
+      if (!problems.length) { this.deliverableEnforcement.delete(pid); return false; }
+      if (attempt >= MAX_ENFORCEMENT_RETRIES) {
+        this.deliverableEnforcement.delete(pid);
+        this.store.audit({ type: "deliverable-enforcement-exhausted", platformSessionId: pid, turnNo, problems: problems.length });
+        return false;
+      }
+      const key = `dl-${pid}-${turnNo}-${attempt}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+      const prompt = [
+        `${ENFORCEMENT_PROMPT_MARK}这是平台自动发的检查反馈（第 ${attempt + 1} 次，最多 ${MAX_ENFORCEMENT_RETRIES} 次），不是用户的新需求。`,
+        "检查项：回复里给用户的文件路径和链接，用户在手机上点开必须能打开", `问题：\n${problems.slice(0, 10).join("\n")}`, `怎么改：\n${DELIVERABLE_FIX}`,
+        "请按上面的步骤补齐后重新汇报；不需要道歉或解释，也不要重复已经完成的内容。"
+      ].join("\n\n");
+      const r = await this.sendTurn(pid, { idempotencyKey: key, prompt, expectedRevision: b.bindingRevision }, "system:deliverable-enforcement");
+      if (r.operation.turnNo !== undefined) this.deliverableEnforcement.set(pid, { turnNo: r.operation.turnNo, attempt: attempt + 1, since });
+      this.store.audit({ type: "deliverable-enforcement-sent", platformSessionId: pid, turnNo, attempt });
       return true;
     } catch { return false; }
   }
@@ -2478,19 +2731,34 @@ export class RuntimeSessionManager extends EventEmitter {
     this.emit("profiles", {});
   }
 
+  private cancelAuthVerify(kind: RuntimeKind): void {
+    const timer = this.authVerifyTimers.get(kind);
+    if (timer) { clearTimeout(timer); this.authVerifyTimers.delete(kind); }
+  }
+
+  private shouldAuthVerify(kind: RuntimeKind): boolean {
+    const p = this.profile(kind);
+    return !this.shuttingDown && (kind === "claude-code" || kind === "antigravity") && p?.state === "needs-login" && !!p.lastAuthFailure;
+  }
+
   /**
-   * 认证失败后自动补一次在线认证：令牌过期常常是临时的（refresh 竞争、轮换），用户重新登录后
-   * 平台不必等人再点一次「检查」。只在有在线认证证据的 runtime 上做（目前是 Claude），
-   * 复核不通过时保留「待登录」并写明原因，不把状态降级成启动失败。
+   * 认证失败后自动在线复核：首次延迟 authAutoVerifyDelayMs（默认 5 秒，处理令牌刷新竞争），
+   * 若仍处于「待登录」则转为低频轮询（默认每 2 分钟一次，应对代理重启或稍后重新登录的场景）；
+   * 只在有在线认证证据的 runtime 上做（Claude / Antigravity），恢复、离态或 shutdown 时立即停表。
    */
-  private scheduleAuthVerify(kind: RuntimeKind): void {
-    if (this.shuttingDown || (kind !== "claude-code" && kind !== "antigravity") || this.authVerifyTimers.has(kind)) return;
+  private scheduleAuthVerify(kind: RuntimeKind, delayMs = this.authAutoVerifyDelayMs): void {
+    if (!this.shouldAuthVerify(kind) || this.authVerifyTimers.has(kind) || delayMs <= 0) return;
     const timer = setTimeout(() => {
       this.authVerifyTimers.delete(kind);
-      if (this.shuttingDown || !this.profile(kind)?.lastAuthFailure) return;
-      void this.probe(kind, { autoVerify: true }).catch((e) =>
-        this.store.audit({ type: "auth-auto-verify-failed", runtimeKind: kind, reason: bounded(String(e), 200).text }));
-    }, this.authAutoVerifyDelayMs);
+      if (!this.shouldAuthVerify(kind)) return;
+      void this.probe(kind, { autoVerify: true })
+        .catch((e) => {
+          this.store.audit({ type: "auth-auto-verify-failed", runtimeKind: kind, reason: bounded(String(e), 200).text });
+        })
+        .finally(() => {
+          if (this.shouldAuthVerify(kind)) this.scheduleAuthVerify(kind, this.authAutoVerifyRetryMs);
+        });
+    }, delayMs);
     timer.unref?.();
     this.authVerifyTimers.set(kind, timer);
   }
@@ -2503,6 +2771,75 @@ export class RuntimeSessionManager extends EventEmitter {
     this.store.audit({ type: "quota-failure", runtimeKind: kind, platformSessionId: pid, code: code ?? null });
     this.emit("profiles", {});
     void this.refreshRateLimit(kind).catch(() => {});
+  }
+
+  /* ============================ 缓存变冷后新开会话接续 ============================ */
+
+  /** 同一账号两次自动接续之间至少隔这么久：额度刚恢复时几个大会话不一起冷启动 */
+  private static readonly HANDOFF_STAGGER_MS = 3 * 60_000;
+  private handoffNext = new Map<string, number>();
+
+  /** 这个会话现在续聊会不会把一大段冷上下文重写一遍：空闲超过缓存保留时间、上下文又超过阈值才算（见 cache-handoff.ts） */
+  cacheHandoff(platformSessionId: string): CacheHandoffAssessment {
+    const b = this.managed(platformSessionId);
+    const cfg = this.settings().cacheHandoff;
+    return assessCacheHandoff(b, this.store.usageFor(platformSessionId), { now: Date.now(), ...(cfg?.thresholdTokens !== undefined ? { thresholdTokens: cfg.thresholdTokens } : {}), ...(cfg?.enabled !== undefined ? { enabled: cfg.enabled } : {}) });
+  }
+
+  /**
+   * 新开一个会话接续旧会话并归档旧会话：新会话沿用旧会话的 runtime、模型、权限、工作目录、worktree 与分支、待办关联，
+   * 首条消息 = 接续说明（旧会话记录位置 + 最近一问一答）+ 本次要发的内容。不调用任何模型做摘要。
+   * 新会话建成之后才归档旧会话；建不成就什么都不动，调用方照常续旧会话。
+   */
+  async handoffSession(platformSessionId: string, input: { idempotencyKey: string; prompt: string; attachmentIds?: string[]; effort?: string; reason: "quota-resume" | "manual"; quotaResumeStreak?: number }, actor: string): Promise<{ session: SessionBinding; operation: OperationRecord; replayed: boolean; handedOffFrom: string; archiveError?: string }> {
+    // 同一个请求键重放（网络重试）：直接返回已建好的新会话，不再检查旧会话（它这时已经归档了）
+    const prior = this.store.operationByKey(String(input.idempotencyKey ?? "").trim());
+    if (prior?.kind === "create") return { session: this.store.binding(prior.platformSessionId)!, operation: prior, replayed: true, handedOffFrom: platformSessionId };
+    const old = this.managed(platformSessionId);
+    const a = this.cacheHandoff(platformSessionId);
+    if (!a.eligible) throw new RuntimeError(`这个会话现在不能新开接续（${a.skip}）`, 409, "RT_HANDOFF_UNAVAILABLE");
+    if (this.running.has(platformSessionId) || old.turns.some((t) => ["queued", "running", "waiting-input"].includes(t.status))) throw new RuntimeError("会话正在运行，不能新开接续", 409, "RT_BUSY");
+    const profile = this.profile(old.runtimeKind);
+    const events = this.store.events(platformSessionId);
+    const dir = join(this.store.dir, "handoffs");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const transcriptPath = join(dir, `${platformSessionId}.md`);
+    writeFileSync(transcriptPath, buildTranscript(old.title, events), { mode: 0o600 });
+    const preamble = handoffPreamble({ title: old.title, platformSessionId, transcriptPath, ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}), ...(a.contextTokens !== undefined ? { contextTokens: a.contextTokens } : {}), tail: handoffTail(events) });
+    const effort = input.effort ?? old.requestedEffort;
+    const at = new Date().toISOString();
+    const created = await this.create({
+      idempotencyKey: input.idempotencyKey, runtimeKind: old.runtimeKind, workspace: old.workspace,
+      prompt: `${preamble}\n${input.prompt}`, title: handoffTitle(old),
+      ...(old.requestedModel ? { model: old.requestedModel } : {}), ...(effort ? { effort } : {}),
+      ...(old.permissionMode ? { permissionMode: old.permissionMode } : {}),
+      confirmedProfileVersion: profile?.checkedAt ?? "",
+      ...(input.attachmentIds?.length ? { attachmentIds: input.attachmentIds } : {}),
+      ...(old.browserProfileId ? { browserProfileId: old.browserProfileId } : {}),
+      ...(old.noteRef ? { noteRef: old.noteRef } : {}),
+      ...(old.recordSourceRefs ? { recordSourceRefs: old.recordSourceRefs } : {}),
+      ...(old.platformSkillsExclude?.length ? { platformSkillsExclude: old.platformSkillsExclude } : {}),
+      handoff: {
+        from: { platformSessionId, title: old.title, transcriptPath }, at, reason: input.reason,
+        ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}), ...(a.contextTokens !== undefined ? { contextTokens: a.contextTokens } : {}),
+        ...(old.worktree && !old.worktree.removedAt ? { adoptWorktree: old.worktree } : {})
+      }
+    }, actor);
+    const newId = created.session.platformSessionId;
+    if (created.replayed) return { ...created, handedOffFrom: platformSessionId };
+    if (input.quotaResumeStreak) this.store.updateBinding(newId, (x) => { x.quotaResumeStreak = input.quotaResumeStreak; }, undefined, { bump: false });
+    this.store.audit({ type: "cache-handoff", platformSessionId, newPlatformSessionId: newId, reason: input.reason, idleMs: a.idleMs ?? null, contextTokens: a.contextTokens ?? null, ttlMs: a.ttlMs, actor });
+    let archiveError: string | undefined;
+    try {
+      await this.archive(platformSessionId, true, actor, { handoff: true });
+      // worktree 已经属于新会话：旧会话不再指向它（避免两个会话认领同一个目录）
+      this.store.updateBinding(platformSessionId, (x) => { delete x.worktree; x.handoff = { to: { platformSessionId: newId, title: created.session.title }, at, reason: input.reason, ...(a.idleMs !== undefined ? { idleMs: a.idleMs } : {}), ...(a.contextTokens !== undefined ? { contextTokens: a.contextTokens } : {}) }; }, undefined, { bump: false });
+      this.emit("session", { platformSessionId });
+    } catch (e) {
+      archiveError = bounded(String((e as Error).message ?? e), 200).text;
+      this.store.audit({ type: "cache-handoff-archive-failed", platformSessionId, newPlatformSessionId: newId, reason: archiveError });
+    }
+    return { ...created, session: this.store.binding(newId) ?? created.session, handedOffFrom: platformSessionId, ...(archiveError ? { archiveError } : {}) };
   }
 
   /* ============================ 额度用尽后自动续聊 ============================ */
@@ -2586,6 +2923,26 @@ export class RuntimeSessionManager extends EventEmitter {
       }
     } catch { /* 查不到额度也试着发：再被额度打断会重新安排 */ }
     const key = `qr-${pid}-${q.turnNo}-${streak}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80);
+    // 缓存早就过期、上下文又很长：续旧会话第一步就要把整段上下文重写一遍。改成新开会话接续并归档旧会话；
+    // 同一账号两次接续错开几分钟，不让几个大会话在额度刚恢复时一起冷启动。接续失败就照常续旧会话。
+    const cold = this.cacheHandoff(pid);
+    if (cold.due) {
+      const now = Date.now(), slot = this.handoffNext.get(b.identityScopeId) ?? 0;
+      if (slot > now) {
+        this.store.updateBinding(pid, (x) => { if (x.quotaResume) x.quotaResume.scheduledFor = new Date(slot).toISOString(); }, undefined, { bump: false });
+        this.setQuotaTimer(pid, slot);
+        this.emit("session", { platformSessionId: pid });
+        return;
+      }
+      this.handoffNext.set(b.identityScopeId, now + RuntimeSessionManager.HANDOFF_STAGGER_MS);
+      try {
+        const r = await this.handoffSession(pid, { idempotencyKey: `qh-${pid}-${q.turnNo}-${streak}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 80), prompt: QUOTA_RESUME_PROMPT, reason: "quota-resume", quotaResumeStreak: streak }, "system:quota-resume");
+        this.store.audit({ type: "quota-resume-handoff", platformSessionId: pid, newPlatformSessionId: r.session.platformSessionId, turnNo: q.turnNo, streak });
+        return;
+      } catch (e) {
+        this.store.audit({ type: "quota-resume-handoff-failed", platformSessionId: pid, reason: bounded(String((e as Error).message ?? e), 200).text });
+      }
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       const cur = this.store.binding(pid);
       if (!cur?.quotaResume || cur.quotaResume.turnNo !== q.turnNo) return; // 期间被人取消 / 人已经发了新消息
@@ -2747,6 +3104,9 @@ export class RuntimeSessionManager extends EventEmitter {
     if (out.kind === "tool" && out.tool?.input && this.publicMemoryObserver?.tool && b) {
       try { this.publicMemoryObserver.tool({ platformSessionId: pid, runtimeKind: b.runtimeKind, key: out.key, ...(out.tool.name ? { name: out.tool.name } : {}), input: out.tool.input }); } catch { /* 同上 */ }
     }
+    // 在 partial 分支之前：Codex 的 item/started 是 partial，不在这里登记就永远没有计时
+    if (out.kind === "tool") this.trackStall(pid, out, tn);
+    else if (out.kind === "reasoning" || (out.kind === "message" && out.role === "assistant")) this.settleReturnedStalls(pid, out.seq);
     if (out.partial) {
       // 片段：每个 key 每 120ms 最多推一次
       const k = `${pid}|${out.key}`;
@@ -2759,7 +3119,6 @@ export class RuntimeSessionManager extends EventEmitter {
       return;
     }
     this.emit("event", { platformSessionId: pid, event: out });
-    if (out.kind === "tool") this.trackStall(pid, out, tn);
     // 最后活动时间：内存里即时更新，落盘最多每 2 秒一次
     this.store.updateBinding(pid, (x) => { x.lastActivityAt = { at: out.occurredAt ?? out.recordedAt, source: out.occurredAt ? "runtime" : "platform" }; }, undefined, { bump: false, persist: false });
     this.armBindingFlush();
@@ -2786,22 +3145,39 @@ export class RuntimeSessionManager extends EventEmitter {
   /** 工具进入非终态就开计时，终态就清；同一个 key 的后续更新不重置起点（要从第一次出现算起）。 */
   private trackStall(pid: string, e: ProjectedEvent, turnNo?: number): void {
     const t: NonNullable<ProjectedEvent["tool"]> = e.tool ?? { name: "工具" };
-    const done = t.status === "completed" || t.status === "failed" || t.status === "declined" || typeof t.exitCode === "number";
-    if (done) { if (this.stalls.delete(pid)) this.armStallSweep(); return; }
-    if (this.stalls.get(pid)?.key === e.key) return;
+    const entries = this.stalls.get(pid);
+    const inFlight = typeof t.exitCode !== "number" && TOOL_IN_FLIGHT.test(t.status ?? "");
+    if (!inFlight) { if (entries?.delete(e.key)) this.dropEmptyStalls(pid); return; }
+    // 历史回放不是正在跑的工具；提问和子 Agent 容器不按「卡住」算
+    if (e.source === "history" || STALL_EXEMPT.test(t.name || "") || entries?.has(e.key)) return;
     const seen = Date.parse(e.occurredAt ?? e.recordedAt);
-    this.stalls.set(pid, {
+    const at = Number.isFinite(seen) ? seen : Date.now();
+    const entry: StallEntry = {
       key: e.key, name: t.name || "工具", input: stallInputLabel(t.input ?? ""), waitMs: declaredWaitFor(t.name || "", t.input ?? ""),
-      startedAt: Number.isFinite(seen) ? seen : Date.now(), lastActiveAt: Number.isFinite(seen) ? seen : Date.now(), sawOutput: false, lastOutput: "", ...(turnNo !== undefined ? { turnNo } : {}), alerted: new Set(), aborted: false
-    });
+      startedAt: at, lastActiveAt: at, sawOutput: false, lastOutput: "", seq: e.seq, ...(turnNo !== undefined ? { turnNo } : {}), alerted: new Set(), aborted: false
+    };
+    if (entries) entries.set(e.key, entry); else this.stalls.set(pid, new Map([[e.key, entry]]));
+    this.armStallSweep();
+  }
+
+  /** 助手消息 / 推理事件第一次出现在某工具登记之后：模型只会在工具返回后继续说话，所以那些工具已经返回，清掉（防完成事件丢失造成误报）。 */
+  private settleReturnedStalls(pid: string, seq: number): void {
+    const entries = this.stalls.get(pid);
+    if (!entries) return;
+    for (const [key, s] of entries) if (s.seq < seq) entries.delete(key);
+    this.dropEmptyStalls(pid);
+  }
+
+  private dropEmptyStalls(pid: string): void {
+    if (this.stalls.get(pid)?.size === 0) this.stalls.delete(pid);
     this.armStallSweep();
   }
 
   /** 正在跑的工具回传了和上次不同的输出：不算卡住，静默计时从现在重来，已发过的提醒档位作废（之后再静默会重新提醒）。 */
   private touchStall(pid: string, e: DriverEvent): void {
-    const s = this.stalls.get(pid);
+    const s = this.stalls.get(pid)?.get(e.key);
     const output = e.tool?.output;
-    if (!s || s.key !== e.key || !output || output === s.lastOutput) return;
+    if (!s || !output || output === s.lastOutput) return;
     s.lastOutput = output; s.sawOutput = true; s.lastActiveAt = Date.now(); s.waitMs = 0; s.alerted.clear();
   }
 
@@ -2816,32 +3192,41 @@ export class RuntimeSessionManager extends EventEmitter {
 
   private sweepStalls(): void {
     const now = Date.now();
-    for (const [pid, s] of [...this.stalls]) {
+    for (const [pid, entries] of [...this.stalls]) {
       // 本轮已经不在跑了（正常结束、用户先手停止、进程重启）：计时作废，不留尾账
       const b = this.store.binding(pid);
-      if (!b || this.shuttingDown || !this.running.has(pid)) { this.stalls.delete(pid); continue; }
-      // 有输出回传的工具按「多久没有新输出」判卡住；没有回传的只能按总时长
-      const elapsed = Math.max(0, now - (s.sawOutput ? s.lastActiveAt : s.startedAt) - s.waitMs);
-      const marks = STALL_BROWSER.test(s.name) ? this.stallGuard.browserMs : this.stallGuard.shellMs;
-      for (const mark of marks) {
-        if (elapsed < mark || s.alerted.has(mark)) continue;
-        s.alerted.add(mark);
+      const run = this.running.get(pid);
+      if (!b || this.shuttingDown || !run) { this.stalls.delete(pid); continue; }
+      // 在等用户审批 / 回答：这段时间不算工具卡住，暂停计时，处理完后从暂停处接着走
+      const waitingForUser = run.approvals.size > 0;
+      for (const [key, s] of [...entries]) {
+        if (waitingForUser) { s.pausedAt ??= now; continue; }
+        if (s.pausedAt !== undefined) { const paused = now - s.pausedAt; s.startedAt += paused; s.lastActiveAt += paused; s.pausedAt = undefined; }
+        // 有输出回传的工具按「多久没有新输出」判卡住；没有回传的只能按总时长
+        const elapsed = Math.max(0, now - (s.sawOutput ? s.lastActiveAt : s.startedAt) - s.waitMs);
+        const marks = STALL_BROWSER.test(s.name) ? this.stallGuard.browserMs : this.stallGuard.shellMs;
+        for (const mark of marks) {
+          if (elapsed < mark || s.alerted.has(mark)) continue;
+          s.alerted.add(mark);
+          this.ingest(pid, {
+            key: `stall:${s.key}:${mark}`, kind: "notice", text: stallNotice(s.name, s.input, mark, this.stallGuard.abortMs, s.waitMs ? "overdue" : s.sawOutput ? "quiet" : "running"),
+            source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded", occurredAt: new Date(now).toISOString()
+          }, s.turnNo);
+        }
+        if (s.aborted || elapsed < this.stallGuard.abortMs) continue;
+        // 并行工具里有一个超时就中止整轮，其余条目一并标记，不重复中止
+        for (const other of entries.values()) other.aborted = true;
+        // 关掉自动中止的会话只留提醒，不做处置
+        if (b.stallGuardAutoAbort === false) continue;
         this.ingest(pid, {
-          key: `stall:${s.key}:${mark}`, kind: "notice", text: stallNotice(s.name, s.input, mark, this.stallGuard.abortMs, s.waitMs ? "overdue" : s.sawOutput ? "quiet" : "running"),
+          key: `stall:${key}:abort`, kind: "notice",
+          text: `已自动中止：${s.name} ${s.sawOutput ? `连续 ${stallMinutes(elapsed)} 分钟没有新输出` : `连续运行 ${stallMinutes(elapsed)} 分钟没有结束`}${s.input ? `（${s.input}）` : ""}。常见原因是全盘扫描、大文件下载、交互式命令没喂输入。自动中止可在「授权」入口关掉。`,
           source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded", occurredAt: new Date(now).toISOString()
         }, s.turnNo);
+        this.store.audit({ type: "stall-guard-abort", platformSessionId: pid, tool: s.name, elapsedMs: elapsed });
+        void this.interrupt(pid, "stall-guard").catch((e) => this.store.audit({ type: "stall-guard-abort-failed", platformSessionId: pid, reason: bounded(String(e), 200).text }));
+        break;
       }
-      if (s.aborted || elapsed < this.stallGuard.abortMs) continue;
-      s.aborted = true;
-      // 关掉自动中止的会话只留提醒，不做处置
-      if (b.stallGuardAutoAbort === false) continue;
-      this.ingest(pid, {
-        key: `stall:${s.key}:abort`, kind: "notice",
-        text: `已自动中止：${s.name} ${s.sawOutput ? `连续 ${stallMinutes(elapsed)} 分钟没有新输出` : `连续运行 ${stallMinutes(elapsed)} 分钟没有结束`}${s.input ? `（${s.input}）` : ""}。常见原因是全盘扫描、大文件下载、交互式命令没喂输入。自动中止可在「授权」入口关掉。`,
-        source: "platform", parserVersion: PROJECTION_VERSION, availability: "recorded", occurredAt: new Date(now).toISOString()
-      }, s.turnNo);
-      this.store.audit({ type: "stall-guard-abort", platformSessionId: pid, tool: s.name, elapsedMs: elapsed });
-      void this.interrupt(pid, "stall-guard").catch((e) => this.store.audit({ type: "stall-guard-abort-failed", platformSessionId: pid, reason: bounded(String(e), 200).text }));
     }
     this.armStallSweep();
   }
@@ -3165,12 +3550,47 @@ export class RuntimeSessionManager extends EventEmitter {
     return this.quickKeyCurrent(b.platformSessionId, b.quickAction.eventKey);
   }
 
+  private persistTurnSummary(platformSessionId: string, result: QuickReplyResult): void {
+    if (result.state !== "ready" || !result.eventKey || !result.headline) return;
+    const b = this.store.binding(platformSessionId);
+    if (!b) return;
+    const event = this.store.events(platformSessionId).find(e => e.key === result.eventKey);
+    const turnNo = event?.turnNo;
+    const cur = b.turnSummaries?.[result.eventKey];
+    if (cur && cur.headline === result.headline && (cur.decision ?? undefined) === (result.decision ?? undefined) && cur.turnNo === turnNo) return;
+    const entry: StoredTurnSummary = {
+      eventKey: result.eventKey,
+      ...(turnNo !== undefined ? { turnNo } : {}),
+      headline: result.headline,
+      ...(result.decision ? { decision: result.decision } : {}),
+      at: new Date().toISOString()
+    };
+    this.store.updateBinding(platformSessionId, (x) => {
+      const next: Record<string, StoredTurnSummary> = { ...(x.turnSummaries ?? {}), [result.eventKey!]: entry };
+      const keys = Object.keys(next);
+      if (keys.length > 50) {
+        keys.sort((a, c) => String(next[a]?.at ?? "").localeCompare(String(next[c]?.at ?? "")));
+        for (const old of keys.slice(0, keys.length - 50)) delete next[old];
+      }
+      x.turnSummaries = next;
+    }, undefined, { bump: false });
+  }
+
   private persistQuickReplies(platformSessionId: string, result: QuickReplyResult): void {
+    this.persistTurnSummary(platformSessionId, result);
     const b = this.store.binding(platformSessionId);
     if (!b) return;
     const ok = result.state === "ready" && !!result.eventKey && result.replies.length > 0 && this.quickKeyCurrent(platformSessionId, result.eventKey);
     const next: StoredQuickReplies | undefined = ok
-      ? { eventKey: result.eventKey!, replies: result.replies.map(r => ({ label: r.label, text: r.text, ...(r.action ? { action: r.action } : {}) })), ...(result.deployment ? { deployment: result.deployment } : {}), ...(result.deploymentSha ? { deploymentSha: result.deploymentSha } : {}), at: new Date().toISOString() }
+      ? {
+        eventKey: result.eventKey!,
+        replies: result.replies.map(r => ({ label: r.label, text: r.text, ...(r.action ? { action: r.action } : {}) })),
+        ...(result.headline ? { headline: result.headline } : {}),
+        ...(result.decision ? { decision: result.decision } : {}),
+        ...(result.deployment ? { deployment: result.deployment } : {}),
+        ...(result.deploymentSha ? { deploymentSha: result.deploymentSha } : {}),
+        at: new Date().toISOString()
+      }
       : undefined;
     const cur = b.quickReplies;
     if (!next && !cur) return;
@@ -3190,7 +3610,15 @@ export class RuntimeSessionManager extends EventEmitter {
   async finalQuickReplies(platformSessionId: string): Promise<QuickReplyResult> {
     const stored = this.store.binding(platformSessionId)?.quickReplies;
     if (stored && this.quickKeyCurrent(platformSessionId, stored.eventKey)) {
-      return { state: "ready", eventKey: stored.eventKey, replies: stored.replies.map(r => ({ ...r })), ...(stored.deployment ? { deployment: stored.deployment } : {}), ...(stored.deploymentSha ? { deploymentSha: stored.deploymentSha } : {}) };
+      return this.noteQuickAction(platformSessionId, {
+        state: "ready",
+        eventKey: stored.eventKey,
+        replies: stored.replies.map(r => ({ ...r })),
+        ...(stored.headline ? { headline: stored.headline } : {}),
+        ...(stored.decision ? { decision: stored.decision } : {}),
+        ...(stored.deployment ? { deployment: stored.deployment } : {}),
+        ...(stored.deploymentSha ? { deploymentSha: stored.deploymentSha } : {})
+      }, { persist: true });
     }
     const raw = await this.quickReplies(platformSessionId);
     if (!this.quickReplyFinalizer) return raw;
@@ -3212,8 +3640,12 @@ export class RuntimeSessionManager extends EventEmitter {
    * 结果已经过期（用户又发了消息）时不写，避免模型调用慢于下一轮时把上一条回复的操作挂到列表上。
    */
   private rememberQuickAction(platformSessionId: string, raw: QuickReplyResult): QuickReplyResult {
-    const result = this.canonicalQuickActions(platformSessionId, raw);
+    // 模型或部署兜底可能在通知到达前开始、之后才结束：写入时以最新平台结果为准。
+    const binding = this.store.binding(platformSessionId);
+    const outcome = lastDeploymentOutcome(this.store.events(platformSessionId), binding?.turns.at(-1)?.turnNo);
+    const result = this.canonicalQuickActions(platformSessionId, withDeploymentPriority(raw, outcome));
     if (!result.eventKey) return result;
+    this.persistTurnSummary(platformSessionId, result);
     const events = this.store.events(platformSessionId);
     const last = [...events].reverse().find(e => e.kind === "message" && !e.partial && !e.subagent);
     if (!last || last.key !== result.eventKey) return result;
@@ -3387,17 +3819,76 @@ export class RuntimeSessionManager extends EventEmitter {
     return sessionImageIndex(all);
   }
 
+  /**
+   * 往会话时间线写入一条平台系统通知事件（不唤醒底层模型、不消耗缓存/额度）：
+   * 主要用于「部署已上线（无带红）」这类纯状态告知；按 idempotencyKey 幂等，写入后刷新快捷回复（如推荐「归档会话」）。
+   */
+  recordSystemNotice(platformSessionId: string, input: { idempotencyKey: string; text: string }, actor: string): { session: SessionBinding; event: ProjectedEvent; replayed: boolean } {
+    const rawKey = String(input.idempotencyKey ?? "").trim();
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(rawKey)) throw new RuntimeError("idempotencyKey 须为 8~80 位字母数字或 -_", 400, "RT_INPUT");
+    const text = String(input.text ?? "").trim();
+    if (!text) throw new RuntimeError("通知正文不能为空", 400, "RT_INPUT");
+    const b = this.managed(platformSessionId);
+    const key = `platform:notice:${rawKey}`;
+    const existing = this.store.events(platformSessionId).find((e) => e.key === key);
+    if (existing) return { session: b, event: existing, replayed: true };
+    const now = new Date().toISOString();
+    const lastTurnNo = b.turns.at(-1)?.turnNo;
+    const upserted = this.store.upsertEvent(platformSessionId, {
+      key,
+      kind: "notice",
+      source: "platform",
+      parserVersion: PROJECTION_VERSION,
+      availability: "recorded",
+      text: bounded(text, LIMITS.message).text,
+      ...(lastTurnNo !== undefined ? { turnNo: lastTurnNo } : {}),
+      recordedAt: now,
+      occurredAt: now
+    });
+    const event = upserted ?? this.store.events(platformSessionId).find((e) => e.key === key)!;
+    const outcome = lastDeploymentOutcome([event], lastTurnNo);
+    if (outcome?.kind === "success") this.resetAutoRedeploy(platformSessionId);
+    const previousReplies = b.quickReplies;
+    const updated = this.store.updateBinding(platformSessionId, (x) => {
+      x.lastActivityAt = { at: now, source: "platform" };
+      if (outcome) { delete x.quickReplies; delete x.quickAction; }
+    }, undefined, { bump: false });
+    if (outcome && !this.running.has(platformSessionId) && !updated.archived) {
+      // 平台优先操作同步落盘，模型不可用或后续提取失败也能立即显示正确结果。
+      const last = lastAssistantMessage(this.store.events(platformSessionId));
+      this.noteQuickAction(platformSessionId, withDeploymentPriority({
+        state: "ready",
+        ...(last ? { eventKey: last.key } : {}),
+        replies: [],
+        ...(previousReplies && previousReplies.eventKey === last?.key ? previousReplies : {})
+      }, outcome), { persist: true });
+    }
+    this.store.audit({ type: "system-notice", platformSessionId, key, actor, preview: text.slice(0, 120) });
+    this.emitEvent(platformSessionId);
+    this.emit("session", { platformSessionId });
+    this.emit("directory", {});
+    if (!this.running.has(platformSessionId) && !updated.archived) {
+      setTimeout(() => { void this.finalQuickReplies(platformSessionId).catch(() => {}); }, 50).unref();
+    }
+    return { session: updated, event, replayed: false };
+  }
+
   /** User messages (not the platform's enforcement feedback) and deployment landmarks without assistant/tool bodies or attachment data. */
   async messageIndex(id: string) {
     const { all } = await this.messageSource(id);
     return {
       firstSeq: all[0]?.seq, lastSeq: all.at(-1)?.seq,
-      items: all.filter(e => e.kind === "message" && e.role === "user" && !e.subagent && !(e.text ?? "").startsWith(ENFORCEMENT_PROMPT_MARK)).map(e => {
-        const deployment = !e.attachments?.length && /^\[pi-agent 自动部署通知\] ([^\n]+)(?:\n[\s\S]*)?$/.exec(e.text || "");
+      items: all.filter(e => {
+        if (e.subagent) return false;
+        if (e.kind === "notice" && e.source === "platform") return /^\[pi-agent 自动部署通知\] /.test(e.text ?? "");
+        return e.kind === "message" && e.role === "user" && !(e.text ?? "").startsWith(ENFORCEMENT_PROMPT_MARK);
+      }).map(e => {
+        const deployment = (e.kind === "notice" || !e.attachments?.length) && /^\[pi-agent 自动部署通知\] ([^\n]+)(?:\n[\s\S]*)?$/.exec(e.text || "");
         const headline = deployment ? deployment[1]!.trim() : "";
         const result = headline.startsWith("已上线：") ? "部署成功"
           : headline.startsWith("不用部署：") ? "已在线上"
           : /^部署 .*没有成功/.test(headline) ? "部署失败"
+          : /^部署 [0-9a-f]{7,40} 门禁未通过，自动重试/i.test(headline) ? "自动重试"
           : headline.startsWith("等空闲超时") ? "部署超时"
           : headline.startsWith("没有部署 ") ? "未部署" : "部署结果";
         const commit = /(?:^已上线：|^不用部署：|^没有部署 |^部署 |放弃部署 )([a-f0-9]{7,40})(?![a-f0-9])/i.exec(headline)?.[1];
@@ -3570,6 +4061,9 @@ export class RuntimeSessionManager extends EventEmitter {
       const latest = b.turns[b.turns.length - 1];
       const lastEnded = [...b.turns].reverse().find((t) => !!t.endedAt);
       const scheduledNext = b.archived ? undefined : (b.outbox ?? []).map(m => m.scheduledFor).filter((t): t is string => !!t && Number.isFinite(Date.parse(t))).sort((a, c) => Date.parse(a) - Date.parse(c))[0];
+      // 额度用尽后的自动续聊：列表显示「自动续聊 5h23m」（只有真被额度打断、且平台已排定时间时才有）
+      const quotaResumeNext = !b.archived && b.status === "interrupted" && b.quotaResume && Number.isFinite(Date.parse(b.quotaResume.scheduledFor))
+        ? { scheduledFor: b.quotaResume.scheduledFor, window: b.quotaResume.window, known: b.quotaResume.known } : undefined;
       // 群聊列表按所选目录分组、搜索；成员的执行 workspace 可能是独立 worktree。
       const workspace = (b.roomRef ? roomWorkspaces?.get(b.roomRef.roomId) : undefined) ?? sessionDisplayWorkspace(b);
       out.push({
@@ -3581,6 +4075,7 @@ export class RuntimeSessionManager extends EventEmitter {
         identityScopeId: b.identityScopeId, accountKnown: profiles[b.runtimeProfileId]?.identity?.accountKnown ?? false,
         ...(b.quickAction && this.quickActionCurrent(b) ? { quickAction: b.quickAction } : {}),
         ...(scheduledNext ? { scheduledNext } : {}),
+        ...(quotaResumeNext ? { quotaResumeNext } : {}),
         href: `#/rt/${b.platformSessionId}`, ...(b.conflict ? { conflict: true } : {}),
         ...(b.noteRef ? { noteRef: b.noteRef } : {}),
         ...(b.recommendationRef ? { recommendationRef: { taskId: b.recommendationRef.taskId, revision: b.recommendationRef.revision, title: b.recommendationRef.title, sourceCount: b.recommendationRef.sources.length } } : {}),
@@ -3704,7 +4199,8 @@ export class RuntimeSessionManager extends EventEmitter {
     };
   }
 
-  archive(platformSessionId: string, archived: boolean, actor: string, options: { roomControl?: boolean } = {}): Promise<SessionBinding> {
+  /** handoff：缓存变冷后由新会话接续——worktree 转给新会话（不删），也不把关联待办标成完成（待办跟着新会话走） */
+  archive(platformSessionId: string, archived: boolean, actor: string, options: { roomControl?: boolean; handoff?: boolean } = {}): Promise<SessionBinding> {
     const b = this.managed(platformSessionId);
     if (b.roomRef && !options.roomControl) throw new RuntimeError("请在群聊中归档或恢复", 409, "ROOM_OWNED");
     const pending = this.worktreeCleanups.get(platformSessionId);
@@ -3724,10 +4220,10 @@ export class RuntimeSessionManager extends EventEmitter {
     this.store.audit({ type: archived ? "archive" : "unarchive", platformSessionId, actor });
     this.emit("directory", { archiveChanged: true });
     // 归档后通知宿主（例如把从这条待办发起的会话对应的待办标记完成）；noteId 由会话绑定携带。
-    if (archived) this.emit("archived", { platformSessionId, ...(out.noteRef ? { noteId: out.noteRef.noteId } : {}) });
+    if (archived) this.emit("archived", { platformSessionId, ...(out.noteRef && !options.handoff ? { noteId: out.noteRef.noteId } : {}) });
     // 先归档阻止续聊；请求等待清理结束，失败返回调用方，可再次归档重试。
     const wt = b.worktree;
-    if (archived && wt && !wt.removedAt) {
+    if (archived && wt && !wt.removedAt && !options.handoff) {
       const cleanup = removeSessionWorktree(wt.repoRoot, wt.path, wt.branch).then(() => {
         const cleaned = this.store.updateBinding(platformSessionId, (x) => { if (x.worktree) x.worktree.removedAt = new Date().toISOString(); });
         this.store.audit({ type: "session-worktree-removed", platformSessionId, branch: wt.branch, actor });
@@ -3973,6 +4469,9 @@ export class RuntimeSessionManager extends EventEmitter {
     this.schedule();
     this.resumeOutboxesAfterRestart();
     await this.rearmQuotaResumes();
+    for (const kind of RUNTIME_KINDS) {
+      if (this.shouldAuthVerify(kind)) this.scheduleAuthVerify(kind, this.authAutoVerifyRetryMs);
+    }
   }
 
   /** 部署排空解除（部署取消/失败）后，把因排空压住的首条消息接着发出去。 */

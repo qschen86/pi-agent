@@ -50,6 +50,7 @@ export interface TurnSink {
 }
 
 export interface StartTurnArgs {
+  capabilityGateway?: import("./capability-access.js").CapabilityAccess;
   platformBrowser?: import("./platform-browser.js").BrowserAccess;
   recordReadRoots?: string[];
   browserProfileId?: string;

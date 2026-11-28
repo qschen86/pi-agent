@@ -206,7 +206,7 @@ export class PiDriver implements RuntimeDriver {
     try {
       const runtimeExecutable = this.options.runtimeExecutable ?? process.env.PI_AGENT_PI_RUNTIME;
       connection = await prepareRuntimeConnection({controlRoot: temp,
-        spec: {version: 1, binary, workspace: args.workspace, browserProfileId: args.browserProfileId, worktree: args.worktree, mode: args.permissionMode ?? (args.evaluation ? "pi-ask" : defaultPermissionMode("pi")), provider, model: modelId, sessionId: id, memorySource:{platformSessionId:args.platformSessionId,turnId:args.clientMessageId}, sourceAgentDir: this.source, sessionFile: previous?.file, roleInstructions: args.roleInstructions, recordReadRoots: args.recordReadRoots, platformBrowser:args.platformBrowser, evaluation: args.evaluation, expectedFingerprint: savedRuntime, ...(webResearch ? {webResearch} : {})},
+        spec: {version: 1, binary, workspace: args.workspace, browserProfileId: args.browserProfileId, worktree: args.worktree, mode: args.permissionMode ?? (args.evaluation ? "pi-ask" : defaultPermissionMode("pi")), provider, model: modelId, sessionId: id, memorySource:{platformSessionId:args.platformSessionId,turnId:args.clientMessageId}, sourceAgentDir: this.source, sessionFile: previous?.file, roleInstructions: args.roleInstructions, recordReadRoots: args.recordReadRoots, platformBrowser:args.platformBrowser, ...(args.capabilityGateway&&!args.evaluation&&!args.readOnlyRoom?{capabilityGateway:args.capabilityGateway}:{}), evaluation: args.evaluation, expectedFingerprint: savedRuntime, ...(webResearch ? {webResearch} : {})},
         ...(runtimeExecutable || this.options.runtimeArgs ? {invocation:resolveRuntimeInvocation({binaryPath:runtimeExecutable,args:this.options.runtimeArgs})} : {}),
         ...(this.options.clientFactory || this.options.guard ? {embedded:{guard:this.options.guard,sink,token:gateToken}} : {})});
       this.connections.add(connection);
@@ -255,6 +255,7 @@ export class PiDriver implements RuntimeDriver {
       client.on("event", (event: PiRpcEvent) => {
         if (connection.supervised && event.type === "runtime_ready") {
           if (event.version !== 1 || event.sessionId !== id || event.workspace !== realpathSync(args.workspace) || typeof event.sessionDirectory !== "string" || typeof event.fingerprint !== "string") { gateFailed(new Error("Invalid Pi runtime readiness response")); return; }
+          if(args.capabilityGateway && event.capabilityGateway!==1){gateFailed(new Error("Pi runtime 尚未支持外部能力网关；本轮输入未发送"));return;}
           if(args.platformBrowser && event.platformBrowser!==1){gateFailed(new Error("Pi runtime 尚未支持平台浏览器，请先更新独立 runtime；本轮输入未发送"));return;}
           connection.sessionDirectory = event.sessionDirectory; connection.fingerprint = event.fingerprint;
           const control=this.grantControl.get(id);if(control)control.supported=event.permissionGrantControl===1;

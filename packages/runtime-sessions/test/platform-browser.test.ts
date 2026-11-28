@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {screenshotViolation} from '../../pi-runtime/src/screenshot-policy.mjs';
-import {startPlatformBrowser,verifyScreenshotReceipt} from '../src/platform-browser.js';
+import {startPlatformBrowser,stableBrowserBridgePath,verifyScreenshotReceipt} from '../src/platform-browser.js';
 import type {Browser} from 'playwright';
 import type {DriverEvent} from '../src/driver.js';
 describe('platform screenshot policy',()=>{
@@ -54,4 +54,32 @@ it('rejects report images without host receipts and rejects inspect output masqu
  const dir=mkdtempSync(join(tmpdir(),'receipt-'));try{const path=join(dir,'a.png');writeFileSync(path,'x');const receipt={receiptId:'r',sessionId:'s',turnId:'t',path,sha256:createHash('sha256').update('x').digest('hex'),url:'http://localhost',width:390,height:844,theme:'light',capturedAt:'now'};
  expect(verifyScreenshotReceipt(receipt,'s',[{source:'stream',tool:{name:'platform_browser.browser',input:'{"action":"inspect"}',status:'completed',output:JSON.stringify(receipt)}}])).toBe(false);
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+it('keeps a stable per-session pointerPath and slot alias so a long-lived MCP bridge routes across turns without config changes',async()=>{
+ // 仅当 current 指向当前槽时才用 current 别名；预发/门禁槽（current 仍指另一槽）保留本槽路径以测本槽代码。
+ expect(stableBrowserBridgePath('/u/.pi-agent-gui/slots/blue/packages/pi-runtime/src/platform-browser-mcp.mjs',p=>p==='/u/.pi-agent-gui/current'?'/u/.pi-agent-gui/slots/blue':undefined)).toBe('/u/.pi-agent-gui/current/packages/pi-runtime/src/platform-browser-mcp.mjs');
+ expect(stableBrowserBridgePath('/u/.pi-agent-gui/slots/green/packages/pi-runtime/src/platform-browser-mcp.mjs',p=>p==='/u/.pi-agent-gui/current'?'/u/.pi-agent-gui/slots/green':undefined)).toBe('/u/.pi-agent-gui/current/packages/pi-runtime/src/platform-browser-mcp.mjs');
+ expect(stableBrowserBridgePath('/u/.pi-agent-gui/slots/blue/packages/pi-runtime/src/platform-browser-mcp.mjs',p=>p==='/u/.pi-agent-gui/current'?'/u/.pi-agent-gui/slots/green':undefined)).toBe('/u/.pi-agent-gui/slots/blue/packages/pi-runtime/src/platform-browser-mcp.mjs');
+ expect(stableBrowserBridgePath('/u/repo/packages/pi-runtime/src/platform-browser-mcp.mjs',()=>'/u/current')).toBe('/u/repo/packages/pi-runtime/src/platform-browser-mcp.mjs');
+ const {spawn}=await import('node:child_process');
+ const {createInterface}=await import('node:readline');
+ const dir=mkdtempSync(join(tmpdir(),'browser-stable-')),events1:DriverEvent[]=[],events2:DriverEvent[]=[];
+ const makeBrowser=(bytes:string)=>({newContext:async()=>({setDefaultTimeout(){},newPage:async()=>({screenshot:async()=>Buffer.from(bytes),viewportSize:()=>({width:390,height:844}),url:()=>'http://127.0.0.1:8780/'})}),close:async()=>{}}) as unknown as Browser;
+ const s1=await startPlatformBrowser({sessionId:'stable-sess',turnId:'t1',workspace:dir,outputDir:dir,event:e=>events1.push(e),launch:async()=>makeBrowser('png-1')});
+ const child=spawn(process.execPath,[s1.access.bridgePath,s1.access.pointerPath!],{stdio:['pipe','pipe','pipe']});
+ const lines=createInterface({input:child.stdout})[Symbol.asyncIterator]();
+ const call=async(id:number)=>{child.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method:'tools/call',params:{name:'browser',arguments:{action:'screenshot'}}})+'\n');const next=await lines.next();expect(next.done).toBe(false);return JSON.parse(JSON.parse(String(next.value)).result.content[0].text);};
+ try{
+  const r1=await call(1);
+  expect(r1.ok).toBe(true);expect(s1.receipts).toHaveLength(1);
+  // Turn 2 starts before Turn 1 disposes (Antigravity continuation overlap); pointerPath stays identical.
+  const s2=await startPlatformBrowser({sessionId:'stable-sess',turnId:'t2',workspace:dir,outputDir:dir,event:e=>events2.push(e),launch:async()=>makeBrowser('png-2')});
+  try{
+   expect(s2.access.pointerPath).toBe(s1.access.pointerPath);
+   expect(s2.access.socketPath).not.toBe(s1.access.socketPath);
+   await s1.dispose();
+   const r2=await call(2);
+   expect(r2.ok).toBe(true);expect(r2.turnId).toBe('t2');expect(s2.receipts).toHaveLength(1);expect(s2.receipts[0]!.receiptId).toBe(r2.receiptId);
+  }finally{await s2.dispose();}
+ }finally{child.kill();await s1.dispose();rmSync(dir,{recursive:true,force:true});}
 });

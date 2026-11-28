@@ -19,6 +19,22 @@ export type { GitWorkspaceInfo, LaneDiff } from "./worktree.js";
 
 export * from "./permissions.js";
 export { planQuotaResume, stillExhaustedUntil, QUOTA_RESUME_MAX_STREAK, QUOTA_RESUME_PROMPT } from "./quota-resume.js";
+export { assessCacheHandoff, cacheTtl, estimateContextTokens, CACHE_HANDOFF_DEFAULT_TOKENS, CACHE_HANDOFF_CLAUDE_DEFAULT_TOKENS, cacheHandoffDefaultThreshold } from "./cache-handoff.js";
+export type { CacheHandoffAssessment } from "./cache-handoff.js";
+export { buildTurnContextStats, inferModelContextWindow, type BuildTurnContextStatsInput } from "./context-stats.js";
+export {
+  CacheMonitor, computePrefixFingerprint, diffPrefixFields, evaluateTurnCache, buildTurnCacheStats,
+  cacheWarmWindowMs, cacheExpectedMinHitRate, summarizeCacheHealth,
+  readAntigravityTurnBoundaries, encodeAntigravityStepMetadataForTest,
+  readCodexTurnBoundaries,
+  CACHE_MONITOR_MIN_CONTEXT_TOKENS, CACHE_MONITOR_SEVERE_HIT_RATE,
+  CACHE_MONITOR_SEVERE_WASTED_TOKENS, CACHE_MONITOR_DEGRADED_STREAK
+} from "./cache-monitor.js";
+export type {
+  PrefixFingerprint, CacheMonitorSample, CacheAlertEvent, CacheAlertReason,
+  CacheSampleSource, CacheSeverity, LastSessionCacheState, CodexTurnBoundary,
+  RuntimeCacheHealthRow, CacheHealthSummary, TurnCacheMeasurementInput
+} from "./cache-monitor.js";
 
 export { PiDriver } from "./pi.js";
 export { PiRpcClient } from "./pi-client.js";
@@ -33,7 +49,8 @@ export type { PlatformSkillInfo, SkillExpansion, PreparedPrompt } from "./platfo
 export { webActivity, webActivityItem, classifyWebTool } from "./web-activity.js";
 export type { WebActivityItem, WebActivityKind, WebActivityStatus, WebActivityResult } from "./web-activity.js";
 export * from "./memory-enforcement.js";
-export { platformInjections, platformInjectionItem, platformChecks } from "./platform-injection.js";
+export * from "./deliverable-check.js";
+export { platformInjections, platformInjectionItem, platformChecks, PROCESS_CLEANUP_INSTRUCTIONS } from "./platform-injection.js";
 export type { PlatformInjectionItem, PlatformCheckItem } from "./platform-injection.js";
 export { platformLookups, platformLookupItem, recalledFromOutput, classifyIndexOps, classifyIndexRead, LOOKUP_KINDS } from "./platform-memory-lookups.js";
 export type { PlatformLookupItem, RecalledEntry, IndexOp, IndexRead, LookupKind, LookupHow } from "./platform-memory-lookups.js";

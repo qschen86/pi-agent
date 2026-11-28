@@ -17,6 +17,17 @@ import { RUNTIME_KINDS } from "./types.js";
 import { compactUsage, usageFingerprint, usageNeedsCompaction } from "./usage.js";
 import type { ApprovalRequest, ComparisonGroup, OperationRecord, ProjectedEvent, RateLimitSnapshot, RuntimeProfile, RuntimeSettings, SessionBinding, UsageRecord } from "./types.js";
 
+/**
+ * 主机互斥锁只在其他存活进程的同步临界区里被占着（毫秒级），撞上属于瞬时争用，不能直接当故障：
+ * - 启动时抢不到就退出进程，部署切槽时旧槽还在写存储，新槽会直接起不来（2026-11-27 的部署失败）；
+ * - 读路径抢不到会抛进定时器，把正在服务的进程打崩（同日 12:03 的 green 崩溃）。
+ * 所以按上下文给有限预算重试；admission.lock 这种主人不明的永久围欄不重试，立刻报错交给人核对。
+ */
+export const STORE_BUSY_WAIT = { start: 10_000, read: 1_000, write: 2_000 } as const;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+/** 同步睡眠：临界区 fn 必须是同步的，只能阻塞等对方的毫秒级临界区结束。 */
+function sleepSync(ms: number) { Atomics.wait(sleepCell, 0, 0, ms); }
+
 export const DEFAULT_SETTINGS: RuntimeSettings = {
   workspaceRoots: [],
   history: { codex: { enabled: false, roots: [] }, "claude-code": { enabled: false, roots: [] }, pi: { enabled: false, roots: [] }, antigravity: { enabled: false, roots: [] } },
@@ -109,8 +120,11 @@ export class RuntimeStore {
   private stamps = new Map<string, string>();
   readonly host: { hostId: string; label: string };
 
-  constructor(dataDir: string) {
+  /** 启动时旧槽可能仍在写存储：给足重试预算，避免瞬时争用把新槽直接打死。 */
+  private busyWaitMs: { start: number; read: number; write: number } = STORE_BUSY_WAIT;
+  constructor(dataDir: string, options: { busyWaitMs?: number } = {}) {
     this.dir = join(dataDir, "runtime");
+    this.busyWaitMs = { ...STORE_BUSY_WAIT, start: options.busyWaitMs ?? STORE_BUSY_WAIT.start };
     mkdirSync(join(this.dir, "events"), { recursive: true });
     mkdirSync(join(this.dir, "roles"), { recursive: true });
     this.refreshBindings(); this.refreshOperations(); this.refreshApprovals(); this.refreshUsage();
@@ -121,17 +135,22 @@ export class RuntimeStore {
         return {hostId: host.hostId, label: typeof host.label === "string" ? host.label : hostname()};
       }
       const created = {hostId: `host-${randomUUID().slice(0, 12)}`, label: hostname()}; writeJson(hostFile, created); return created;
-    });
+    }, "start");
   }
 
-  private exclusive<T>(fn: () => T): T {
-    const result = withHostMutex(this.dir, () => {
-      this.inCriticalSection = true;
-      try { this.recoverSessionPublication(); return {value: fn()}; }
-      finally { this.inCriticalSection = false; }
-    });
-    if ("status" in result) throw Object.assign(new Error("原生会话存储正由其他宿主写入，请稍后重试"), {code: "RT_STORE_BUSY"});
-    return result.value;
+  private exclusive<T>(fn: () => T, scope: keyof typeof STORE_BUSY_WAIT = "write"): T {
+    const deadline = Date.now() + this.busyWaitMs[scope];
+    for (let delay = 2; ; delay = Math.min(delay * 2, 50)) {
+      const result = withHostMutex(this.dir, () => {
+        this.inCriticalSection = true;
+        try { this.recoverSessionPublication(); return {value: fn()}; }
+        finally { this.inCriticalSection = false; }
+      });
+      if (!("status" in result)) return result.value;
+      // admission.lock 是主人不明的永久围栏，等也不会好：直接报错叫人核对。
+      if (existsSync(join(this.dir, "admission.lock")) || Date.now() >= deadline) throw Object.assign(new Error("原生会话存储正由其他宿主写入，请稍后重试"), {code: "RT_STORE_BUSY"});
+      sleepSync(delay);
+    }
   }
   private table<T>(name: string, id: string): Record<string, T> {
     return this.stableRead(() => {
@@ -144,9 +163,9 @@ export class RuntimeStore {
   /** Readers either see a completed publication or wait; they do not consume a half tuple. */
   private stableRead<T>(read: () => T): T {
     if (this.inCriticalSection) return read();
-    if (existsSync(this.publicationFile)) return this.exclusive(read);
+    if (existsSync(this.publicationFile)) return this.exclusive(read, "read");
     const value = read();
-    return existsSync(this.publicationFile) ? this.exclusive(read) : value;
+    return existsSync(this.publicationFile) ? this.exclusive(read, "read") : value;
   }
   private validatePublication(value: unknown): asserts value is SessionPublication {
     const t = value as SessionPublication;
@@ -327,11 +346,16 @@ export class RuntimeStore {
     if(Object.values(all).some(p=>!p||typeof p.fingerprint!=="string"||!/^[a-f0-9]{24}$/.test(p.fingerprint)||typeof p.partitionId!=="string"||!/^id1:p-[a-f0-9-]+$/.test(p.partitionId)||typeof p.createdAt!=="string"||!Number.isFinite(Date.parse(p.createdAt))))throw Object.assign(new Error("账号分区记录损坏，不能重新分配身份或名额"),{code:"RT_STORE_CORRUPT"});
     return all;
   }
-  getOrCreateIdentityPartition(key:string,fingerprint:string): {fingerprint:string;partitionId:string;createdAt:string} {
+  getOrCreateIdentityPartition(key:string,fingerprint:string, migrateFrom?: { fingerprint: string; partitionId: string }): {fingerprint:string;partitionId:string;createdAt:string} {
     if(!key||!/^[a-f0-9]{24}$/.test(fingerprint))throw new Error("Invalid identity partition source");
     return this.exclusive(()=>{
       const all=this.identityPartitions(),previous=all[key];
       if(previous?.fingerprint===fingerprint)return previous;
+      // 仅升级调用方核实过的当前分区指纹；在锁内再次核对，不能覆盖并发换号。
+      if(previous && migrateFrom && previous.partitionId===migrateFrom.partitionId && previous.fingerprint===migrateFrom.fingerprint){
+        const migrated={...previous,fingerprint};all[key]=migrated;writeJson(join(this.dir,"identity-partitions.json"),all);return migrated;
+      }
+      if(migrateFrom)throw Object.assign(new Error("身份分区在升级期间发生变化，请重新检查账号"),{code:"RT_IDENTITY"});
       const next={fingerprint,partitionId:`id1:p-${randomUUID().slice(0,18)}`,createdAt:new Date().toISOString()};
       all[key]=next;writeJson(join(this.dir,"identity-partitions.json"),all);return next;
     });

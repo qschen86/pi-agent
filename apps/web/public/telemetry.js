@@ -4,9 +4,9 @@
  *
  * - 事件：报错、请求失败、三个关键操作的开始 / 终态、生命周期。先进内存队列并镜像到 IndexedDB，
  *   每 10 秒发一批；页面隐藏时再用 keepalive 尽量发一次。服务端逐条确认后才删除，不确认就留着重发。
- * - 环形缓冲：最近 3 分钟、最多 300 条，每 5 秒落盘；出错、点上报、页面隐藏时立即落盘。
- *   刷新后 10 分钟内能读到上一页的缓冲，用来「报告上一页的问题」。
- * - 证据包：任意报错自动打包（同一指纹每分钟 1 个、每天 5 个），或用户点「刚才卡住了」手动打包。
+ * - 环形缓冲：最近 3 分钟、最多 300 条，每 5 秒落盘；出错、页面隐藏时立即落盘。
+ *   刷新后 10 分钟内自动补报上一页遗漏的异常现场。
+ * - 证据包：任意报错自动打包（同一指纹每分钟 1 个、每天 5 个），统一进入自愈夜检分析。
  * - 不采集正文、标题、令牌、请求 / 响应体；URL 只留路由模板，错误文字先脱敏再截短。
  * 采集本身出任何问题都只是不记，不影响页面。localStorage「pi-telemetry」=off 可关闭。
  */
@@ -31,7 +31,7 @@
     return Math.min(OP_TIMEOUT_MAX_MS, Math.max(OP_TIMEOUT_MIN_MS, read * 2 + 10_000));
   }
   const BUNDLE_BYTES = 250 * 1024;
-  const SUCCESS_CLASS = new Set(['op_start', 'op_success', 'request_slow', 'app_visibility_changed', 'app_resumed', 'page_ready', 'startup_stage', 'sw_update_detected', 'sw_controller_changed', 'report_opened', 'network_window']);
+  const SUCCESS_CLASS = new Set(['op_start', 'op_success', 'request_slow', 'app_visibility_changed', 'app_resumed', 'page_ready', 'startup_stage', 'sw_update_detected', 'sw_controller_changed', 'network_window']);
   const ENV = window.PI_TELEMETRY_ENV === 'test' ? 'test' : 'prod';
 
   const rid = () => {
@@ -141,7 +141,7 @@
     return tx('readwrite', s => {
       s.put({ savedAt: at, closed, events: T.queue }, 'q:' + pageId);
       s.put(page, 'p:' + pageId);
-      for (const b of T.outbox) { const { sending, ...copy } = b; s.put(copy, 'b:' + b.bundle_id); }
+      for (const b of T.outbox) { if (b.acknowledged) continue; const { sending, ...copy } = b; s.put(copy, 'b:' + b.bundle_id); }
     }).then(ok => { if (ok) T.persistedAt = new Date(at).toISOString(); });
   }
   /* 启动：收养已经关掉的页面留下的队列与未发出的证据包；记下最近一个已关闭页面的缓冲（上一页）。 */
@@ -168,7 +168,21 @@
           cur.delete();
         } else if (key.startsWith('p:') && key !== 'p:' + pageId) {
           if ((v.savedAt || 0) < Date.now() - 86_400_000) cur.delete();
-          else if (gone && Date.now() - v.savedAt < PREV_PAGE_MS && (!T.prev || v.savedAt > T.prev.savedAt)) T.prev = v;
+          else if (gone && Date.now() - v.savedAt < PREV_PAGE_MS) {
+            if (!T.prev || v.savedAt > T.prev.savedAt) T.prev = v;
+            // 同一事务认领现场并保存待发送包，多次刷新 / 多标签页不会重复补报。
+            if (!v.recovered && ENV !== 'test') {
+              const trigger = previousTrigger(v);
+              if (trigger) {
+                if (allowAuto(localFp(trigger))) {
+                  const b = buildBundle('auto', trigger, { source: v });
+                  if (!T.outbox.some(x => x.bundle_id === b.bundle_id)) T.outbox.push(b);
+                  s.put(b, 'b:' + b.bundle_id);
+                }
+                cur.update({ ...v, recovered: true });
+              }
+            }
+          }
         } else if (key.startsWith('b:') && !T.outbox.some(b => 'b:' + b.bundle_id === key)) T.outbox.push({ ...v, sending: false });
         cur.continue();
       };
@@ -213,22 +227,26 @@
     return post('/api/client-events/bundle', JSON.stringify({ bundle: body }), keepalive).then(async res => {
       if (res.status === 401 || res.status === 403) { T.paused = true; return { ok: false, reason: 'auth' }; }
       if (res.status === 404) { T.disabled = true; return { ok: false, reason: 'off' }; }
-      if (res.status === 413 || res.status === 400) { forgetBundle(b); return { ok: false, reason: 'invalid' }; }
+      if (res.status === 413 || res.status === 400) { await forgetBundle(b); return { ok: false, reason: 'invalid' }; }
       if (!res.ok) throw new Error(String(res.status));
       const r = await res.json();
-      // 服务端已处理（存下、限流、不是触发事件）都删掉本地副本；只有手动包放不下时保留结果给页面提示
-      forgetBundle(b);
+      // 服务端已处理（存下、限流、不是触发事件）都删掉本地副本；不再由页面触发即时分析
+      await forgetBundle(b);
       return r;
     }).catch(() => ({ ok: false, reason: 'network', queued: true })).finally(() => { b.sending = false; });
   }
-  function forgetBundle(b) { T.outbox = T.outbox.filter(x => x !== b); void tx('readwrite', s => s.delete('b:' + b.bundle_id)); }
+  function forgetBundle(b) {
+    // 先提交删除再移出内存，避免确认后立刻刷新又收养尚未删除的旧包。
+    b.acknowledged = true;
+    return tx('readwrite', s => s.delete('b:' + b.bundle_id)).then(() => { T.outbox = T.outbox.filter(x => x !== b); });
+  }
 
   /* ------------------------------ 证据包 ------------------------------ */
   function snapshotState() {
     return {
       route_template: routeNow(), page_release: release(), sw_release: T.swRelease,
       sw_controlled: !!navigator.serviceWorker?.controller, online: navigator.onLine !== false, visible: document.visibilityState === 'visible',
-      ops: [...T.ops.values()].map(o => ({ component_id: o.component, attempt_id: o.attempt, active_ms: Math.round(o.active), wall_ms: Date.now() - o.startedAt, timed_out: o.timedOut })),
+      ops: [...T.ops.values()].map(o => ({ component_id: o.component, attempt_id: o.attempt, active_ms: Math.round(o.active), wall_ms: Date.now() - o.startedAt, timed_out: o.timedOut, timeout_ms: opTimeoutMs() })),
       failed_requests: T.failed.slice(-20), visibility: T.vis.slice(-20),
       read_budget: store(() => window.piReadBudget?.(), null), pending_writes: Number(window.piPwaWrites) || 0,
       // 读取各阶段用时（毫秒，全是有界数字，不带路径）：超时时能分清是卡在等响应头、正文传输，
@@ -258,12 +276,32 @@
   }
   // 只带出事前 RING_MS 内的记录（缓冲只在新事件进来时修剪，空闲一阵后可能还留着更早的）
   const recent = (ring, ref) => (ring || []).filter(e => !(Date.parse(e.occurred_at) < ref - RING_MS)).slice(-RING_MAX);
+  function autoTrigger(e) {
+    if (e.environment === 'test') return false;
+    if (e.event_name === 'js_error') return e.error_type !== 'external';
+    if (e.event_name === 'unhandled_rejection') return e.status !== 401 && e.status !== 403;
+    if (['resource_error', 'op_timeout'].includes(e.event_name)) return true;
+    if (e.event_name === 'op_failure') return !['auth', 'offline', 'http_4xx'].includes(e.error_type);
+    return e.event_name === 'request_failed' && (e.error_type === 'http_5xx' || (['network', 'timeout'].includes(e.error_type) && e.context?.online !== false));
+  }
+  function previousTrigger(page) {
+    const events = recent(page.ring, page.savedAt);
+    const failure = [...events].reverse().find(e => autoTrigger(e) && Date.parse(e.occurred_at) > page.savedAt - 120_000);
+    if (failure) return failure;
+    // 正常刷新 / 短暂慢读不算卡死，沿用该页实际的前台超时预算。
+    const pending = (page.state?.ops || []).find(o => !o.timed_out && o.active_ms >= (o.timeout_ms || OP_TIMEOUT_MIN_MS));
+    const start = pending && events.find(e => e.event_name === 'op_start' && e.attempt_id === pending.attempt_id);
+    if (!start || start.environment === 'test') return null;
+    const trigger = { ...start, event_id: 'prev_' + start.event_id, event_name: 'op_timeout', occurred_at: new Date(page.savedAt).toISOString(), result: 'timeout', error_type: 'timeout', active_ms: pending.active_ms };
+    page.ring = [...events, trigger];
+    return trigger;
+  }
   function buildBundle(kind, trigger, opts = {}) {
-    const src = opts.previous ? T.prev : null;
+    const src = opts.source || null;
     const b = {
-      schema: 'bundle@1', bundle_id: rid(), created_at: nowIso(), trigger: { kind, event_id: trigger?.event_id || null },
-      note: opts.note ? redact(opts.note, 500) : undefined, page_source: src ? 'previous' : 'current',
-      telemetry_session_id: sessionId, page_instance_id: src ? src.pageInstance : pageId,
+      schema: 'bundle@1', bundle_id: trigger?.event_id || rid(), created_at: nowIso(), trigger: { kind, event_id: trigger?.event_id || null },
+      page_source: src ? 'previous' : 'current',
+      telemetry_session_id: src ? trigger.telemetry_session_id : sessionId, page_instance_id: src ? src.pageInstance : pageId,
       page_release: src ? src.release : release(), route_template: src ? src.route : routeNow(),
       events: recent(src ? src.ring : T.ring, src ? src.savedAt : Date.now()), state: src ? src.state : snapshotState(),
       completeness: src
@@ -298,7 +336,7 @@
         if (!o.timedOut && o.active >= opTimeoutMs()) {
           o.timedOut = true;
           const e = emit('op_timeout', { component_id: o.component, operation_id: o.operation, attempt_id: o.attempt, result: 'timeout', error_type: 'timeout', active_ms: Math.round(o.active), wall_ms: Date.now() - o.startedAt });
-          void persist(true); void bundle('auto', e); chip('加载一直没完成，已自动记录现场', '补充上报', () => openReport(), 'op-timeout');
+          void persist(true); void bundle('auto', e); chip('加载一直没完成，异常将自动上报至自愈', 'op-timeout');
         }
       }
       ensureTicker();
@@ -325,7 +363,7 @@
         if (type === 'abort') { end('op_cancelled', 'cancelled', { reason: 'abort' }); return; }
         const e = end('op_failure', 'failure', { error_type: type, status: status || undefined, error_detail: redact(error?.message || error || ''), stack: error?.stack ? redactStack(error.stack) : undefined });
         // 4xx（冲突、校验不过）、登录失效、离线是预期内的状态，只记事件不打包
-        if (e && !['auth', 'offline', 'http_4xx'].includes(type)) { void persist(true); void bundle('auto', e); chip('出错了，已自动记录现场', '补充上报', () => openReport()); }
+        if (e && !['auth', 'offline', 'http_4xx'].includes(type)) { void persist(true); void bundle('auto', e); chip('出错了，异常将自动上报至自愈'); }
       },
       cancel(reason = 'navigate') { end('op_cancelled', 'cancelled', { reason: /^[a-z][a-z0-9-]{0,31}$/.test(reason) ? reason : 'other' }); },
       retry: () => op(component, { operationId: o.operation })
@@ -570,11 +608,10 @@
     return n;
   }
   let chipTimer = null;
-  function chip(text, actionLabel, action, kind) {
+  function chip(text, kind) {
     if (!document.body) return;
     document.querySelector('.pi-telemetry-chip')?.remove(); clearTimeout(chipTimer);
     const box = el('div', { class: 'pi-telemetry-chip', role: 'status', ...(kind ? { 'data-kind': kind } : {}) }, el('span', {}, text),
-      actionLabel ? el('button', { type: 'button', class: 'btn small', onclick: () => { box.remove(); action(); } }, actionLabel) : null,
       el('button', { type: 'button', class: 'pi-telemetry-chip-close', 'aria-label': '关闭', onclick: () => box.remove() }, '×'));
     document.body.append(box);
     chipTimer = setTimeout(() => box.remove(), 10_000);
@@ -585,48 +622,9 @@
     if (!box || (kind && box.getAttribute('data-kind') !== kind)) return;
     clearTimeout(chipTimer); box.remove();
   }
-  function openReport() {
-    if (!document.body) return;
-    document.querySelector('.pi-report-dialog')?.remove();
-    emit('report_opened');
-    const prev = T.prev;
-    const prevLabel = prev ? `刷新前的上一页（${new Date(prev.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}）` : null;
-    const note = el('textarea', { rows: 3, maxlength: 500, placeholder: '补充说明（可选）：在做什么、卡在哪里' });
-    const status = el('p', { class: 'muted small pi-report-status', role: 'status' });
-    const choice = prev ? el('fieldset', { class: 'pi-report-source' }, el('legend', {}, '报告哪一页'),
-      el('label', {}, el('input', { type: 'radio', name: 'pi-report-src', value: 'current', checked: true }), ' 当前页面'),
-      el('label', {}, el('input', { type: 'radio', name: 'pi-report-src', value: 'previous' }), ` ${prevLabel}`)) : null;
-    const submit = el('button', { type: 'submit', class: 'btn primary' }, '上报');
-    const dlg = el('dialog', { class: 'pi-report-dialog', 'aria-labelledby': 'pi-report-title' },
-      el('form', { method: 'dialog', onsubmit: async (ev) => {
-        ev.preventDefault(); submit.disabled = true; status.textContent = '正在上报…';
-        const previous = !!dlg.querySelector('input[value="previous"]')?.checked;
-        const r = await bundle('manual', null, { note: note.value.trim(), previous });
-        if (r?.ok) { status.textContent = r.note === 'queued' ? '已上报。AI 分析后会在待办（平台 / debug）里生成一条' : '已上报现场'; setTimeout(() => dlg.close(), 1800); }
-        else if (r?.queued) { status.textContent = '网络暂时不通，已保存在本机，联网后自动上报'; setTimeout(() => dlg.close(), 1800); }
-        else if (r?.reason === 'capacity') { status.textContent = '诊断存储已满，这次没能保存，请稍后再试'; submit.disabled = false; }
-        else { status.textContent = '没能上报（' + (r?.reason || '未知原因') + '）'; submit.disabled = false; }
-      } },
-      el('h2', { id: 'pi-report-title' }, '刚才卡住了？'),
-      el('p', { class: 'muted small' }, '会把最近 3 分钟的页面记录和对应的服务端日志一起打包保存，用来排查问题。不包含聊天内容。'),
-      choice, note, status,
-      el('div', { class: 'pi-report-actions' }, el('button', { type: 'button', class: 'btn', onclick: () => dlg.close() }, '取消'), submit)));
-    dlg.addEventListener('close', () => dlg.remove());
-    document.body.append(dlg);
-    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
-    note.focus();
-  }
-
   /* ------------------------------ 启动 ------------------------------ */
   if (!T.disabled) {
     void adopt().then(() => {
-      // 上一页在关掉前有失败、超时或一直没完成的操作：提示可以报告
-      const p = T.prev;
-      // 缓冲最多落后 5 秒，所以「一直没完成」按活跃 3 秒算
-      if (p && ((p.state?.ops || []).some(o => o.active_ms >= 3000) || (p.ring || []).some(e => /^(op_failure|op_timeout|js_error|request_failed)$/.test(e.event_name) && Date.parse(e.occurred_at) > p.savedAt - 120_000))) {
-        const show = () => chip('上一页好像出了问题', '报告上一页', () => openReport());
-        if (document.body) show(); else addEventListener('DOMContentLoaded', show, { once: true });
-      }
       void flush();
     });
     let ticks = 0;
@@ -635,7 +633,7 @@
 
   window.piTelemetry = {
     requestBegin: networkBegin, requestDispatched: networkDispatched, requestFinished: networkFinish, trackStream: networkStream,
-    op, opTimeoutMs, requestDone, setIdentity, openReport, flush, persist,
+    op, opTimeoutMs, requestDone, setIdentity, flush, persist,
     requestId: rid, event: (name, fields) => (SUCCESS_CLASS.has(name) ? emit(name, fields) : null),
     get state() { return T; }
   };

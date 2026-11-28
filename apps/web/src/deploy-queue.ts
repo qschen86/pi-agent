@@ -19,7 +19,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { commitSessionWorktree, rebaseSessionWorktree, RuntimeError, sessionWorktreeStatus, sessionWorktreeDeployPaths, type SessionBinding, type WorktreeStatus } from "@pi-agent/runtime-sessions";
-import { enqueueRollback, cancelRequest, clearAutoResolve, enqueue, isAncestor, readAutoResolve, readBaselineRed, baselineRedForRequest, baselineRedWait, readStaged, BASELINE_RED_COOLDOWN_MS, readRequests, watcherPid, whenIdleDirs, writeAutoResolve, type AutoResolveState, type BaselineRedState, type WhenIdleRequest } from "../../../scripts/deploy-when-idle.mjs";
+import { enqueueRollback, cancelRequest, clearAutoResolve, clearGateRetry, gateRetrySummary, readGateRetry, type GateRetryChain, enqueue, isAncestor, readAutoResolve, readBaselineRed, baselineRedForRequest, baselineRedWait, readStaged, BASELINE_RED_COOLDOWN_MS, readRequests, watcherPid, whenIdleDirs, writeAutoResolve, type AutoResolveState, type BaselineRedState, type WhenIdleRequest } from "../../../scripts/deploy-when-idle.mjs";
 import { readLatestDeployForSession, type DeployHistoryEntry } from "./deploy-history.js";
 
 export type { AutoResolveState };
@@ -90,6 +90,8 @@ export interface DeployInfo {
   requests: DeployRequestView[];
   /** 这个会话的冲突自动解决状态（见 deploy-auto-resolve.ts） */
   autoResolve?: AutoResolveState;
+  /** 门禁失败后自动修复重试的记录：次数、每次的部署耗时和会话修复耗时（见 scripts/deploy-when-idle.mjs） */
+  gateRetry?: GateRetryChain & { /** 一句话统计：次数、累计用时、每次的部署 / 修复耗时（全站只在 gateRetrySummary 生成） */ summary: string };
   watcherRunning: boolean;
   /** 最近一次结束的部署（接口补上；结果通知还没发回会话时，详情页先用它把「部署中」更新成成功 / 失败） */
   last?: DeployHistoryEntry;
@@ -279,7 +281,8 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
   const info = async (s: DeploySession, activity?: DeployActivity): Promise<DeployInfo> => {
     const requests = await annotate(readRequests(root), activity);
     const auto = readAutoResolve(s.platformSessionId, root);
-    const base = { actionsSupported: deploymentActionsSupported(root), branch, requests, watcherRunning: !!watcherPid(root), ...(auto ? { autoResolve: auto } : {}) };
+    const retry = readGateRetry(s.platformSessionId, root);
+    const base = { actionsSupported: deploymentActionsSupported(root), branch, requests, watcherRunning: !!watcherPid(root), ...(auto ? { autoResolve: auto } : {}), ...(retry ? { gateRetry: { ...retry, summary: gateRetrySummary(retry) } } : {}) };
     if (!repo || !repoCommon) return { ...base, eligible: false, reason: "找不到 pi-agent 主仓库，无法从页面部署" };
     const wt = s.worktree;
     // worktree 会话按创建时宿主记下的仓库根判断，不在会话目录里跑 git（那会读会话能改写的 `.git` 文件）
@@ -327,7 +330,11 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
         ...(ff ? { ffBranch: branch, ffFrom: ff.ffFrom } : {}),
         ...(root ? { root } : {}), ...(opts.startWatcher === false ? { startWatcher: false } : {})
       }).request);
-    } catch (e) { throw new RuntimeError((e as Error).message, 400, "RT_DEPLOY_INVALID"); }
+    } catch (e) {
+      const code = (e as Error & { code?: string }).code;
+      if (code === "RT_DEPLOY_FAILED_UNCHANGED" || code === "RT_DEPLOY_DUPLICATE") throw new RuntimeError((e as Error).message, 409, code);
+      throw new RuntimeError((e as Error).message, 400, "RT_DEPLOY_INVALID");
+    }
   };
 
   return {
@@ -349,7 +356,7 @@ export function createDeployQueue(opts: { repo?: string; root?: string; branch?:
       if (ACTIVE.includes(s.status)) throw new RuntimeError("会话还在运行，等这一轮结束再提交", 409, "RT_BUSY");
       if (!st.changes.length && !st.ahead) throw new RuntimeError(`这个会话的 worktree 里没有新改动（和 ${branch} 一样）`, 409, "RT_DEPLOY_NOTHING");
       // 人重新点了部署：之前自动解决冲突的记录（含「需要人处理」）作废，次数从头算
-      if (!auto) clearAutoResolve(s.platformSessionId, root);
+      if (!auto) { clearAutoResolve(s.platformSessionId, root); clearGateRetry(s.platformSessionId, root); }
       let committed: string | undefined;
       if (st.changes.length) {
         const msg = (message ?? "").trim() || s.title.trim() || "pi-agent 会话改动";

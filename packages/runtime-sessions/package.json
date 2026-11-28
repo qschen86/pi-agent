@@ -16,6 +16,8 @@
     "@pi-agent/runtime-contracts": "*",
     "sharp": "^0.34.5",
     "@pi-agent/pi-runtime": "*",
-    "parse5": "^8.1.1"
+    "parse5": "^8.1.1",
+    "@pi-agent/capability-gateway": "*",
+    "@pi-agent/broker-transport": "*"
   }
 }

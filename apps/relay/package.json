@@ -1,0 +1,13 @@
+{
+  "name": "@pi-agent/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Heji Remote Connect 无状态加密中继双后端（Node.js WSS + Cloudflare Workers/DO Hibernation）",
+  "main": "node/server.ts",
+  "scripts": {
+    "start": "tsx node/server.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {}
+}

@@ -1,4 +1,4 @@
-import { serveFilePreview, temporaryFileReferences } from './file-preview.js';
+import { checkPreviewFiles, serveFilePreview, temporaryFileReferences } from './file-preview.js';
 import type { Context, Hono } from "hono";
 import { RuntimeError } from "@pi-agent/runtime-sessions";
 import type { RoomService } from "./room-service.js";
@@ -54,18 +54,26 @@ export function mountRoomRoutes(app: Hono, rooms: RoomService, ctx: { isPublic: 
       ...(endpoint === 'bootstrap' ? { display: { allowed: true }, control: { requiresLatestState: true }, incremental: { supported: !!ctx.sync?.enabled, protocolVersion: 1 } } : {}) };
   }));
   app.get("/api/rooms/:id", guard(false), (c) => run(c, () => rooms.view((c.req.param("id") ?? ""), { ...(c.req.query("before") ? { before: Number(c.req.query("before")) } : {}), ...(c.req.query("limit") ? { limit: Number(c.req.query("limit")) } : {}) })));
+  /** 讨论室文件引用的授权范围：指定成员就按该成员的工作目录和引用，否则按讨论室工作目录 + 全体成员的根 */
+  const previewScope = async (c: Context) => {
+    await rooms.ready;
+    const view = rooms.view(c.req.param("id") ?? ""), memberId = c.req.query("memberId");
+    const member = memberId ? view.members.find(m => m.memberId === memberId) : undefined;
+    if (memberId && !member) throw new RuntimeError("成员不属于本讨论室",404,"RT_NOT_FOUND");
+    const session = member ? (await rooms.mgr.view(member.platformSessionId)).session : undefined;
+    if (session && session.hostId !== rooms.mgr.store.host.hostId) throw new RuntimeError("文件所在运行主机不可用",409,"FILE_HOST_UNAVAILABLE");
+    const roots = session ? rooms.mgr.workspaceRoots(session.runtimeKind) : view.members.flatMap(m => rooms.mgr.workspaceRoots(m.binding.runtimeKind));
+    const references = member ? temporaryFileReferences(rooms.mgr.store.events(member.platformSessionId)) : [];
+    return {workspace:session?.workspace ?? view.room.workspace,roots,referencedFiles:references};
+  };
   for (const endpoint of ["file-preview", "file-content"]) app.get(`/api/rooms/:id/${endpoint}`, guard(false), async c => {
-    try {
-      await rooms.ready;
-      const view = rooms.view(c.req.param("id") ?? ""), memberId = c.req.query("memberId");
-      const member = memberId ? view.members.find(m => m.memberId === memberId) : undefined;
-      if (memberId && !member) throw new RuntimeError("成员不属于本讨论室",404,"RT_NOT_FOUND");
-      const session = member ? (await rooms.mgr.view(member.platformSessionId)).session : undefined;
-      if (session && session.hostId !== rooms.mgr.store.host.hostId) throw new RuntimeError("文件所在运行主机不可用",409,"FILE_HOST_UNAVAILABLE");
-      const roots = session ? rooms.mgr.workspaceRoots(session.runtimeKind) : view.members.flatMap(m => rooms.mgr.workspaceRoots(m.binding.runtimeKind));
-      const references = member ? temporaryFileReferences(rooms.mgr.store.events(member.platformSessionId)) : [];
-      return serveFilePreview(c, {workspace:session?.workspace ?? view.room.workspace,roots,referencedFiles:references},endpoint === "file-content");
-    } catch(e) {if(e instanceof RuntimeError)return c.json({error:e.message,code:e.code},e.status);return c.json({error:"讨论室不可用"},404);}
+    try {return serveFilePreview(c, await previewScope(c), endpoint === "file-content");}
+    catch(e) {if(e instanceof RuntimeError)return c.json({error:e.message,code:e.code},e.status);return c.json({error:"讨论室不可用"},404);}
+  });
+  app.get("/api/rooms/:id/file-check", guard(false), async c => {
+    c.header("Cache-Control", "private, no-store");
+    try {return c.json(await checkPreviewFiles(await previewScope(c), c.req.queries("ref") ?? []));}
+    catch(e) {if(e instanceof RuntimeError)return c.json({error:e.message,code:e.code},e.status);return c.json({error:"讨论室不可用"},404);}
   });
   app.post("/api/rooms/:id/messages", guard(true), (c) => run(c, async () => rooms.post((c.req.param("id") ?? ""), await c.req.json<RoomPostInput>(), ctx.actor(c)), 201));
   app.post("/api/rooms/:id/messages/:seq/deliveries/:memberId/retry", guard(true), (c) => run(c, () => rooms.retry((c.req.param("id") ?? ""), Number(c.req.param("seq")), (c.req.param("memberId") ?? ""), ctx.actor(c))));

@@ -153,7 +153,8 @@ export class DiagnosticTriage {
       const at = Date.parse(String(b["created_at"]));
       if (!(at > since)) continue;
       if (!through || b["created_at"] > through) through = b["created_at"];
-      if (b["trigger"]?.kind === "manual") continue; // 用户上报走即时分诊（或它自己的 finding 补跑）
+      // 兼容旧页面留在本机的手动包：尚未即时处理的也交给夜检，已处理的不重复分析。
+      if (b["trigger"]?.kind === "manual" && this.findings.all().some(f => f.bundleIds.includes(String(b["bundle_id"])))) continue;
       if (this.isNoise(b)) continue;
       fresh.push(b);
     }
@@ -260,7 +261,7 @@ export class DiagnosticTriage {
       return store.create({
         key: manual ? `report:${first["bundle_id"]}` : `scan:v1:${c.fingerprint}:${episode}`, source: manual ? "report" : "scan",
         fingerprint: c.fingerprint, episode, bundleIds: c.bundles.map((b) => String(b["bundle_id"])).slice(0, 20),
-        component: first["trigger"]?.component_id ?? (first["source"] === "server" ? "server" : undefined), errorType: first["trigger"]?.error_type ?? undefined,
+        component: first["trigger"]?.component_id ?? (first["source"] === "server" ? "server" : "frontend"), errorType: first["trigger"]?.error_type ?? undefined,
         occurrences: stats?.occurrences ?? c.bundles.length, sessions: stats?.sessions ?? 1, releases: stats?.releases ?? [],
         firstSeen: stats?.firstSeen ?? at, lastSeen: stats?.lastSeen ?? at, reason: c.reason
       });

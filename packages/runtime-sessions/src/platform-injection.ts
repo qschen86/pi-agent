@@ -78,5 +78,8 @@ export function platformChecks(events: readonly ProjectedEvent[]): PlatformCheck
 
 /** Only paths, never credentials, travel through native developer instructions. */
 export function runtimeRecordInstructions(access:{contextFile:string;clientPath:string}):string{
- return `平台记录入口：需要从本会话新建笔记、待办或日程时，使用 node ${JSON.stringify(access.clientPath)} --context ${JSON.stringify(access.contextFile)}，从 stdin 传 JSON：text、kind（note/todo）、schedule（可选）、generationSummary（简短生成依据）、idempotencyKey（同一次创建重试不变）。默认继承本会话的明确来源；继续从某个新条目衍生时可传 sourceRefs 替代默认来源。不要读取、输出或改写上下文文件中的凭据；不能根据正文相似度猜测来源。`;
+ return `平台记录入口：需要从本会话新建笔记、待办或日程时，使用 node ${JSON.stringify(access.clientPath)} --context ${JSON.stringify(access.contextFile)}，从 stdin 传 JSON：text、kind（note/todo）、schedule（可选）、schedulePending（可选：已判定为日程但缺起算日期的周期安排，如「每 90 天续费」但没说上次哪天，传 {reason:"missing-anchor",repeat:{freq:"daily",interval:90},suggest:"YYYY-MM-DD",hint:"还在等什么"}）、generationSummary（简短生成依据）、idempotencyKey（同一次创建重试不变）。周期安排缺起算日期时，先在会话里问一句（「上次是哪天？」）拿到日期再用 schedule；问不到也不要当成待办降级记录，用 schedulePending 记成「日程 · 待定时间」，提醒用户补日期。默认继承本会话的明确来源；继续从某个新条目衍生时可传 sourceRefs 替代默认来源。不要读取、输出或改写上下文文件中的凭据；不能根据正文相似度猜测来源。`;
 }
+
+/** 注入给所有非只读/非评测会话的进程清理规范，避免 macOS/BSD pkill 误杀代理与后台服务。 */
+export const PROCESS_CLEANUP_INSTRUCTIONS = `进程清理规范：停止临时预览或测试进程时，优先按启动时记录的 PID 或精确监听端口（如 lsof -tiTCP:<port> -sTCP:LISTEN）停止，不要宽泛按路径或用户名批量杀进程。macOS/BSD 下的 pkill/pgrep 选项必须写在匹配词之前，严禁写成 pkill -f <pattern> -u $USER 这类把选项放在匹配词之后的命令（后面的 -u、$USER 会被当成 OR 匹配词，误杀本机代理、隧道和后台服务）。`;

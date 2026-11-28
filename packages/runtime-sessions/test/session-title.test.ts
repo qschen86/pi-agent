@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelInvocationPort, ModelResponse } from "@pi-agent/model-port";
 import { RuntimeSessionManager } from "../src/manager.js";
-import { SESSION_TITLE_CONFIG, SessionTitleWorker, validateSessionTitle } from "../src/session-title.js";
+import { SESSION_TITLE_CONFIG, SessionTitleWorker, titleInput, titleInputHash, validateSessionTitle } from "../src/session-title.js";
 import { sessionTitlePrompt } from "../src/session-title-prompt.js";
 import { FakeDriver, until, tick } from "./fake-driver.js";
 
@@ -36,6 +36,28 @@ async function create(extra: Record<string, unknown> = {}) {
 }
 
 describe("platform title generation", () => {
+  it.each([" ", "\n", "\t", "\u3000"])("generates and saves a title when truncation ends at whitespace %j", async whitespace => {
+    // 8000 个 Unicode 字符，含代理对；后面还有正文，所以截取前 trim 不会移除边界空白。
+    const prompt = "标题😀" + "文".repeat(7_996) + whitespace + "截取范围之外的正文";
+    const { session } = await create({ prompt });
+    const id = session.platformSessionId;
+    await until(() => mgr.store.binding(id)?.titleGeneration?.state === "succeeded");
+    expect(mgr.store.binding(id)).toMatchObject({ title: "生成会话摘要标题", titleSource: "generated",
+      titleGeneration: { attempts: 1, inputHash: titleInputHash(prompt) } });
+    expect(port.complete).toHaveBeenCalledTimes(1);
+    expect(port.complete.mock.calls[0]![1].prompt).toBe(sessionTitlePrompt(titleInput(prompt)));
+    expect(port.complete.mock.calls[0]![1].prompt).not.toContain("截取范围之外的正文");
+  });
+
+  it("uses the same truncation hash for a scheduled first message ending at whitespace", async () => {
+    const prompt = "文".repeat(7_999) + "\n后续正文";
+    const { session } = await create({ prompt, scheduledFor: new Date(Date.now() + 60_000).toISOString() });
+    await until(() => mgr.store.binding(session.platformSessionId)?.titleGeneration?.state === "succeeded");
+    expect(port.complete).toHaveBeenCalledTimes(1);
+    expect(driver.startCalls).toBe(0);
+    expect(mgr.store.binding(session.platformSessionId)?.titleGeneration?.inputHash).toBe(titleInputHash(prompt));
+  });
+
   it("does not wait for title completion; persists and notifies the shared title without changing activity", async () => {
     let resolve!: (r: ModelResponse) => void;
     port.complete.mockImplementation(() => new Promise<ModelResponse>(r => { resolve = r; }));
@@ -63,8 +85,43 @@ describe("platform title generation", () => {
     expect(config).toMatchObject({ provider: "deepseek", model: "deepseek-flash", thinking: "off", role: "sessionTitle" });
     expect(call.prompt).toContain("Generate a concise UI title (up to 36 characters)");
     expect(call.prompt).toContain("- Write the title in the user's locale.");
+    // v2：字数按字符数计数、按提示语言输出（中英文混输导致的超长标题会被判废）
+    expect(call.prompt).toContain("The title must be at most 36 characters");
+    expect(call.prompt).toContain("A Chinese prompt gets a Chinese title");
+    expect(SESSION_TITLE_CONFIG.promptVersion).toBe("codex-task-title@3");
     expect(call.prompt).toContain("User prompt:\n引用待办记录");
     expect(call.images).toBeUndefined(); expect(driver.startCalls).toBe(1);
+  });
+
+  it("generates the title from reference titles only, not from the quoted content", async () => {
+    const noteQuote = [
+      "引用待办记录（记于 2026-10-19 09:35）：",
+      "",
+      "> 补齐会话标题",
+      ">",
+      "> 正文步骤：先改写器再补测试，验收时只看标题",
+      ""
+    ].join("\n");
+    const { session } = await create({ prompt: `${noteQuote}\n统计一下用了多少 token` });
+    await until(() => mgr.store.binding(session.platformSessionId)?.titleSource === "generated");
+    const prompt: string = port.complete.mock.calls[0]![1].prompt;
+    expect(prompt).toContain("Referenced items (titles only, not the task):\n- todo: 补齐会话标题");
+    expect(prompt).toContain("User message:\n统计一下用了多少 token");
+    expect(prompt).not.toContain("正文步骤");
+    expect(prompt).not.toContain("记于 2026-10-19");
+  });
+
+  it("titles a recommended-task session with the recommendation title only", async () => {
+    const requirement = "补齐会话标题\n\n需求：\n- 引用对象只给标题\n\n验收条件：\n- 标题不含元数据";
+    const { session } = await create({ prompt: requirement, recommendationRef: {
+      taskId: "task-1", revision: 1, title: "补齐会话标题", requirement,
+      sources: [{ noteId: "n-1", text: "来源待办正文", inputHash: "hash-1" }]
+    } });
+    await until(() => mgr.store.binding(session.platformSessionId)?.titleSource === "generated");
+    const prompt: string = port.complete.mock.calls[0]![1].prompt;
+    expect(prompt).toContain("Referenced items (titles only, not the task):\n- recommended task: 补齐会话标题");
+    expect(prompt).not.toContain("验收条件");
+    expect(prompt).not.toContain("User message:");
   });
 
   it("preserves manual titles and leaves project/room/compare scopes outside automatic enrolment", async () => {
@@ -150,6 +207,29 @@ describe("platform title generation", () => {
     const { session } = await create(); await until(() => mgr.store.binding(session.platformSessionId)?.titleSource === "generated");
     expect(port.complete).toHaveBeenCalledTimes(2); expect(mgr.store.binding(session.platformSessionId)?.title).toBe("修复标题长度");
     expect(validateSessionTitle({ title: "# 标题", description: "内容" })).not.toEqual([]);
+  });
+
+  it("recovers the title on a second durable claim when the whole first claim returns invalid output", async () => {
+    port.complete.mockResolvedValueOnce(response("x".repeat(37))).mockResolvedValueOnce(response("x".repeat(37)))
+      .mockResolvedValue(response("修复标题长度"));
+    const { session } = await create(); const id = session.platformSessionId;
+    await until(() => mgr.store.binding(id)?.titleSource === "generated");
+    // 第一次领取（首次 + 修复）都不合格：输出内容不合格允许再领取一次，而不是直接落到「新会话」。
+    expect(port.complete).toHaveBeenCalledTimes(3);
+    expect(mgr.store.binding(id)).toMatchObject({ title: "修复标题长度", titleSource: "generated" });
+    expect(mgr.store.binding(id)?.titleGeneration).toMatchObject({ state: "succeeded", attempts: 2 });
+    expect(validateSessionTitle({ title: "# 标题", description: "内容" })).not.toEqual([]);
+  });
+
+  it("keeps the neutral placeholder after two claims that only fail validation", async () => {
+    port.complete.mockResolvedValue(response("x".repeat(37)));
+    const { session } = await create(); const id = session.platformSessionId;
+    await until(() => mgr.store.binding(id)?.titleGeneration?.state === "failed", 6_000);
+    expect(port.complete).toHaveBeenCalledTimes(4);
+    expect(mgr.store.binding(id)).toMatchObject({ title: "新会话", titleSource: "fallback" });
+    expect(mgr.store.binding(id)?.titleGeneration).toMatchObject({ attempts: 2, errorCode: "TITLE_SCHEMA_ERROR" });
+    // 已经是终态：再等也不会继续调用
+    await tick(60); expect(port.complete).toHaveBeenCalledTimes(4);
   });
 
   it("keeps a valid title when the model returns an over-long description", async () => {

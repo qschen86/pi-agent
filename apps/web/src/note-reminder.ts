@@ -156,7 +156,8 @@ export const NOTE_REMIND_SCENE_LABEL: Record<NoteReminderScene, string> = {
   explicit: "按你说的",
   travel: "按机票 / 火车票场景",
   birthday: "按生日 / 纪念日场景",
-  commute: "按上班回家场景"
+  commute: "按上班回家场景",
+  renewal: "按续费 / 周期事项"
 };
 
 /** 提醒来源说明（页面详情里用）：明说的写「按你说的」，推断的写场景。 */

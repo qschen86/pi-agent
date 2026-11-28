@@ -43,7 +43,8 @@ export class AcpClient extends EventEmitter {
     proc.stderr.on("data", (d: Buffer) => { this.stderrTail = (this.stderrTail + d.toString()).slice(-4000); });
     createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
     const init = await this.request("initialize", {
-      protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "pi_agent", title: "pi-agent", version: "3.0.0" }
+      // elicitation.form：要求 agy 的 ask_question 走 ACP 表单提问（平台渲染成选项面板）；不声明它 agy 会退回在聊天里问
+      protocolVersion: 1, clientCapabilities: { elicitation: { form: {} } }, clientInfo: { name: "pi_agent", title: "pi-agent", version: "3.0.0" }
     }) as Record<string, unknown>;
     this.initializeResult = init;
     return init;

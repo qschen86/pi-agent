@@ -26,6 +26,7 @@ export const STATIC: Record<string, string> = {
   "/note-relations.js": "note-relations.js",
   "/note-relation-graph.js": "note-relation-graph.js",
   "/ledger.js": "ledger.js",
+  "/position-guard.js": "position-guard.js",
   "/stats.js": "stats.js",
   "/web-x.js": "web-x.js",
   "/memory-public.js": "memory-public.js",

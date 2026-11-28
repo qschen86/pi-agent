@@ -98,6 +98,12 @@ export function readAntigravityContinuation(dbPath: string, sessionId: string, p
       } catch { /* ignore malformed or non-JSON tool args */ }
       return false;
     };
+    // schedule 只是给本轮的定时器上弦：到点后由原生侧在原轮次内发起任务并回报 task_notification。
+    // 轮次一结束，未到点的定时器不会再触发（实测 6 个会话 21 次定时任务里只有轮内到点的那 1 次回报），
+    // 计成 pending 会让「本轮完成」的会话被永久拦住续聊。保留在 taskRows 里，轮内到点回报仍可归属。
+    const isTimerTask = (r: Step): boolean => {
+      try { return /(^|_)schedule$/.test(text(sub(fields(r.metadata), 4), 2)); } catch { return false; }
+    };
     const timeOf = (r: Step) => {
       const stamp = sub(fields(r.metadata), 1), seconds = stamp.get(1), nanos = stamp.get(2) ?? 0;
       if (typeof seconds !== "number" || typeof nanos !== "number") throw new Error("missing native timestamp");
@@ -215,7 +221,7 @@ export function readAntigravityContinuation(dbPath: string, sessionId: string, p
       (last.step_type === 132 && ([0, 1, 2].includes(last.status) || (last.status === 6 && !isDaemonTask(last) && !hasBackgroundTask(last))))
     );
     const pending = [...taskRows.values()].some(r => {
-      try { return !isDaemonTask(r) && taskOf(r) === `${sessionId}/task-${r.idx}` && !completed.has(taskOf(r)); } catch { return false; }
+      try { return !isDaemonTask(r) && !isTimerTask(r) && taskOf(r) === `${sessionId}/task-${r.idx}` && !completed.has(taskOf(r)); } catch { return false; }
     });
     return { fingerprint: `s${rows.length}i${last?.idx ?? -1}`, events, active, pending,
       toolCallIds: turnRows.filter(r => r.step_type === 132).map(r => toolMetaOf(r)?.callId).filter((id): id is string => !!id) };

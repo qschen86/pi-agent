@@ -14,6 +14,8 @@
     "@pi-agent/web-research": "*",
     "@pi-agent/runtime-sessions": "*",
     "web-push": "^3.6.7",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "@pi-agent/capability-gateway": "*",
+    "@pi-agent/broker-transport": "*"
   }
 }

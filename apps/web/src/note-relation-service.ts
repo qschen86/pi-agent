@@ -3,7 +3,7 @@ import type { Note, NoteStore } from './notes.js';
 import { NOTE_MAX_COUNT } from './notes.js';
 import { buildRelationIndex, canonical, entryKey, relationHash, validateRelation, queryRelationGraph, queryRelationTimeline } from './note-relations.js';
 import { emptyRelations, RelationError, type EntryRef, type RelationContext, type RelationEdge, type RelationEvent, type RelationNode, type RelationReceipt, type GraphQuery } from './note-relation-types.js';
-export interface RelationCreateInput {text?:unknown;images?:unknown;schedule?:unknown;kind?:unknown;timeZone?:unknown;pinned?:unknown;automation?:unknown;sourceRefs?:unknown;generationSummary?:unknown;idempotencyKey?:unknown}
+export interface RelationCreateInput {text?:unknown;images?:unknown;schedule?:unknown;schedulePending?:unknown;kind?:unknown;timeZone?:unknown;pinned?:unknown;automation?:unknown;sourceRefs?:unknown;generationSummary?:unknown;idempotencyKey?:unknown}
 type Creator=(input:RelationCreateInput,apply:(notes:Note[],note:Note)=>void,context:RelationContext)=>Note;
 export function relationSources(value:unknown):EntryRef[]{
  if(value===undefined)return [];if(!Array.isArray(value)||value.length>100)throw new RelationError('来源最多 100 项');
@@ -64,7 +64,7 @@ export class NoteRelationService {
   const refs=relationSources(input.sourceRefs);
   if(input.generationSummary!==undefined&&(typeof input.generationSummary!=='string'||input.generationSummary.length>1000))throw new RelationError('生成说明最多 1000 字符');
   const summary=typeof input.generationSummary==='string'?input.generationSummary.trim():undefined;
-  const receipt=this.receipt(context,input.idempotencyKey??(!refs.length?randomUUID():undefined),{text:typeof input.text==='string'?input.text.trim():input.text,images:input.images??[],schedule:input.schedule??null,kind:input.kind??null,pinned:input.pinned??false,automation:input.automation??null,refs:refs.map(entryKey).sort(),summary:summary??null});
+  const receipt=this.receipt(context,input.idempotencyKey??(!refs.length?randomUUID():undefined),{text:typeof input.text==='string'?input.text.trim():input.text,images:input.images??[],schedule:input.schedule??null,schedulePending:input.schedulePending??null,kind:input.kind??null,pinned:input.pinned??false,automation:input.automation??null,refs:refs.map(entryKey).sort(),summary:summary??null});
   const prior=this.findReceipt(receipt);if(prior){const note=this.store.get(prior.resultId);if(!note)throw new RelationError('此前创建的条目已删除',404);return this.decorate([note])[0];}
   await this.verify(refs);
   refs.splice(0,refs.length,...relationSources(refs));

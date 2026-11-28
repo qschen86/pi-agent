@@ -36,6 +36,7 @@ export interface PiRuntimeSpec {
   expectedFingerprint?: string;
   roleInstructions?: string;
   recordReadRoots?: string[];
+  capabilityGateway?: {socketPath:string};
   platformBrowser?: {socketPath:string;bridgePath:string;hookPath:string};
   evaluation?: EvaluationBoundary;
   /** 联网检索授权（可选）：未给 = 不注册 web_search/web_open 工具。 */

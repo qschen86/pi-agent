@@ -45,6 +45,8 @@ export interface PermissionLayer {
    * 这里的"缺失"必须是禁止，不能是"不限制"。
    */
   commands?: { allow: string[] };
+  /** Capability grants are exact IDs; a missing layer grants nothing. */
+  capabilities?: { connections: string[]; operations: string[]; resources: string[]; deny?: string[] };
   /**
    * 联网检索的来源范围（v1.8）：允许阅读哪些网页域名，"*" 为开放来源。
    * 与 commands 同口径：**未声明 = 该层不授予**。
@@ -284,4 +286,12 @@ export function pathWithin(candidate: string, prefix: string): boolean {
   const p = normalizePath(prefix);
   if (c === p) return true;
   return c.startsWith(p.endsWith("/") ? p : p + "/");
+}
+
+/** External capability scope: exact set intersections and deny wins, independent of filesystem grants. */
+export function mergeCapabilityPermissions(layers: PermissionLayer[]) {
+ const scopes=layers.map(l=>l.capabilities);
+ const deny=new Set(scopes.flatMap(s=>s?.deny??[]));
+ const intersect=(key: "connections"|"operations"|"resources")=>intersectAllow(scopes.map(s=>s?.[key]??[])).filter(x=>!deny.has(x)).sort();
+ return {connections:intersect("connections"),operations:intersect("operations"),resources:intersect("resources"),approval:strictestApproval(layers.map(l=>({name:l.name,level:l.approvals?.sideEffects??"AUTO"}))) };
 }

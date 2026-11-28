@@ -12,6 +12,7 @@ import { ACTIVE, FindingStore, STATUS_LABEL } from "./findings.js";
 import type { DiagnosticTriage } from "./triage.js";
 import type { RepairSessions } from "./repair.js";
 import type { ErrorStatsService } from "../error-stats/service.js";
+import type { SelfHealService } from "../self-heal/service.js";
 import type { FixVerifier } from "./verify.js";
 import { eventFingerprint, fingerprint, redactStack, redactText, shapePath, boundedJson } from "./redact.js";
 import { isBundleTrigger, isSuccessClass, normalizeClientEvent, routeTemplate } from "./events.js";
@@ -35,10 +36,10 @@ export class ServerDiagnostics {
   private sessionRate = new Map<string, { minute: number; count: number }>();
   private fpDaily = new Map<string, number>();
   private serverFpMinute = new Map<string, number>();
-  /** 新证据包落盘后的回调（B 期：用户上报即时分诊） */
+  /** 新证据包落盘后的可选回调；生产统一由自愈夜检分析 */
   onBundle: ((info: BundleInfo) => void) | undefined;
   readonly findings: FindingStore;
-  /** 每晚分诊与用户上报的即时分诊（main.ts 接上；测试可不接） */
+  /** 自愈夜检使用的链路分诊引擎（main.ts 接上；测试可不接） */
   triage: DiagnosticTriage | undefined;
   /** C 期修复会话（createWebApp 在有 runtime 时接上） */
   repair: RepairSessions | undefined;
@@ -48,6 +49,7 @@ export class ServerDiagnostics {
   errorStatsNoteIds: (() => Set<string>) | undefined;
   /** 每晚错误统计：设置页「错误统计」的手动触发与运行历史（main.ts 接上） */
   errorStats: ErrorStatsService | undefined;
+  selfHeal: SelfHealService | undefined;
 
   private manifest: () => ReleaseIdentity | undefined;
 

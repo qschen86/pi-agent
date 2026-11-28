@@ -929,3 +929,11 @@ it('Claude registers the platform browser and denies screenshot scripts in PreTo
  const result=await options.hooks.PreToolUse[0].hooks[0]({hook_event_name:'PreToolUse',tool_name:'Write',tool_input:{file_path:'/tmp/capture.mjs',content:'await page.screenshot()'}},'call',{});
  expect(result.hookSpecificOutput.permissionDecision).toBe('deny');await handle.done;d.shutdown();
 });
+
+it.each([['default',false,true],['plan',false,false],['default',true,false]] as const)('Claude gateway MCP preserves browser config and protected boundaries (%s, room=%s)',async(permissionMode,readOnlyRoom,enabled)=>{
+ const sdk=fakeSdk(async function*(_prompt,options){yield {type:'system',subtype:'init',session_id:options['sessionId'],model:'m'};yield {type:'result',subtype:'success',is_error:false,result:'ok'};});
+ const d=new ClaudeDriver({sdk}),{sink}=recordingSink();
+ try{const h=await d.startTurn({workspace:'/tmp',prompt:'x',clientMessageId:'gateway-config',permissionMode,readOnlyRoom,platformBrowser:{socketPath:'/tmp/browser.sock',bridgePath:'/tmp/browser.mjs',hookPath:'/tmp/hook.mjs'},capabilityGateway:{socketPath:'/tmp/capability.sock',bridgePath:'/tmp/capability.mjs'}},sink);await h.done;
+ const config=sdk.calls[0]['mcpServers'] as Record<string,unknown>;expect(!!config?.['capability_gateway']).toBe(enabled);if(enabled)expect(config).toMatchObject({platform_browser:{args:['/tmp/browser.mjs','/tmp/browser.sock']},capability_gateway:{args:['/tmp/capability.mjs','/tmp/capability.sock']}});if(readOnlyRoom)expect(config).toEqual({});
+ }finally{d.shutdown();}
+});

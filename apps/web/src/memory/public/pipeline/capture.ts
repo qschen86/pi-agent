@@ -98,7 +98,9 @@ export function captureSessions(opts: CaptureOptions): CaptureResult {
       let e: { kind?: string; role?: string; source?: string; key?: string; text?: string; recordedAt?: string; turnNo?: number };
       try { e = JSON.parse(line); } catch { continue; }
       if (e.kind === 'message' && e.role === 'assistant' && typeof e.text === 'string' && e.text.trim()) { lastAssistant = e.text; continue; }
-      if (e.kind !== 'message' || e.role !== 'user' || e.source !== 'platform' || typeof e.text !== 'string' || !e.text.trim()) continue;
+      const isPlatformUser = e.kind === 'message' && e.role === 'user' && e.source === 'platform';
+      const isPlatformNotice = e.kind === 'notice' && e.source === 'platform';
+      if ((!isPlatformUser && !isPlatformNotice) || typeof e.text !== 'string' || !e.text.trim()) continue;
       if (e.key) { if (seen.has(e.key)) continue; seen.add(e.key); }
       const rawText = e.text;
       e.text = stripMemoryQuotes(e.text);
@@ -106,6 +108,7 @@ export function captureSessions(opts: CaptureOptions): CaptureResult {
       if (opts.since && at < opts.since) continue;
       const cls = classifyMessage(e.text);
       if (cls === 'shipped') { const s = parseShipped(e.text, at, sid); if (s) { shipped.push(s); stats.shipped++; } lastSystem = e.text; continue; }
+      if (isPlatformNotice) continue;
       // 不是人发的：前缀认得出的自动消息，或审计里记的发送者是系统 / 评测 harness / 宿主。不进记忆，只留作后面那句话的上下文。
       const systemActor = e.key ? originOfActor(actorOfMessage.get(e.key)) === 'system' : false;
       if (cls === 'auto' || systemActor) { if (systemActor && cls !== 'auto') stats.systemActorMessages++; else stats.autoMessages++; lastSystem = e.text; continue; }

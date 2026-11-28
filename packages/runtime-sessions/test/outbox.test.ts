@@ -69,6 +69,8 @@ describe("outbox (排队消息)", () => {
     mgr.editQueuedMessage(id, messageId, { prompt: "预约", scheduledFor: new Date(Date.now() + 500).toISOString() }, "local");
     await until(() => driver.turns.length === 3, 6000);
     expect(prompts()[2]).toBe("预约");
+    expect(binding(id).turns.at(-1)?.scheduledFor).toBeTruthy();
+    expect(binding(id).turns[1]?.scheduledFor).toBeUndefined();
     expect(binding(id).outbox).toBeUndefined();
   });
 

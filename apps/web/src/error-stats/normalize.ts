@@ -178,17 +178,60 @@ export function deployFingerprints(entry: { outcome: string; note: string }): st
   return [`deploy|${outcome}|${normalizeText(entry.note) || "(无说明)"}`.slice(0, 200)];
 }
 
+/** 门禁落盘的结构化失败结果（<when-idle>/stage-*.log.gate.json）里本模块用到的部分。 */
+export interface GateResult {
+  status?: string; phase?: string; at?: string;
+  failures?: Array<{ phase?: string; kind?: string; file?: string; test?: string; error?: string }>;
+}
+
+const firstLine = (t: string) => t.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+
+/**
+ * 门禁失败（failed:N）的指纹：带上失败阶段和失败的文件 / 错误码，而不是一律 `failed:3|main:unchanged`。
+ * 这样「同一类提交前就该发现的错」（资源版本号没顺延、测试文件用了 DOM 类型……）才能被数出来、被单独评估。
+ * 拿不到门禁结果（日志已清理、不是门禁失败）返回空，调用方回退到旧指纹。
+ */
+export function gateFingerprints(outcome: string, gate: GateResult | null | undefined): string[] {
+  if (!gate || gate.status !== "failed" || !gate.failures?.length) return [];
+  const base = `deploy|${outcome.trim()}|gate`;
+  const f0 = gate.failures[0]!;
+  const phase = gate.phase ?? f0.phase ?? "unknown";
+  if (phase === "vitest") {
+    const files = [...new Set(gate.failures.map((f) => f.file).filter((f): f is string => !!f))].slice(0, 5);
+    if (files.length) return files.map((file) => `${base}|vitest|${file}`);
+  }
+  const err = String(f0.error ?? "");
+  if (phase === "typecheck") {
+    const code = /error (TS\d+)/.exec(err)?.[1] ?? "?";
+    return [`${base}|typecheck|${code}|${/(?:^|\/)test\/|\.test\./.test(err.split("(")[0] ?? "") ? "test" : "src"}`];
+  }
+  if (phase === "node-tests") {
+    const title = [...err.matchAll(/✖\s+([^\n]+)/g)].map((m) => m[1]!).find((t) => !/^failing tests/i.test(t)) ?? "";
+    return [`${base}|node-tests|${f0.kind ?? "unknown"}|${normalizeText(title).slice(0, 80)}`.replace(/\|$/, "")];
+  }
+  return [`${base}|${phase}|${f0.kind ?? "unknown"}`];
+}
+
+/** 门禁失败的样本文字（给 AI 评估看）：阶段、文件、用例、错误第一行。 */
+export function gateSample(outcome: string, gate: GateResult, subject: string): string {
+  const f0 = gate.failures?.[0] ?? {};
+  const where = [f0.file, f0.test].filter(Boolean).join(" › ");
+  return `${outcome}｜门禁 ${gate.phase ?? f0.phase ?? "?"} ${f0.kind ?? ""}${where ? `：${where}` : ""}｜${firstLine(String(f0.error ?? ""))}｜${subject}`.slice(0, 300);
+}
+
 export function memoryFingerprint(ruleId: string): string { return `memory|${ruleId}`; }
 
 /** 一行 history.log → 部署失败的出现记录（失败才算；取消、过期、已在线不算报错）。 */
-export function deployOccurrences(line: string, index: number, runtimeOfSession: (id: string) => StatsRuntime | "unknown", atMs: (stamp: string) => number): Occurrence[] {
+export function deployOccurrences(line: string, index: number, runtimeOfSession: (id: string) => StatsRuntime | "unknown", atMs: (stamp: string) => number, gateOf?: (e: { sha: string; requestId?: string; atMs: number }) => GateResult | null): Occurrence[] {
   const e = parseDeployHistoryLine(line, index);
   if (!e || e.state !== "failed") return [];
   const runtime = e.runtimeKind !== "unknown" ? e.runtimeKind : e.sessionId ? runtimeOfSession(e.sessionId) : "unknown";
   const at = atMs(e.at);
   if (!Number.isFinite(at)) return [];
-  const sample = `${e.outcome}｜${e.note}｜${e.subject}`.slice(0, 300);
-  return deployFingerprints(e).map((fingerprint) => ({ kind: "deploy" as const, runtime, fingerprint, at, ...(e.sessionId ? { sessionId: e.sessionId } : {}), sample, key: `deploy:${e.at}|${e.sha}|${e.outcome}|${e.sessionId ?? ""}|${fingerprint}` }));
+  const gate = /^failed:\d+$/.test(e.outcome) ? gateOf?.({ sha: e.sha, ...(e.requestId ? { requestId: e.requestId } : {}), atMs: at }) ?? null : null;
+  const gated = gateFingerprints(e.outcome, gate);
+  const sample = gated.length && gate ? gateSample(e.outcome, gate, e.subject) : `${e.outcome}｜${e.note}｜${e.subject}`.slice(0, 300);
+  return (gated.length ? gated : deployFingerprints(e)).map((fingerprint) => ({ kind: "deploy" as const, runtime, fingerprint, at, ...(e.sessionId ? { sessionId: e.sessionId } : {}), sample, key: `deploy:${e.at}|${e.sha}|${e.outcome}|${e.sessionId ?? ""}|${fingerprint}` }));
 }
 
 /** 门禁 flaky 记录（<guiRoot>/test-gates/flaky-tests.jsonl）的一行：每个复跑才通过的测试文件一条。 */

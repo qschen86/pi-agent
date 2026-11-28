@@ -14,6 +14,8 @@ import { noteModelImages } from "./note-categories.js";
 import { PLATFORM_TIME_ZONE, beijingDateKey } from "./platform-time.js";
 import { alignLunarStart } from "./lunar.js";
 import { withNoteRemind } from "./note-reminder.js";
+import { pendingScheduleSuggest } from "./note-schedule-pending.js";
+import type { NoteSchedulePending } from "./notes.js";
 
 export const NOTE_KIND_POLICY = "note-kind@v6-lunar";
 export const NOTE_KIND_CONFIG: RoleModelConfig = {
@@ -45,7 +47,11 @@ export const NOTE_KIND_SYSTEM = `你是 pi-agent 记录的大类判断器。用�
 - refinedText：更精炼的完整表达，保持原意；没有可精炼之处给空字符串。
 - suggestion：可选的补充建议，必须明确为建议，不编造既定事实；没有建议给空字符串。这段和 refinedText 仅供人类选择，不放进 formattedText。
 - 文字为空或日程无需整理，三个字段给空字符串。formattedText 最多 20000 字，refinedText 和 suggestion 各最多 5000 字。
-只输出 JSON：{"kind":"note|todo|event","start":"…","starts":["…"],"end":"…","allDay":true或false,"repeat":{"freq":"weekly","interval":1,"byDay":["MO","WE"],"lunar":{"month":11,"leap":false,"days":[15]},"until":"…","count":3},"reason":"一句话理由","formattedText":"…","refinedText":"…","suggestion":"…"}。kind 不是 event 时不要给 start、starts、end、allDay、repeat；不是周期安排时不要给 repeat。`;
+日程缺起算日期（周期事项）时不能降级成待办：先问一句，问不到就记成「日程 · 待定时间」。
+- 周期安排但缺起算日期（「每 90 天续费一次」但没说上次是哪天、「每次体检完 3 个月后复查」但没给上一次）：不要归 todo，也不要编一个日期。输出 kind 为 event、pending 为 true，并给 repeat 与 suggest（你按 now 推算的候选首次日期，YYYY-MM-DD），hint 写一句在等什么（最多 200 字）。
+  例：{"kind":"event","pending":true,"repeat":{"freq":"daily","interval":90},"suggest":"2027-02-26","hint":"每 90 天续费一次，上次是哪天？"}。
+  pending 只用于「确实是周期日程、只差起算日期」：start / starts / end 一个都不要给；不肯定是不是周期安排时，按普通待办输出。
+只输出 JSON：{"kind":"note|todo|event","pending":true或false,"start":"…","starts":["…"],"end":"…","allDay":true或false,"repeat":{"freq":"weekly","interval":1,"byDay":["MO","WE"],"lunar":{"month":11,"leap":false,"days":[15]},"until":"…","count":3},"suggest":"YYYY-MM-DD","hint":"…","reason":"一句话理由","formattedText":"…","refinedText":"…","suggestion":"…"}。kind 不是 event 时不要给 start、starts、end、allDay、repeat；不是周期安排时不要给 repeat；pending 只在缺起算日期时为 true。`;
 
 function parseWriting(value: unknown, originalText: string): NoteWriting {
   const v = value as Record<string, unknown> | undefined;
@@ -84,12 +90,31 @@ function validDay(value: string): boolean {
 }
 
 /** 模型输出 → 记录的大类与时间；不合格返回错误列表（invokeStructured 会拿去让模型修正一次）。 */
-export function parseNoteKind(value: unknown, now: Date = new Date()): { kind: NoteKind; schedule: NoteSchedule | null; reason: string } | string[] {
+export function parseNoteKind(value: unknown, now: Date = new Date()): { kind: NoteKind; schedule: NoteSchedule | null; schedulePending?: NoteSchedulePending; reason: string } | string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return ["需要一个 JSON 对象"];
   const v = value as Record<string, unknown>;
   if (v.kind !== "note" && v.kind !== "todo" && v.kind !== "event") return ["kind 必须是 note、todo 或 event"];
   const reason = typeof v.reason === "string" ? v.reason.slice(0, 300) : "";
   if (v.kind !== "event") return { kind: v.kind, schedule: null, reason };
+  // 周期安排缺起算日期：不降级成待办，先记成「日程 · 待定时间」。
+  if (v.pending === true) {
+    if (v.start !== undefined || v.starts !== undefined || v.end !== undefined) return ["pending 为 true 时不要再给 start / starts / end"];
+    if (v.repeat === undefined) return ["pending 为 true 时必须给 repeat（多久一次）"];
+    if (!isNoteRepeat(v.repeat, true)) return ["pending 时 repeat 要合法的全天周期规则：freq 只能 daily / weekly / monthly / yearly，interval 1–99，until 与 count 最多给一个"];
+    const suggest = typeof v.suggest === "string" ? v.suggest.trim() : "";
+    if (suggest && !validDay(suggest)) return ["suggest 必须是 YYYY-MM-DD"];
+    const hint = typeof v.hint === "string" ? v.hint.trim().slice(0, 200) : "";
+    const repeat = normalizeNoteRepeat(v.repeat as NoteRepeat);
+    const today = beijingDateKey(now);
+    const day = suggest && suggest >= today ? suggest : pendingScheduleSuggest(repeat, now);
+    return {
+      kind: "todo",
+      schedule: null,
+      schedulePending: { reason: "missing-anchor", repeat, suggest: day, ...(hint ? { hint } : {}) },
+      reason
+    };
+  }
+  if (v.pending !== undefined && typeof v.pending !== "boolean") return ["pending 必须是布尔值"];
   const start = typeof v.start === "string" && v.start.trim() ? v.start.trim() : undefined;
   const end = typeof v.end === "string" && v.end.trim() ? v.end.trim() : undefined;
   // 不相邻的多个日子用 starts 给：第一个作为 start，其余存进 repeats。
@@ -231,7 +256,10 @@ export class NoteKinds {
     if (n.kindPending && current.kindPending && current.kindSource !== "user") {
       patch.kindPending = false;
       if (outcome && !Array.isArray(outcome)) Object.assign(patch, {
-        kind: outcome.kind, kindSource: "ai", schedule: withNoteRemind(outcome.schedule, n.text),
+        kind: outcome.kind, kindSource: "ai",
+        ...(outcome.schedulePending
+          ? { schedule: null, schedulePending: outcome.schedulePending }
+          : { schedule: withNoteRemind(outcome.schedule, n.text) }),
         ...(outcome.kind === "note" && current.done ? { done: false } : {})
       });
     }

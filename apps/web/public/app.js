@@ -40,7 +40,7 @@ window.piStartupRead = () => {
   if (pending || !main?.children.length) return { target, kind, display: false, confirmed: false, error };
   if (r) {
     const live = single ? r.view?.session?.platformSessionId === r.id && r.messagesFor === r.id : r.view?.room?.roomId === r.id || r.view?.room?.id === r.id;
-    const display = !!main.querySelector(single ? '.rt-transcript' : '.room-timeline') && (!!r.diskDisplay || !!live);
+    const display = !!main.querySelector(single ? '.rt-transcript, .rt-service-messages' : '.room-timeline') && (!!r.diskDisplay || !!live);
     const confirmed = !!live && r.statusConfirmed === true && !r.diskDisplay && !r.syncError && !r.viewError && !r.messageSyncError;
     const send = main.querySelector('[data-startup-send-ready="true"]') !== null;
     const entity = single ? r.view?.session : r.view?.room;
@@ -609,6 +609,7 @@ async function requestJsonOnce(path, options = {}) {
       if (!res.ok) {
         const err = new Error(body.error || `请求失败（${res.status}）`);
         err.code = body.code;
+        err.details = body.details;
         err.status = res.status;
         err.issues = Array.isArray(body.issues) ? body.issues : [];
         // 503 / 429 可能带 Retry-After（秒或 HTTP 日期）：重试前按它等，别贴着限流再打一次。
@@ -786,7 +787,7 @@ function routeRemember(hidden) {
  */
 const TAB_RESTORE_KEY = 'pi-agent:last-tab:v1';
 // 记忆 / 资源已经搬进设置（#/settings/memory、#/settings/resources），不再是可恢复的一级 tab。
-const TAB_RESTORE_VIEWS = ['rt', 'notes', 'artifacts', 'ledger', 'communications', 'web-x'];
+const TAB_RESTORE_VIEWS = ['rt', 'notes', 'artifacts', 'ledger', 'communications', 'web-x', 'position-guard'];
 function tabRemember(tab) {
   if (!TAB_RESTORE_VIEWS.includes(tab)) return;
   try { localStorage.setItem(TAB_RESTORE_KEY, tab); } catch { /* 存储不可用时只影响下次恢复 */ }
@@ -850,10 +851,10 @@ function route() {
   }
   if (previousView === "rt-compare" && typeof rtcStop === "function") rtcStop();
   // 故障诊断：离开正在加载的会话（去别的页面或别的会话）算正常取消，不让它在后台被判超时
-  if (typeof rtContentOpEnd === 'function' && hash.match(/^#\/rt\/(r[tx]-[a-z0-9]+)$/)?.[1] !== ui.rt?.id) rtContentOpEnd('navigate');
+  if (typeof rtContentOpEnd === 'function' && hash.match(/^#\/rt\/(r[tx]-[a-z0-9]+|service-notifications)$/)?.[1] !== ui.rt?.id) rtContentOpEnd('navigate');
   if (ui.rt) { rtStop(); ui.rt.gen++; }
   if (ui.room) { roomStop(); ui.room.generation++; }
-  const rt = hash.match(/^#\/rt(?:\/(new|r[tx]-[a-z0-9]+))?$/);
+  const rt = hash.match(/^#\/rt(?:\/(new|r[tx]-[a-z0-9]+|service-notifications))?$/);
   const rtRoom = hash.match(/^#\/rt\/room\/(new|room-[a-z0-9]+)$/);
   const rtCompare = hash.match(/^#\/rt\/compare\/(cmp-[a-z0-9]+)$/);
   const notesManagement = hash.match(/^#\/notes\/categories(?:\/(add|update|merge))?$/);
@@ -874,11 +875,16 @@ function route() {
   else if (hash === "#/runtimes") { ui.view = "runtimes"; ui.rt.settingsDraft = null; }
   else if (settingsRoute) {
     const raw = settingsRoute[1] || "home", extra = settingsRoute[2] || null;
-    // 旧地址转到合并后的页：错误统计 / Codex Reset → 定时任务；安装历史挪到「平台 APP 版本」下面。
-    const alias = { errorstats: "scheduled", codexreset: "scheduled" }[raw];
+    // 旧地址按能力归组：设备与登录 → 通知及授权，外部连接 / 技能 → 能力增强，夜间任务 → 自愈。
+    // 安装历史挪到「平台 APP 版本」下面。
+    const alias = { errorstats: "scheduled", codexreset: "scheduled", cache: "reply", noticeservice: "capabilities", connections: "enhancement", login: "capabilities", auth: "capabilities" }[raw];
     if (alias) { location.replace(`#/settings/${alias}`); return; }
+    const managementAlias = { skills: "enhancement/skills", scheduled: "selfheal/scheduled", runtimeupdates: "upgrades", appversion: "upgrades/app", version: "upgrades/frontend" }[raw];
+    if (managementAlias && !extra) { location.replace(`#/settings/${managementAlias}`); return; }
     if (raw === "version" && extra === "installs") { location.replace("#/settings/appversion/installs"); return; }
-    if (!["home", "capabilities", "navigation", "cache", "apps", "resources", "runtimes", "runtimeupdates", "login", "memory", "scheduled", "version", "appversion"].includes(raw) || (extra && !((raw === "version" && extra === "all") || (raw === "appversion" && extra === "installs")))) { location.replace("#/settings"); return; }
+    // 平台设置（三组）与应用设置（每个应用一页）；extra 只对运行时详情、安装历史、部署历史和具体应用放行。
+    const extraOk = !extra || (raw === "enhancement" && ["mcp", "skills"].includes(extra)) || (raw === "upgrades" && ["runtime", "app", "frontend"].includes(extra)) || (raw === "version" && extra === "all") || (raw === "appversion" && extra === "installs") || (raw === "runtimeupdates" && ["pi", "claude-code", "codex", "antigravity"].includes(extra)) || raw === "selfheal" || (raw === "application" && /^[a-z][a-z0-9-]*$/.test(extra));
+    if (!["home", "enhancement", "upgrades", "reply", "capabilities", "connectionaudit", "memory", "navigation", "collections", "apps", "runtimes", "skills", "resources", "remote", "theme", "stats", "selfheal", "scheduled", "runtimeupdates", "version", "appversion", "application"].includes(raw) || !extraOk) { location.replace("#/settings"); return; }
     const wanted = raw;
     if (previousView !== "settings") {
       ui.settings.returnHash = previousHash || "#/rt";
@@ -887,6 +893,8 @@ function route() {
       ui.settings.rtLoaded = false;
       ui.settings.resourcesLoaded = false;
       ui.settings.appsLoaded = false;
+      ui.settings.noticesLoaded = false;
+      ui.settings.skillsLoaded = false;
       ui.settings.deployments = null;
       ui.settings.deployAttempted = false;
       ui.settings.deployStale = false;
@@ -895,6 +903,7 @@ function route() {
       ui.settings.deployMoreError = "";
       ui.settings.deployLoadingMore = false;
       ui.settings.deploySentinel = null;
+      ui.settings.activeGroup = "";
     }
     ui.view = "settings";
     ui.settings.section = wanted;
@@ -909,6 +918,8 @@ function route() {
     if (previousView !== "stats" && previousHash) ui.stats.returnHash = previousHash;
   }
   else if (/^#\/communications(?:\/contact\/[^/]+)?$/.test(hash)) { ui.view = "communications"; }
+  else if (hash === "#/artifacts/apps/position-guard") { location.replace("#/position-guard"); return; }
+  else if (hash === "#/position-guard") { ui.view = "position-guard"; }
   else if (hash === "#/ledger") { ui.view = "ledger"; }
   else if (hash === "#/open-source-release" && window.piRouteModules?.has("open-source-release")) { ui.view = "open-source-release"; }
   else if (hash === "#/web-x") { ui.view = "web-x"; }
@@ -938,8 +949,8 @@ function route() {
   if (ui.rt && ["rt", "rt-new", "rt-room", "rt-room-new", "rt-compare"].includes(ui.view)) ui.rt.lastChatHash = hash;
   routeRemember(false);
   window.piStartup?.target?.(hash, ui.view === "rt" ? (ui.rt?.id ? "single" : "list") : ui.view === "rt-room" ? "room" : "other");
-  // 「创建中」详情页只属于新建页这个地址；离开后不留着，免得下次点新建会话又看到它
-  if (ui.view !== "rt-new" && ui.rt?.launch?.req) ui.rt.launch = null;
+  // 「创建中」详情页只属于新建页或 PC 首页即用工作台；离开后不留着，免得下次点新建会话又看到它
+  if (ui.view !== "rt-new" && !(ui.view === "rt" && !ui.rt?.id) && ui.rt?.launch?.req) ui.rt.launch = null;
   document.querySelector(".layout").classList.toggle("rt-mode", ui.view === "rt" || ui.view === "rt-new" || ui.view === "rt-compare" || ui.view === "rt-room" || ui.view === "rt-room-new");
   document.body.classList.toggle("settings-mode", ui.view === "settings");
   document.body.classList.toggle("stats-mode", ui.view === "stats");
@@ -953,10 +964,7 @@ function route() {
   if (ui.view !== "notes" && typeof noteDeactivate === "function") noteDeactivate();
   window.navNoteVisit?.(tab);
   // 手机会话列表：会话不在底栏里，底栏选中的是进入会话前的应用（session-drawer.js），点别的入口直接切过去
-  const shownTab = tab === "rt" && rtPhone.matches && ui.view === "rt" && !ui.rt?.id ? (window.piSessionDrawer?.originView?.() || tab) : tab;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === shownTab));
-  syncNavMore();
-  window.navSyncActive?.();
+  syncActiveNavTab(tab);
   window.scrollTo(0, 0);
   ui.pageError = ""; ui.pageLoading = true;
   if (typeof rtSyncPageEffects === 'function') rtSyncPageEffects();
@@ -964,6 +972,15 @@ function route() {
   renderMain(); navigationMark("target-shell");
   refresh({ main: true });
 }
+
+function syncActiveNavTab(explicitTab) {
+  const tab = explicitTab || (ui.view === "note-relations" ? "notes" : ui.view?.startsWith("rt") || ui.view === "runtimes" ? "rt" : ui.view);
+  const shownTab = tab === "rt" && typeof rtPhone !== "undefined" && rtPhone.matches && ui.view === "rt" && !ui.rt?.id ? (window.piSessionDrawer?.originView?.() || tab) : tab;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.view === shownTab));
+  if (typeof syncNavMore === "function") syncNavMore();
+  window.navSyncActive?.();
+}
+window.syncActiveNavTab = syncActiveNavTab;
 
 /* ------------------------------ 数据刷新 ------------------------------ */
 
@@ -1142,8 +1159,8 @@ function renderMain() {
   if (composing || pointerHeld) { renderDeferred = true; return; }
   clearTimeout(renderMain.todayTimer);
   renderMain.todayTimer = null;
-  // 抬指后卡片仍在提交切换，等待动画收尾再重建页面。
-  if (ui.view === "rt" && document.querySelector("#notes-today.is-sliding")) {
+  // 触摸按住、横滑或抬指后卡片仍在提交切换，等待动画收尾再重建页面。
+  if (ui.view === "rt" && document.querySelector("#notes-today.is-sliding, #notes-today-body[data-today-touch], #notes-today-body[data-today-leaving]")) {
     renderMain.todayTimer = setTimeout(renderMain, 200);
     return;
   }
@@ -1168,6 +1185,7 @@ function renderMain() {
     ui.view === "resources" ? renderRouteFeature("resources", () => renderResources())
       : ui.view === "artifacts" ? (typeof renderArtifacts === "function" ? renderArtifacts() : h("div", { class: "empty" }, "加载中…"))
       : ui.view === "communications" ? renderRouteFeature("communications", () => h("div", {class:"empty"}, "正在打开通讯录…"))
+      : ui.view === "position-guard" ? renderRouteFeature("position-guard", () => window.renderPositionGuard ? window.renderPositionGuard() : h("div", { class: "empty" }, "加载中…"))
       : ui.view === "ledger" ? renderRouteFeature("ledger", () => typeof renderLedger === "function" ? renderLedger() : h("div", { class: "empty" }, "加载中…"))
       : ui.view === "open-source-release" ? renderRouteFeature("open-source-release", () => h("div", { class: "empty" }, "加载中…"))
       : ui.view === "web-x" ? renderRouteFeature("web-x", () => h("div", { class: "empty" }, "加载中…"))

@@ -1,6 +1,6 @@
 /**
  * 「点升级」生成的会话方案：Pi 和 Claude Code 互相升级——升级谁，就由对方 runtime 开一个会话来执行
- * （Pi 不会在自己运行的过程中替换自己的二进制，Claude 也一样）。Codex 随 ChatGPT.app 更新，不在这里。
+ * （Pi 不会在自己运行的过程中替换自己的二进制，Claude 也一样）；Antigravity（agy）由 Claude Code 执行。Codex 随 ChatGPT.app 更新，不在这里。
  * 这里只产出新建会话要用的参数和首条消息；真正建会话走设置页里已有的新建会话流程（档位、权限、部署排队都沿用）。
  */
 import type { AnalysisRecord } from "./store.js";
@@ -8,7 +8,7 @@ import type { UpdateKind } from "./sources.js";
 
 export type UpgradeExecutor = "pi" | "claude-code";
 /** 升级谁 → 由谁来执行 */
-export const UPGRADE_EXECUTOR: Partial<Record<UpdateKind, UpgradeExecutor>> = { pi: "claude-code", "claude-code": "pi" };
+export const UPGRADE_EXECUTOR: Partial<Record<UpdateKind, UpgradeExecutor>> = { pi: "claude-code", "claude-code": "pi", antigravity: "claude-code" };
 
 export interface UpgradePlan {
   target: UpdateKind; from: string; to: string;
@@ -33,11 +33,29 @@ function context(analysis: AnalysisRecord | null, breaking: string[]): string {
 }
 
 export function buildUpgradePlan(input: {
-  target: "pi" | "claude-code"; from: string; to: string; workspace: string; analysis: AnalysisRecord | null; breaking: string[];
+  target: "pi" | "claude-code" | "antigravity"; from: string; to: string; workspace: string; analysis: AnalysisRecord | null; breaking: string[];
 }): UpgradePlan {
   const { target, from, to } = input;
   const extra = context(input.analysis, input.breaking);
-  const header = `你是执行者：把 pi-agent 平台依赖的 ${target === "pi" ? "Pi CLI（@earendil-works/pi-coding-agent）" : "Claude Agent SDK（@anthropic-ai/claude-agent-sdk）"} 从 ${from} 升级到 ${to}。用户已在「设置 → 运行时更新」点了升级，这就是授权，不用再逐步确认。你运行在${target === "pi" ? "Claude Code" : "Pi"}上，不是被升级的对象，所以可以直接操作它。`;
+  const subject = target === "pi" ? "Pi CLI（@earendil-works/pi-coding-agent）" : target === "antigravity" ? "Antigravity CLI（agy）" : "Claude Agent SDK（@anthropic-ai/claude-agent-sdk）";
+  const header = `你是执行者：把 pi-agent 平台依赖的 ${subject} 从 ${from} 升级到 ${to}。用户已在「设置 → 运行时更新」点了升级，这就是授权，不用再逐步确认。你运行在${target === "pi" || target === "antigravity" ? "Claude Code" : "Pi"}上，不是被升级的对象，所以可以直接操作它。`;
+  if (target === "antigravity") {
+    const bak = `/tmp/agy-${from}-backup`;
+    const prompt = [
+      header, "",
+      "agy 是单个二进制（通常在 ~/.local/bin/agy），不走 npm，升级后不用改代码也不用部署。任何一步失败就走回滚，不要留下半成品。步骤：",
+      `1. 记下现状：which agy、agy --version（应为 ${from}），把它备份：cp -p "$(which agy)" ${bak}`,
+      `2. 升级：agy update；再 agy --version 核对是否为 ${to}。不是（比如发布清单比推送先到）就回滚并汇报，不要反复重试。agy update 不可用时的兜底：mv 现有二进制到备份名，再跑 curl -fsSL https://antigravity.google/cli/install.sh | bash（安装脚本会校验 sha512，已有二进制时它会直接退出，所以要先挪走）`,
+      "3. 验证：agy -p /usage --output-format json 应返回 status=SUCCESS、command.name=usage（平台额度解析 parseAntigravityQuota 依赖它）；再跑 npx vitest run packages/runtime-sessions/test/antigravity.test.ts packages/runtime-sessions/test/antigravity-continuation.test.ts apps/web/test/runtime-antigravity-check.test.ts（工作目录是 pi-agent 仓库，缺依赖先 npm ci --ignore-scripts）",
+      "4. 平台依赖的 ACP 面也要核对：agy acp 能握手、session/new 返回会话 ID、session/resume 可用（可以直接用平台的探针，见第 6 步）；对照下面的更新日志有没有改 acp、/usage、会话库（steps 指纹）的条目",
+      `5. 任何一步失败或版本不对：用 mv 把备份换回去（先 cp ${bak} "$(dirname "$(which agy)")/agy.restore" 再 mv 覆盖；不要原地 cp 覆盖，macOS 上会让二进制签名失效），再 agy --version 确认回到 ${from}，把失败的命令和输出原样汇报`,
+      "6. 全部通过后尝试 curl -s -X POST http://127.0.0.1:8780/api/runtime-profiles/antigravity/probe 刷新平台的 Antigravity 检查；调不通就在汇报里提醒用户到「设置 → 运行时配置」点「检查」",
+      "",
+      "不要改仓库代码、不要提交、不要部署；已经在跑的 agy 进程不用杀，它们空闲 10 分钟会自己退出，下一轮会话才用新版。结束时用几行汇报：版本变化、验证结果、是否需要用户后续动作。",
+      extra ? `\n${extra}` : ""
+    ].join("\n").trimEnd();
+    return { target, from, to, executor: "claude-code", workspace: input.workspace, title: `升级 Antigravity ${from} → ${to}`, prompt, permissionMode: "bypassPermissions", worktree: false };
+  }
   if (target === "pi") {
     const pkg = "@earendil-works/pi-coding-agent", tmp = `/tmp/pi-${to}`;
     const prompt = [

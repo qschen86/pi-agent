@@ -1,16 +1,26 @@
 /** Host-owned browser lifecycle and screenshot receipts, shared by every runtime. */
 import {createServer, type Socket} from 'node:net';
 import {createHash, randomUUID} from 'node:crypto';
-import {chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync, copyFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, realpathSync, copyFileSync, lstatSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join, relative, resolve, isAbsolute} from 'node:path';
+import {join, relative, resolve, isAbsolute, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium, type Browser, type Page} from 'playwright';
 import type {DriverEvent} from './driver.js';
 import {readChatGPTShare} from './chatgpt-share.js';
 import {readPublicLink} from './public-link-reader.js';
-export interface BrowserAccess {socketPath: string; bridgePath: string; hookPath: string}
-export const browserBridgePath=fileURLToPath(new URL('../../pi-runtime/src/platform-browser-mcp.mjs',import.meta.url));
+export interface BrowserAccess {socketPath: string; pointerPath?: string; bridgePath: string; hookPath: string}
+const rawBrowserBridgePath=fileURLToPath(new URL('../../pi-runtime/src/platform-browser-mcp.mjs',import.meta.url));
+/** 仅当 current 确实指向当前槽时才换用 current 别名：上线后跨蓝绿槽路径稳定，而预发/门禁槽里 current 仍指旧槽，会继续执行本槽自己的新桥接脚本。 */
+export function stableBrowserBridgePath(real:string,resolveAlias:(path:string)=>string|undefined=p=>{try{return lstatSync(p).isSymbolicLink()?realpathSync(p):undefined;}catch{return undefined;}}):string{
+ const marker=sep+'slots'+sep,at=real.lastIndexOf(marker);if(at<0)return real;
+ const rest=real.slice(at+marker.length),cut=rest.indexOf(sep);if(cut<=0)return real;
+ const base=real.slice(0,at),slotRoot=join(base,'slots',rest.slice(0,cut)),alias=join(base,'current');
+ const target=resolveAlias(alias);if(!target)return real;
+ let realSlot=slotRoot;try{realSlot=realpathSync(slotRoot);}catch{/* 虚拟路径单测 */}
+ return target===slotRoot||target===realSlot?join(alias,rest.slice(cut+1)):real;
+}
+export const browserBridgePath=stableBrowserBridgePath(rawBrowserBridgePath);
 export const browserHookPath=fileURLToPath(new URL('../../pi-runtime/src/screenshot-policy-hook.mjs',import.meta.url));
 export interface ScreenshotReceipt {receiptId:string;sessionId:string;turnId:string;path:string;sha256:string;url:string;width:number;height:number;theme:string;capturedAt:string}
 export function verifyScreenshotReceipt(receipt:ScreenshotReceipt,sessionId:string,events:readonly {source:string;tool?:{name:string;input?:string;output?:string;status?:string}}[]):boolean {
@@ -20,7 +30,6 @@ export function verifyScreenshotReceipt(receipt:ScreenshotReceipt,sessionId:stri
 export async function startPlatformBrowser(options:{sessionId:string;turnId:string;workspace:string;outputDir:string;event(e:DriverEvent):void;launch?:()=>Promise<Browser>;linkOnly?:boolean}) {
  const tag=createHash('sha256').update(options.sessionId).digest('hex').slice(0,12);
  const dir=mkdtempSync(join(tmpdir(),`pb-${tag}-`)), socketPath=join(dir,'b.sock'), pointer=join(tmpdir(),`pb-${tag}.sock`);
- try{writeFileSync(pointer,socketPath,{mode:0o600});}catch{/* best-effort session socket pointer */}
  // Pin the guard bytes outside the agent workspace for this turn.
  for(const name of ['screenshot-policy-hook.mjs','screenshot-policy.mjs']){copyFileSync(fileURLToPath(new URL('../../pi-runtime/src/'+name,import.meta.url)),join(dir,name));chmodSync(join(dir,name),0o400);}
  let browser:Browser|undefined,page:Page|undefined,opening:Promise<Page>|undefined,closed=false,busy=false,theme='light';
@@ -73,10 +82,13 @@ export async function startPlatformBrowser(options:{sessionId:string;turnId:stri
   void Promise.race([Promise.resolve().then(()=>execute(JSON.parse(buffer.split('\n')[0]),cancellation.signal)),timeout]).then(result=>{const line=JSON.stringify(result);recordOutput(line);socket.end(line+'\n');},error=>{const line=JSON.stringify({ok:false,error:String(error.message)});recordOutput(line);socket.end(line+'\n');}).finally(()=>{clearTimeout(timer);busy=false;});
  });});
  try{await new Promise<void>((yes,no)=>{server.once('error',no);server.listen(socketPath,yes);});}catch(error){rmSync(dir,{recursive:true,force:true});throw error;}chmodSync(socketPath,0o600);
+ // 在本轮 socket 监听就绪后再原子切换每会话指针，避免并发 MCP 桥接读到半截内容或连上未就绪的 socket。
+ const pointerTmp=`${pointer}.${randomUUID().slice(0,8)}.tmp`;
+ try{writeFileSync(pointerTmp,socketPath,{mode:0o600,flag:'wx'});renameSync(pointerTmp,pointer);}catch{try{rmSync(pointerTmp,{force:true});}catch{}}
  let idle:NodeJS.Timeout|undefined;
  function touch(){clearTimeout(idle);idle=setTimeout(()=>{void closeBrowser();},180000);idle.unref();}
  async function dispose(){if(closed)return;closed=true;clearTimeout(idle);for(const s of sockets)s.destroy();server.close();await closeBrowser();try{if(readFileSync(pointer,'utf8').trim()===socketPath)rmSync(pointer,{force:true});}catch{}rmSync(dir,{recursive:true,force:true});}
- return {access:{socketPath,bridgePath:browserBridgePath,hookPath:join(dir,'screenshot-policy-hook.mjs')} satisfies BrowserAccess,receipts,dispose};
+ return {access:{socketPath,pointerPath:pointer,bridgePath:stableBrowserBridgePath(rawBrowserBridgePath),hookPath:join(dir,'screenshot-policy-hook.mjs')} satisfies BrowserAccess,receipts,dispose};
 }
 
 /** Only host receipts plus a successful native screenshot call authorize a reported image. */

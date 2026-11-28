@@ -8,7 +8,7 @@
  * 地址：#/stats/<domain>?m=<指标>&focus=trend|heat，其它页面的入口都用这个地址跳进来。
  */
 (function () {
-  const RUNTIME_LABEL = { pi: "Pi", "claude-code": "Claude", codex: "Codex", unknown: "未知" };
+  const RUNTIME_LABEL = { pi: "Pi", "claude-code": "Claude", codex: "Codex", antigravity: "Antigravity", unknown: "未知" };
   const DEVICE_LABEL = { mobile: "手机", desktop: "PC", auto: "自动", unknown: "未知" };
   const DIM_LABEL = { runtime: "Runtime", app: "应用 / 功能", device: "发起端", controller: "控制器版本" };
   const RANGES = [
@@ -17,12 +17,13 @@
     { id: "7d", label: "近 7 天", days: 7, offset: 0 },
     { id: "30d", label: "近 30 日", days: 30, offset: 0 },
   ];
-  // Runtime 筛选：四个胶囊直接铺开（全部 = 不筛），地址里用 rt
+  // Runtime 筛选：全部 + 四个 runtime 胶囊（全部 = 不筛），地址里用 rt
   const RUNTIMES = [
     { id: "", label: "全部" },
     { id: "pi", label: "Pi" },
     { id: "claude-code", label: "Claude" },
     { id: "codex", label: "Codex" },
+    { id: "antigravity", label: "Antigravity" },
   ];
   const TREND_DAYS = 90; // 趋势图固定看近 90 天
   const LOAD_DAYS = 371; // 53 周：热力图要整年
@@ -312,7 +313,53 @@
 
   /* ---- 拆解：每个维度一个饼图（环形），三个同时展示，不用切页签 ---- */
   const PIE_VISIBLE = 6; // 图例默认最多显示六项，可展开查看全部
-  const RUNTIME_PIE = { pi: "sp-rt-pi", "claude-code": "sp-rt-claude", codex: "sp-rt-codex" };
+  const RUNTIME_PIE = { pi: "sp-rt-pi", "claude-code": "sp-rt-claude", codex: "sp-rt-codex", antigravity: "sp-rt-antigravity" };
+  const CACHE_STATUS = { healthy: "达标", degraded: "偏低", critical: "异常", "no-data": "无样本" };
+  const fmtHitPct = (r) => (r === null || r === undefined ? "—" : `${(r * 100).toFixed(1)}%`);
+
+  function cacheHealthSection(data) {
+    const s = state();
+    if (s.domain !== "cost") return null;
+    const section = h("section", { class: "stats-section stats-cache-section", id: "stats-cache-health", "aria-label": "热续聊首调缓存命中率" },
+      h("div", { class: "stats-section-head" },
+        h("h2", {}, "热续聊首调缓存命中率"),
+        h("span", { class: "muted small" }, "近 7 天")),
+      h("p", { class: "muted small stats-cache-note" }, "仅计第 ≥2 轮、上轮 ≥30k 且在热窗内（Claude 50m / 其余 5m）的首次模型调用；基线 85%（Antigravity 80%）"));
+    if (!data) {
+      section.append(h("div", { class: "stats-cache-grid" },
+        [0, 1, 2, 3].map(() => h("div", { class: "stats-cache-card skeleton", "aria-hidden": "true" }))));
+      return section;
+    }
+    const health = data.cacheHealth;
+    if (!health || !Array.isArray(health.runtimes) || !health.runtimes.length) return null;
+    const rows = s.runtime ? health.runtimes.filter((r) => r.runtimeKind === s.runtime) : health.runtimes;
+    if (!rows.length) return null;
+    section.append(h("div", { class: `stats-cache-grid${rows.length === 1 ? " single" : ""}` },
+      rows.map((row) => {
+        const active = s.runtime === row.runtimeKind;
+        const sub = row.sampleCount > 0
+          ? `${fmtInt(row.sampleCount)} 轮 · 热窗 ${row.warmWindowMinutes}m${row.anomalyCount > 0 ? ` · 异常 ${row.anomalyCount}` : ""}`
+          : `热窗 ${row.warmWindowMinutes}m · 暂无样本`;
+        return h("button", {
+          type: "button",
+          class: `stats-cache-card status-${row.status}${active ? " on" : ""}`,
+          "data-key": `stats-cache-${row.runtimeKind}`,
+          "aria-pressed": String(active),
+          title: row.sampleCount > 0
+            ? `${RUNTIME_LABEL[row.runtimeKind] || row.label}：近 ${health.days} 天热续聊首调命中 ${fmtHitPct(row.weightedHitRate)}（基线 ${Math.round(row.baselineRate * 100)}%，共 ${row.sampleCount} 轮）`
+            : `${RUNTIME_LABEL[row.runtimeKind] || row.label}：近 ${health.days} 天暂无符合条件的热续聊样本`,
+          onclick: () => setRuntime(active ? "" : row.runtimeKind)
+        },
+          h("span", { class: "stats-cache-head" },
+            h("span", { class: "stats-cache-name" },
+              h("i", { class: `stats-dot ${RUNTIME_PIE[row.runtimeKind] || "sp-gray"}`, "aria-hidden": "true" }),
+              RUNTIME_LABEL[row.runtimeKind] || row.label),
+            h("span", { class: `stats-cache-badge status-${row.status}` }, CACHE_STATUS[row.status] || "—")),
+          h("strong", { class: "stats-cache-value" }, fmtHitPct(row.weightedHitRate)),
+          h("span", { class: "stats-cache-sub" }, sub));
+      })));
+    return section;
+  }
   const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
   function pieClass(dim, key, index) {
@@ -567,6 +614,7 @@
       controls(),
       error && !data ? h("p", { class: "field-error stats-error", role: "alert" }, `统计读取失败：${error}`, h("button", { type: "button", class: "btn small", onclick: () => void load(s.domain, true) }, "重试")) : null,
       rangeCards(data),
+      cacheHealthSection(data),
       breakdown(data),
       trendChart(data),
       heatmap(data),

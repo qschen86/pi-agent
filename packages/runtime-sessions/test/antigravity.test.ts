@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,19 +28,23 @@ const created = new Set();
 const bypassFlag = process.argv.includes("--dangerously-skip-permissions");
 let nextServerId = 1000, pendingPrompt, cancelled = false;
 const models = { availableModels: ["gemini-4-neon-high","gemini-4-neon-low","gemini-4-neon-medium","gpt-oss-120b-medium"].map((modelId) => ({ modelId, name: modelId })) };
+const tier = () => { try { return JSON.parse(require("node:fs").readFileSync(__dirname + "/tier", "utf8")); } catch { return { name: "Google AI Pro", id: "g1-pro-tier" }; } };
 const sessionResult = (sessionId) => ({ sessionId, models,
   modes: { currentModeId: "default", availableModes: [] },
   configOptions: [
     { id: "model", currentValue: "gemini-4-neon", options: [{ value: "gemini-4-neon", name: "Gemini 4 Neon" }, { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" }] },
     { id: "thought_level", currentValue: "high", options: [] }
-  ], _meta: { antigravity: { tier: { name: "Google AI Pro", id: "g1-pro-tier" } } } });
+  ], _meta: { antigravity: { tier: tier() } } });
 const update = (sessionId, u) => send({ method: "session/update", params: { sessionId, update: u } });
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (mode === "record-process" && ["session/new","session/resume","session/set_mode","session/prompt"].includes(m.method)) {
-    require("node:fs").appendFileSync(__dirname + "/process-requests", JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), bypass: bypassFlag, method: m.method, params: m.params }) + "\\n");
+    require("node:fs").appendFileSync(__dirname + "/process-requests", JSON.stringify({ pid: process.pid, cwd: process.cwd(), argv: process.argv.slice(2), bypass: bypassFlag, method: m.method, params: m.params }) + "\\n");
   }
-  if (m.method === "initialize") return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { resume: {}, close: {}, load: {}, list: {} }, _meta: { antigravity: { systemPrompt: { append: true } } } }, agentInfo: { name: "Fake ACP", version: "1" } } });
+  if (m.method === "initialize") {
+    if (mode.startsWith("elicit")) require("node:fs").writeFileSync(__dirname + "/initialize.json", JSON.stringify(m.params));
+    return send({ id: m.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { resume: {}, close: {}, load: {}, list: {} }, _meta: { antigravity: { systemPrompt: { append: true } } } }, agentInfo: { name: "Fake ACP", version: "1" } } });
+  }
   if (mode === "record-mcp" && ["session/new","session/resume"].includes(m.method)) {
     require("node:fs").appendFileSync(__dirname + "/mcp-requests", JSON.stringify({method:m.method, params:m.params}) + "\\n");
   }
@@ -100,6 +104,38 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         // 真实 agy 对 MCP 工具的 session/update 不带 rawOutput：驱动从宿主日志补齐 receipt 输出
         update(sid, { sessionUpdate: "tool_call_update", toolCallId: "pb1", name: "mcp_platform_browser_642a3c28_browser", kind: "other", status: "completed", rawInput: { action: "screenshot" } });
         send({ id: m.id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 5 } } });
+      });
+      return;
+    }
+    if (mode === "elicit" || mode === "elicit-invalid" || mode === "elicit-url") {
+      if (mode === "elicit-url") {
+        const urlId = nextServerId++;
+        send({ id: urlId, method: "elicitation/create", params: { sessionId: sid, mode: "url", elicitationId: "auth-1", message: "请授权" } });
+        readline.createInterface({ input: process.stdin }).on("line", (l3) => {
+          const r = JSON.parse(l3);
+          if (r.id !== urlId) return;
+          require("node:fs").writeFileSync(__dirname + "/elicit-result.json", JSON.stringify(r.result));
+          send({ id: m.id, result: { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } } });
+        });
+        return;
+      }
+      const schema = mode === "elicit-invalid"
+        ? { type: "object", properties: { nested: { type: "object", title: "嵌套" } } }
+        : { type: "object", properties: {
+            strategy: { type: "string", title: "改造力度", description: "选一个轻重", oneOf: [{ const: "light", title: "局部精修" }, { const: "full", title: "整体改版", description: "重做信息结构" }], default: "light" },
+            strategy_other: { type: "string", title: "Other", description: "Optional free-form answer to: 改造力度" },
+            pages: { type: "array", title: "改哪些页面", items: { type: "string", enum: ["设置首页", "详情页"] } },
+            logging: { type: "boolean", title: "保留日志" },
+            port: { type: "integer", title: "端口" }
+          }, required: ["strategy", "pages"] };
+      const askId = nextServerId++;
+      send({ id: askId, method: "elicitation/create", params: { sessionId: sid, toolCallId: "t-ask", mode: "form", message: "这次想怎么改？", requestedSchema: schema } });
+      readline.createInterface({ input: process.stdin }).on("line", (l2) => {
+        const r = JSON.parse(l2);
+        if (r.id !== askId) return;
+        require("node:fs").writeFileSync(__dirname + "/elicit-result.json", JSON.stringify(r.result));
+        update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answered" } });
+        send({ id: m.id, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 2 } } });
       });
       return;
     }
@@ -177,16 +213,34 @@ function setup(mode = "") {
 }
 afterEach(() => { for (const d of drivers.splice(0)) d.shutdown(); });
 
-function sinkOf(approve = true) {
+function sinkOf(approve = true, answers?: any) {
   const events: any[] = []; const usage: any[] = []; const native: any[] = []; const approvals: any[] = [];
   const sink: any = {
     nativeSession: (id: string, info: any) => native.push({ id, ...info }), nativeTurn() {}, event: (e: any) => events.push(e), usage: (u: any) => usage.push(u), rateLimit() {}, status() {},
-    approval: async (a: any) => { approvals.push(a); return { approve, reason: "t" }; }
+    approval: async (a: any) => { approvals.push(a); return { approve, reason: "t", ...(answers ? { answers } : {}) }; }
   };
   return { sink, events, usage, native, approvals };
 }
 
 describe("antigravity driver (fake agy over ACP)", () => {
+  it("套餐变化或缺失不改变身份指纹，重启后仍沿用本机上下文且不声称知道账号", async () => {
+    const { driver, dir } = setup();
+    const original = (await driver.probe()).identity!;
+    expect(original.stableAccountId).toBeUndefined();
+    expect(original.summary).toContain("账号标识不可用");
+    for (const value of [{ name: "Google AI Ultra", id: "g1-ultra-tier" }, null, { name: "Google AI Pro", id: "new-pro-id" }]) {
+      writeFileSync(join(dir, "tier"), JSON.stringify(value));
+      const next = (await driver.probe()).identity!;
+      expect(next.fingerprint).toBe(original.fingerprint);
+      expect(next.source).toBe(original.source);
+      expect(next.summary).toContain(value?.name ?? "套餐未知");
+    }
+    driver.shutdown();
+    const restarted = new AntigravityDriver({ binaryPath: join(dir, "agy"), home: dir, stateDir: join(dir, "probe") });
+    drivers.push(restarted);
+    expect((await restarted.probe()).identity).toMatchObject({ fingerprint: original.fingerprint, source: original.source });
+  });
+
   it("probe 读出套餐、模型与能力，并复用同一条探测会话", async () => {
     const { driver } = setup();
     const p = await driver.probe();
@@ -293,13 +347,80 @@ describe("antigravity driver (fake agy over ACP)", () => {
     expect(s.usage[0]).toMatchObject({ usageScope: "turn", counterMode: "delta", input: 100, output: 20, cachedInput: 50, reasoningOutput: 5, total: 170, requestId: "m1" });
   });
 
+  it("elicitation/create 变成问询面板：声明 form 能力，答案按 schema 还原成 accept content", async () => {
+    const { driver, dir } = setup("elicit");
+    const s = sinkOf(true, { strategy: ["整体改版"], pages: ["设置首页", "详情页"], logging: ["否"], port: ["3000"] });
+    const r = await (await driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-elicit", permissionMode: "default" }, s.sink)).done;
+    expect(r.status).toBe("completed");
+    expect(JSON.parse(readFileSync(join(dir, "initialize.json"), "utf8"))).toMatchObject({ clientCapabilities: { elicitation: { form: {} } } });
+    expect(s.approvals).toHaveLength(1);
+    const approval = s.approvals[0];
+    expect(approval).toMatchObject({ kind: "question", title: "Antigravity 想问你", source: "Antigravity · elicitation/create", scope: "回答后 Antigravity 会按你的选择继续" });
+    expect(approval.action).toContain("这次想怎么改？");
+    expect(approval.questions.map((q: any) => [q.id, q.options.map((o: any) => o.label), q.multiSelect, q.optional === true])).toEqual([
+      ["strategy", ["局部精修", "整体改版"], false, false],
+      ["pages", ["设置首页", "详情页"], true, false],
+      ["logging", ["是", "否"], false, true],
+      ["port", [], false, true]
+    ]);
+    expect(approval.questions[0].options[1]).toMatchObject({ label: "整体改版", description: "重做信息结构" });
+    // agy 给每题附带的 <key>_other 自填字段并进主问题，不单独占一行
+    expect(approval.questions[0].allowOther).toBe(true);
+    expect(approval.questions.map((q: any) => q.id)).toEqual(["strategy", "pages", "logging", "port"]);
+    expect(JSON.parse(readFileSync(join(dir, "elicit-result.json"), "utf8"))).toEqual({ action: "accept", content: { strategy: "full", pages: ["设置首页", "详情页"], logging: false, port: 3000 } });
+    expect(s.events.some((e) => e.kind === "message" && e.text === "answered")).toBe(true);
+  });
+
+  it("elicitation 的自填「其他」回到 agy 约定的 <key>_other 字段", async () => {
+    const { driver, dir } = setup("elicit");
+    const s = sinkOf(true, { strategy: ["我自己写一个方向"], pages: ["设置首页"] });
+    expect((await (await driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-other", permissionMode: "default" }, s.sink)).done).status).toBe("completed");
+    expect(JSON.parse(readFileSync(join(dir, "elicit-result.json"), "utf8"))).toEqual({
+      action: "accept", content: { strategy_other: "我自己写一个方向", pages: ["设置首页"] }
+    });
+  });
+
+  it("elicitation 没拿到有效答案时回 decline：跳过、空提交、数字填错都不当成选择", async () => {
+    const skip = setup("elicit");
+    const s1 = sinkOf(false);
+    expect((await (await skip.driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-skip", permissionMode: "default" }, s1.sink)).done).status).toBe("completed");
+    expect(s1.approvals[0].kind).toBe("question");
+    expect(JSON.parse(readFileSync(join(skip.dir, "elicit-result.json"), "utf8"))).toEqual({ action: "decline" });
+
+    const empty = setup("elicit");
+    const s2 = sinkOf(true, {});
+    expect((await (await empty.driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-empty", permissionMode: "default" }, s2.sink)).done).status).toBe("completed");
+    expect(JSON.parse(readFileSync(join(empty.dir, "elicit-result.json"), "utf8"))).toEqual({ action: "decline" });
+
+    const bad = setup("elicit");
+    const s3 = sinkOf(true, { strategy: ["整体改版"], pages: ["设置首页"], port: ["不是数字"] });
+    expect((await (await bad.driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-bad", permissionMode: "default" }, s3.sink)).done).status).toBe("completed");
+    expect(JSON.parse(readFileSync(join(bad.dir, "elicit-result.json"), "utf8"))).toEqual({ action: "decline" });
+  });
+
+  it("只读群聊成员与看不懂的 elicitation 都不打扰人，直接 decline", async () => {
+    const readOnly = setup("elicit");
+    const ro = sinkOf(true, { strategy: ["整体改版"] });
+    expect((await (await readOnly.driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: "m-ro", permissionMode: "default", readOnlyRoom: true }, ro.sink)).done).status).toBe("completed");
+    expect(ro.approvals).toHaveLength(0);
+    expect(JSON.parse(readFileSync(join(readOnly.dir, "elicit-result.json"), "utf8"))).toEqual({ action: "decline" });
+
+    for (const mode of ["elicit-invalid", "elicit-url"]) {
+      const { driver, dir } = setup(mode);
+      const s = sinkOf(true, { strategy: ["整体改版"] });
+      expect((await (await driver.startTurn({ workspace: "/work/a", prompt: "ask me", clientMessageId: `m-${mode}`, permissionMode: "default" }, s.sink)).done).status).toBe("completed");
+      expect(s.approvals).toHaveLength(0);
+      expect(JSON.parse(readFileSync(join(dir, "elicit-result.json"), "utf8"))).toEqual({ action: "decline" });
+    }
+  });
+
   it("registers a fresh platform MCP connection on create and resume", async () => {
     const { driver, dir } = setup("record-mcp");
     const { sink } = sinkOf();
     const start = {
       workspace: dir, prompt: "read a shared conversation", clientMessageId: "share-first",
       roleInstructions: "Try native tools first, then ask the shared reader.",
-      platformBrowser: { socketPath: "/first.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
+      platformBrowser: { socketPath: "/first.sock", pointerPath: "/stable-session.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
     };
     expect((await (await driver.startTurn(start, sink)).done).status).toBe("completed");
     const next = {
@@ -308,16 +429,40 @@ describe("antigravity driver (fake agy over ACP)", () => {
     };
     expect((await (await driver.startTurn(next, sink)).done).status).toBe("completed");
     const [created, resumed] = readFileSync(join(dir, "mcp-requests"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-    const server = (socketPath: string) => ({
-      name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", socketPath], env: [],
-    });
+    const server = {
+      name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", "/stable-session.sock"], env: [],
+    };
     expect(created).toMatchObject({
-      method: "session/new", params: { mcpServers: [server("/first.sock")],
+      method: "session/new", params: { mcpServers: [server],
         _meta: { antigravity: { systemPrompt: { append: start.roleInstructions } } } },
     });
     expect(resumed).toMatchObject({
-      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [server("/next.sock")] },
+      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [server] },
     });
+    // 无 pointerPath 时回退到 socketPath（兼容旧调用方）
+    const fallback = {
+      workspace: dir, prompt: "fallback", clientMessageId: "share-fallback", nativeSessionId: "sess-0",
+      platformBrowser: { socketPath: "/fallback.sock", bridgePath: "/host/bridge.mjs", hookPath: "/host/hook.mjs" },
+    };
+    expect((await (await driver.startTurn(fallback, sink)).done).status).toBe("completed");
+    const third = JSON.parse(readFileSync(join(dir, "mcp-requests"), "utf8").trim().split("\n")[2]!);
+    expect(third).toMatchObject({
+      method: "session/resume", params: { sessionId: "sess-0", mcpServers: [{ name: "platform_browser", command: process.execPath, args: ["/host/bridge.mjs", "/fallback.sock"], env: [] }] },
+    });
+  });
+
+  it("固定 agy ACP 进程启动 cwd 为 stateDir，不继承宿主蓝绿槽目录导致切槽缓存失效", async () => {
+    const { realpathSync } = await import("node:fs");
+    const { driver, dir } = setup("record-process");
+    const { sink } = sinkOf();
+    const ws = join(dir, "session-ws");
+    mkdirSync(ws, { recursive: true });
+    expect((await (await driver.startTurn({ workspace: ws, prompt: "hello", clientMessageId: "cwd-1" }, sink)).done).status).toBe("completed");
+    const records = readFileSync(join(dir, "process-requests"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { cwd: string; method: string; params: { cwd?: string } });
+    const created = records.find((r) => r.method === "session/new")!;
+    expect(realpathSync(created.cwd)).toBe(realpathSync(join(dir, "probe")));
+    expect(realpathSync(created.cwd)).not.toBe(realpathSync(process.cwd()));
+    expect(created.params.cwd).toBe(ws);
   });
 
   it("platform_browser 截图：ACP 不回传 MCP rawOutput 时仍关联 receiptId 并通过截图来源校验", async () => {
@@ -502,6 +647,8 @@ describe("antigravity driver (fake agy over ACP)", () => {
     const base = (await driver.fingerprint("abc", {}))!.value;
     expect(base).toBe("s3i2");
     // 模拟 agy 收尾：往别的表写一大块，然后 WAL checkpoint（主库变大、mtime 推后、WAL 归零）——真实误报就是这个形状
+    const past = new Date(Date.now() - 2_000);
+    utimesSync(db, past, past);
     const before = statSync(db);
     const conn = new DatabaseSync(db);
     conn.exec("CREATE TABLE IF NOT EXISTS gen_metadata (idx integer primary key, data blob)");
@@ -589,6 +736,8 @@ describe("antigravity 纯函数", () => {
   it("antigravityQuotaNotice：只识别单行系统额度告警，不误判正常回复", () => {
     expect(antigravityQuotaNotice("\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h24m19s.\n"))
       .toBe("⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h24m19s.");
+    expect(antigravityQuotaNotice("\n⚠ Third-party quota reached. Please switch to Gemini models or upgrade your subscription to increase your limits. Resets in 3h31m52s.\n"))
+      .toContain("Third-party quota reached");
     expect(antigravityQuotaNotice("刚才看到了 Individual quota reached 的报错，原因是额度用尽。\n下一行解释细节")).toBeUndefined();
     expect(antigravityQuotaNotice("已完成检查，目前 quota 还有余量。")).toBeUndefined();
   });

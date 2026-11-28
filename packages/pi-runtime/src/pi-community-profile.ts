@@ -141,6 +141,7 @@ export interface CommunityPermissionScope {
   /** 本轮注册了联网检索工具：它们是只读工具，来源范围由 Broker 判定，不再逐次问人。 */
   webResearch?: boolean;
   platformBrowser?: boolean;
+  capabilityGateway?: boolean;
   /** 本轮注册了 bash 后台运行：bash_output / bash_kill 只碰本进程自己的任务，不另外执行命令。 */
   backgroundBash?: boolean;
 }
@@ -195,6 +196,7 @@ export function communityPermissionConfig(tools: string[], scope: CommunityPermi
     write: "allow", edit: "allow", bash, bash_escalated: "allow",
     // codemode 自己不产生副作用；脚本里嵌套的 write/edit/bash 仍逐个按上面的规则判定（危险命令照常审批）。
     codemode: "allow",
+    ...(scope.capabilityGateway ? {capability_search:"allow",capability_describe:"allow",capability_invoke:"allow"} : {}),
     ...(scope.platformBrowser ? {platform_browser:"allow"} : {}),
     ...(scope.backgroundBash ? { bash_output: "allow", bash_kill: "allow" } : {}),
     ...(scope.webResearch ? { web_search: "allow", web_open: "allow" } : {}),

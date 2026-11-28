@@ -51,8 +51,18 @@ function compactNumber(value) {
 function quotaShortLabel(label) {
   return label.replace("小时窗口", "h").replace(" 窗口", "").replace("窗口", "");
 }
+/**
+ * 额度百分比一律向下取整（与 runtime.js 的 rtQuotaUsedPct 同口径，不四舍五入）：
+ * 本文件在 runtime.js 未加载时也要能单独用，所以这里留一份同规则的小实现。
+ * 只有真到 100% 才显示 100%，避免「写着 100% 却还算有额度」。
+ */
+function quotaUsedPctText(pct) {
+  const n = Number(pct);
+  if (pct == null || !Number.isFinite(n)) return "未知";
+  return `${Math.max(0, Math.min(100, Math.floor(n + 1e-6)))}%`;
+}
 function quotaShortValue(w) {
-  return `${quotaShortLabel(w.label)} ${w.usedPercent == null ? "未知" : `${Math.round(w.usedPercent)}%`}`;
+  return `${quotaShortLabel(w.label)} ${quotaUsedPctText(w.usedPercent)}`;
 }
 function mobileAmount(s) {
   const q = s.quota, b = s.balance;
@@ -268,7 +278,7 @@ function renderResourceCard(s) {
 // 复用「新建会话」的紧凑额度条（rtQuotaStrip），保证两处展示一致；runtime.js 未加载时退回纯文本。
 function rtQuotaStripNode(rl, kind = "") {
   if (typeof rtQuotaStrip === "function") return rtQuotaStrip(rl, "short", "", "", kind || rl?.runtimeKind || "");
-  return h("span", { class: "muted small" }, (rl.windows || []).map((w) => `${w.label} ${w.usedPercent == null ? "未知" : `已用 ${Math.round(w.usedPercent)}%`}`).join(" · "));
+  return h("span", { class: "muted small" }, (rl.windows || []).map((w) => `${w.label} ${quotaUsedPctText(w.usedPercent) === "未知" ? "未知" : `已用 ${quotaUsedPctText(w.usedPercent)}`}`).join(" · "));
 }
 
 function resourceSection(title, list, extra, className = "") {

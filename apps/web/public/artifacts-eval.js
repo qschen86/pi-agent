@@ -39,6 +39,8 @@
       // 列表页：评测区块在页面上就原地换掉；不在（当前停在别的分类）就什么都不用画
       const old = document.querySelector(".eval-section");
       if (old && S.category) old.replaceWith(renderSection(S.category, S.scope));
+      window.piArtifacts?.syncLibraryCount?.();
+      window.piArtifacts?.syncRecent?.();
       return;
     }
     renderMain();
@@ -115,11 +117,21 @@
     } else if (!S.data) {
       body = h("p", { class: "muted small", role: "status" }, "正在加载评测产物…");
     } else {
-      body = suites().filter((suite) => scope?.suiteIds ? scope.suiteIds.includes(suite.id) : !S.suiteFilter || suite.id === S.suiteFilter).map((suite) => h("div", { class: "eval-suite" },
+      const query = (scope?.query || "").trim().toLocaleLowerCase();
+      const visible = suites().filter((suite) => scope?.suiteIds ? scope.suiteIds.includes(suite.id) : !S.suiteFilter || suite.id === S.suiteFilter).map((suite) => ({ ...suite,
+        cases: suite.cases.filter((testCase) => !query || [suite.name, testCase.title, testCase.summary].join(" ").toLocaleLowerCase().includes(query)).sort((a, b) => {
+          if (scope?.sort === "name") return a.title.localeCompare(b.title, "zh-CN");
+          if (scope?.sort === "opened") return (window.piArtifacts?.recentAt?.("eval", `${suite.id}/${b.id}`) || 0) - (window.piArtifacts?.recentAt?.("eval", `${suite.id}/${a.id}`) || 0);
+          const updated = (testCase) => Math.max(0, ...(testCase.results || []).map((r) => Date.parse(r.createdAt) || 0));
+          return updated(b) - updated(a);
+        }),
+      })).filter((suite) => suite.cases.length);
+      body = visible.map((suite) => h("div", { class: "eval-suite" },
         h("h3", { class: "eval-suite__name" }, suite.name),
         h("p", { class: "muted small" }, suite.purpose),
         renderTips(suite),
         h("div", { class: "artifact-grid" }, suite.cases.map((testCase) => renderCaseCard(suite, testCase)))));
+      if (!visible.length) body = h("p", { class: "muted small", role: "status" }, query ? "没有找到匹配的评测，试试其他关键词或分类。" : "这个分类下还没有评测任务。");
     }
     return h("section", { class: "artifact-section eval-section", "aria-label": category.name, role: "tabpanel", id: "artifact-panel" },
       scope?.hideFilter ? null : h("div", { class: "artifact-secondary-row pm-filter-line", role: "group", "aria-label": "二级分类" },
@@ -295,6 +307,7 @@
       return h("section", { class: "card" }, h("p", { class: "field-error", role: "alert" }, "没有这条评测任务。"),
         h("a", { class: "btn", href: "#/artifacts" }, "返回产物"));
     }
+    window.piArtifacts?.noteRecent?.("eval", `${route.suite}/${route.case}`);
     return route.compare ? renderCompare(route, found) : renderCasePage(route, found);
   }
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -68,4 +68,44 @@ it("rejects an old binding object even when bookkeeping did not bump its human r
  const dir=root(),a=new RuntimeStore(dir);a.putBinding(binding("one"));const b=new RuntimeStore(dir),stale=b.binding("one")!;
  a.updateBinding("one",x=>{x.statusReason="native terminal unconfirmed"},undefined,{bump:false});stale.title="stale overwrite";
  expect(()=>b.putBinding(stale)).toThrow(/冲突/);expect(new RuntimeStore(dir).binding("one")).toMatchObject({title:"one",statusReason:"native terminal unconfirmed",bindingRevision:1});
+});
+
+/** 另一个存活进程占着主机互斥锁一段时间，模拟部署切槽时旧槽还在写存储。 */
+async function holdFromAnotherProcess(dir: string, holdMs: number) {
+  const module = fileURLToPath(new URL("../src/host-mutex.ts", import.meta.url));
+  const script = `import {withHostMutex} from ${JSON.stringify(module)};withHostMutex(process.argv[1],()=>{process.stdout.write("HELD");Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${holdMs})});`;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script, dir], { stdio: ["ignore", "pipe", "pipe"] });
+  let error = "";
+  child.stderr.on("data", (b) => error += b);
+  const closed = new Promise<void>((resolve, reject) => { child.on("error", reject); child.on("close", () => resolve()); });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.once("data", () => resolve());
+    child.once("error", reject);
+    child.once("close", () => reject(new Error(error || "owner exited before acquisition")));
+  });
+  return closed;
+}
+it("waits out another live process's brief critical section instead of failing startup", async () => {
+  const dir = root();
+  const closed = await holdFromAnotherProcess(dir, 250);
+  // 旧槽正在写存储：以前这里直接抛 RT_STORE_BUSY 退出进程，现在应短暂等待后正常起来。
+  const store = new RuntimeStore(dir);
+  store.putBinding(binding("one"));
+  expect(new RuntimeStore(dir).allBindings().map((x) => x.platformSessionId)).toEqual(["one"]);
+  await closed;
+}, 20000);
+it("retries a contended read path instead of throwing into a timer callback", async () => {
+  const dir = root();
+  new RuntimeStore(dir).putBinding(binding("one"));
+  const closed = await holdFromAnotherProcess(dir, 250);
+  expect(new RuntimeStore(dir).allBindings()).toHaveLength(1);
+  await closed;
+}, 20000);
+it("fails immediately on an ownerless admission lock instead of waiting for it to clear", () => {
+  const dir = root();
+  const store = new RuntimeStore(dir);
+  mkdirSync(join(store.dir, "admission.lock"));
+  const started = Date.now();
+  expect(() => store.putBinding(binding("two"))).toThrow(/其他宿主写入/);
+  expect(Date.now() - started).toBeLessThan(200);
 });

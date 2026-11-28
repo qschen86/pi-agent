@@ -7,7 +7,7 @@
  *    - 记忆强约束：任意 runtime 重试用尽 1 次就建（规则本身可能有问题）；
  *    - 门禁 flaky：同一个测试文件近 7 天「复跑才通过」≥3 次就建（规则触发，不调 AI；隔离由门禁自己自动做，这里只通知）。
  * 每个指纹只建一次；待办完成 / 删除视为人的决定，之后只有新证据才再提醒。
- * 时间一律按北京时间（UTC+8）：每晚 23:50 跑，待办里的时间也是北京时间。
+ * 时间一律按北京时间（UTC+8）：独立调度每晚 23:50 跑；现在由自愈夜检（03:00，见 self-heal/）发起，待办里的时间也是北京时间。
  */
 import type { JointIssue } from "../diagnostics/joint-context.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -96,7 +96,7 @@ export function composeTodo(s: FingerprintStat, trigger: Trigger, now: Date, rul
   if (sessions.length) lines.push(`涉及会话：${sessions.map((id) => `https://${ENTRY_HOST}/#/rt/${id}`).join("  ")}`);
   if (!a && trigger === "memory-single") lines.push("可能的方向：① 规则误判（范围太宽 / 与记忆语义不一致）→ 改规则；② 模型确实没做到 → 调整记忆措辞或反馈文案；③ 本来就做不到 → 把这条记忆降为软约束。");
   lines.push("决策：要不要修复由你定。要修 → 从这条待办发起会话；不修 → 直接完成或删除，该错误在出现新证据前不会再提醒。");
-  lines.push(`（自动生成：每晚北京时间 ${SCHEDULE_HOUR}:${SCHEDULE_MINUTE} 统计，规则归一化 + DeepSeek 归并相近错误${a ? "，再由 DeepSeek（推理 high）带上下文评估值不值得做；评估只是建议，AI 没有看完整代码" : ""}；触发条件：${trigger === "memory-single" ? "强约束重试用尽 ≥1 次" : `近 ${WINDOW_DAYS} 天内 ≥${MIN_RUNTIMES} 个 runtime 各出现 ≥${MIN_PER_RUNTIME} 次`}。）`);
+  lines.push(`（自动生成：每晚统计，规则归一化 + DeepSeek 归并相近错误${a ? "，再由 DeepSeek（推理 high）带上下文评估值不值得做；评估只是建议，AI 没有看完整代码" : ""}；触发条件：${trigger === "memory-single" ? "强约束重试用尽 ≥1 次" : `近 ${WINDOW_DAYS} 天内 ≥${MIN_RUNTIMES} 个 runtime 各出现 ≥${MIN_PER_RUNTIME} 次`}。）`);
   const runtimes = Object.keys(s.runtimes).map((r) => RUNTIME_NAME[r] ?? r).join("、");
   return {
     text: lines.join("\n"),
@@ -129,15 +129,20 @@ export interface ErrorStatsOptions {
   assessBudgetUsd?: number;
   now?: () => Date;
   log?: (m: string) => void;
+  onFinished?: (run: RunRecord) => void;
+  /** 自动发起的时刻（北京时间）；默认 23:50。自愈夜检接管后传 03:00，页面说明和待办文案跟着变 */
+  schedule?: { hour: number; minute: number };
 }
 
 export class ErrorStatsService {
   private running: Promise<unknown> | null = null;
   private now: () => Date;
   readonly store: ErrorStatsStore;
+  private readonly schedule: { hour: number; minute: number };
 
   constructor(private options: ErrorStatsOptions) {
     this.store = options.store;
+    this.schedule = options.schedule ?? { hour: SCHEDULE_HOUR, minute: SCHEDULE_MINUTE };
     this.now = options.now ?? (() => new Date());
     // 上次进程在跑到一半时退出：留着「运行中」的记录会让页面一直转圈，改记成「中断」
     let dirty = false;
@@ -197,7 +202,7 @@ export class ErrorStatsService {
     const now = this.now();
     return {
       running: this.running !== null, windowDays: WINDOW_DAYS, minRuntimes: MIN_RUNTIMES, minPerRuntime: MIN_PER_RUNTIME, maxNewTodosPerRun: MAX_NEW_TODOS_PER_RUN,
-      scheduleHour: SCHEDULE_HOUR, scheduleMinute: SCHEDULE_MINUTE, nextRunAt: nextBeijingRunAt(now, SCHEDULE_HOUR, SCHEDULE_MINUTE).toISOString(),
+      scheduleHour: this.schedule.hour, scheduleMinute: this.schedule.minute, nextRunAt: nextBeijingRunAt(now, this.schedule.hour, this.schedule.minute).toISOString(),
       backfilledAt: this.store.state.backfilledAt ?? null, todos: Object.keys(this.store.state.todos).length, runs,
       flaky: { ...readQuarantine(this.options.guiRoot ?? process.env["PI_AGENT_GUI_ROOT"] ?? join(homedir(), ".pi-agent-gui"), now.getTime()), threshold: GATE_FLAKY_MIN_7D, windowDays: GATE_FLAKY_WINDOW_DAYS }
     };
@@ -241,6 +246,7 @@ export class ErrorStatsService {
       this.options.log?.(`错误统计失败：${(e as Error).message}`);
     } finally {
       run.finishedAt = this.now().toISOString();
+      try { this.options.onFinished?.(run); } catch (e) { this.options.log?.(`服务通知写入失败：${(e as Error).message}`); }
       try { store.save(); } catch { /* 下次重试 */ }
     }
     return run;
@@ -296,6 +302,8 @@ export class ErrorStatsService {
     const record = (a: Assessment, noteId?: string) => run.assessments!.push({ title: a.title, verdict: a.verdict, confidence: a.confidence, reason: a.reason, ...(noteId ? { noteId } : {}) });
 
     const pending: Array<{ s: FingerprintStat; trigger: Trigger }> = [];
+    /** 开着的待办但上次评估是「不建议做」：次数翻倍 / 新 runtime / 满 14 天要重评，否则新证据永远进不了评估 */
+    const reassess: FingerprintStat[] = [];
     for (const s of stats.values()) {
       const trigger = triggerOf(s, recent.get(s.fingerprint)?.total);
       if (!trigger) continue;
@@ -312,6 +320,8 @@ export class ErrorStatsService {
           options.notes.rewrite(rec.noteId, text, analysis);
           Object.assign(rec, { updatedAt: now.toISOString(), runtimes: Object.keys(s.runtimes), total: s.total, textHash: hash(text) });
         }
+        const prev = store.state.assessments[s.fingerprint];
+        if (prev && !worthDoing(prev) && needsAssessment(prev, s.total, Object.keys(s.runtimes).length, now)) reassess.push(s);
         continue;
       }
       // 没有待办，或上一条已被人关闭且之后又有新证据（stats 已按关闭日期截断）
@@ -343,6 +353,22 @@ export class ErrorStatsService {
       todos[s.fingerprint] = { noteId, rule: trigger, createdAt: now.toISOString(), updatedAt: now.toISOString(), runtimes: Object.keys(s.runtimes), total: s.total, textHash: hash(text), assessed: true };
       if (!covered) created.push({ noteId, title: analysis.title });
       record(a, noteId);
+      store.save();
+    }
+    // 复评：开着的待办上次被评为「不建议做」，之后有了新证据；评估结果写回待办（人没改过正文才改），并进入自愈的结论
+    reassess.sort((a, b) => b.total - a.total);
+    for (const s of reassess) {
+      const rec = todos[s.fingerprint]!;
+      const got = await evaluate(s);
+      if (!got?.fresh) continue;
+      if (worthDoing(got.a)) run.worth!++;
+      record(got.a, rec.noteId);
+      const current = options.notes.text(rec.noteId);
+      if (current !== null && hash(current) === rec.textHash) {
+        const { text, analysis } = composeTodo(s, triggerOf(s) ?? rec.rule, now, options.ruleTitle, got.a);
+        options.notes.rewrite(rec.noteId, text, analysis);
+        Object.assign(rec, { updatedAt: now.toISOString(), assessed: true, runtimes: Object.keys(s.runtimes), total: s.total, textHash: hash(text) });
+      }
       store.save();
     }
     // 补评：上一版建好、还没带评估的待办（没改过正文的才写回）

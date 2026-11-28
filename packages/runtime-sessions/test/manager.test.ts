@@ -1,11 +1,13 @@
 import {SCREENSHOT_INSTRUCTIONS} from "../../pi-runtime/src/screenshot-policy.mjs";
 import {LINK_READ_INSTRUCTIONS} from "../src/public-link-reader.js";
+import {PROCESS_CLEANUP_INSTRUCTIONS} from "../src/platform-injection.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeSessionManager } from "../src/manager.js";
+import { ANTIGRAVITY_IDENTITY_SOURCE, ANTIGRAVITY_IDENTITY_FINGERPRINT } from "../src/antigravity.js";
 import type { RuntimeKind } from "../src/types.js";
 import { ev, FakeDriver, tick, until } from "./fake-driver.js";
 
@@ -15,7 +17,7 @@ let codex: FakeDriver;
 let claude: FakeDriver;
 let mgr: RuntimeSessionManager;
 
-function make(opts: { approvalTtlMs?: number; authAutoVerifyDelayMs?: number; binaryWatchMs?: number } = {}): RuntimeSessionManager {
+function make(opts: { approvalTtlMs?: number; authAutoVerifyDelayMs?: number; authAutoVerifyRetryMs?: number; binaryWatchMs?: number; skipRecovery?: boolean } = {}): RuntimeSessionManager {
   return new RuntimeSessionManager({ dataDir: join(dir, "data"), drivers: { codex, "claude-code": claude }, skipRecovery: true, ...opts });
 }
 
@@ -1071,6 +1073,49 @@ describe("历史只读、授权与合并（V28-10/11/18）", () => {
 });
 
 describe("身份分区（V28-11）", () => {
+  it("Antigravity 升级套餐指纹保留当前分区、额度和会话续聊，重启后不再换分区", async () => {
+    const anti = new FakeDriver("antigravity");
+    const probe = anti.probe.bind(anti);
+    let upgraded = false;
+    anti.probe = async () => ({ ...await probe(), identity: {
+      authMode: "google-oauth", summary: "Google 登录",
+      source: upgraded ? ANTIGRAVITY_IDENTITY_SOURCE : "agy acp session/new _meta.antigravity.tier",
+      fingerprint: upgraded ? ANTIGRAVITY_IDENTITY_FINGERPRINT : "google-oauth|g1-pro-tier"
+    } });
+    const opts = { dataDir: join(dir, "anti-identity"), drivers: { antigravity: anti }, skipRecovery: true };
+    const runtime = new RuntimeSessionManager(opts);
+    try {
+      runtime.updateSettings({ workspaceRoots: [join(dir, "work")] }, "test");
+      const first = await runtime.probe("antigravity");
+      const scope = first.identity!.identityScopeId;
+      const quota = runtime.store.rateLimits()[scope];
+      const { session } = await runtime.create({ idempotencyKey: key(), runtimeKind: "antigravity", workspace: ws, prompt: "hello", confirmedProfileVersion: first.checkedAt }, "test");
+      await until(() => anti.turns.length === 1);
+      anti.turns[0]!.finish({ status: "completed" });
+      await until(() => runtime.store.binding(session.platformSessionId)!.status === "idle");
+      upgraded = true;
+      expect((await runtime.probe("antigravity")).identity).toMatchObject({ identityScopeId: scope, accountKnown: false });
+      expect(runtime.store.rateLimits()[scope]).toMatchObject({ identityScopeId: scope, windows: quota!.windows });
+      expect(runtime.store.binding(session.platformSessionId)!.identityScopeId).toBe(scope);
+      await runtime.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "continue", expectedRevision: runtime.store.binding(session.platformSessionId)!.bindingRevision }, "test");
+      await until(() => anti.turns.length === 2);
+      expect(anti.turns[1]!.args.nativeSessionId).toBe(anti.turns[0]!.nativeId);
+      anti.turns[1]!.finish({ status: "completed" });
+      await until(() => runtime.store.binding(session.platformSessionId)!.status === "idle");
+      runtime.shutdown();
+      const restarted = new RuntimeSessionManager(opts);
+      try { expect((await restarted.probe("antigravity")).identity!.identityScopeId).toBe(scope); }
+      finally { restarted.shutdown(); }
+    } finally { runtime.shutdown(); }
+  });
+
+  it("指纹升级不覆盖并发更换的分区", () => {
+    const original = mgr.store.getOrCreateIdentityPartition("migration-test", "a".repeat(24));
+    const switched = mgr.store.getOrCreateIdentityPartition("migration-test", "b".repeat(24));
+    expect(() => mgr.store.getOrCreateIdentityPartition("migration-test", "c".repeat(24), original)).toThrow("身份分区在升级期间发生变化");
+    expect(mgr.store.identityPartitions()["migration-test"]).toEqual(switched);
+  });
+
   it("稳定账号 ID 可重现；无稳定 ID 用持久分区，指纹变化换新分区", async () => {
     const c1 = mgr.profile("codex")!.identity!;
     expect(c1.derivation).toBe("stable-account-id");
@@ -1308,9 +1353,72 @@ describe("回补顺序与认证失败（V28-06/09/15）", () => {
     expect(p.state).toBe("needs-login");
     expect(p.lastAuthFailure?.message).toContain("OAuth session expired");
     expect(p.stateReason).toContain("OAuth session expired");
-    // 不会反复重试：同一次失败只复核一次
+    // 首次失败后不立刻高频重试（后续走低频间隔，默认 2 分钟）
     await tick(80);
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries online re-verification at low frequency until recovered, then stops polling", async () => {
+    mgr.shutdown(); mgr = make({ authAutoVerifyDelayMs: 15, authAutoVerifyRetryMs: 25 });
+    await create("claude-code");
+    await until(() => claude.turns.length === 1);
+    const probe = await claude.probe();
+    let calls = 0;
+    const spy = vi.spyOn(claude, "probe").mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("proxy down");
+      if (calls === 2) return { ...probe, state: "needs-login", stateReason: "在线认证未通过" };
+      return { ...probe, authVerified: true };
+    });
+    claude.turns[0]!.finish({ status: "failed", reason: "Failed to authenticate. API Error: 403 Request not allowed" });
+    await until(() => spy.mock.calls.length === 3);
+    await until(() => mgr.profile("claude-code")!.state === "executable" && !mgr.profile("claude-code")!.lastAuthFailure);
+    await tick(90);
+    expect(spy).toHaveBeenCalledTimes(3);
+    const audits = readFileSync(join(mgr.store.dir, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(audits.some((a) => a.type === "auth-auto-verify-failed")).toBe(true);
+    expect(audits.some((a) => a.type === "auth-recovered" && a.auto === true)).toBe(true);
+  });
+
+  it("manual probe recovery cancels pending low-frequency auto-verification", async () => {
+    mgr.shutdown(); mgr = make({ authAutoVerifyDelayMs: 15, authAutoVerifyRetryMs: 60 });
+    await create("claude-code");
+    await until(() => claude.turns.length === 1);
+    const probe = await claude.probe();
+    let recovered = false;
+    const spy = vi.spyOn(claude, "probe").mockImplementation(async () => (
+      recovered ? { ...probe, authVerified: true } : { ...probe, state: "needs-login", stateReason: "在线认证未通过" }
+    ));
+    claude.turns[0]!.finish({ status: "failed", reason: "Failed to authenticate. API Error: 403 Request not allowed" });
+    await until(() => spy.mock.calls.length === 1);
+    await until(() => (mgr.profile("claude-code")!.stateReason ?? "").includes("自动复核"));
+    recovered = true;
+    await mgr.probe("claude-code", { reloggedIn: true });
+    expect(mgr.profile("claude-code")!.state).toBe("executable");
+    expect(spy).toHaveBeenCalledTimes(2);
+    await tick(120);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes low-frequency auto-verification after restart when persisted profile is needs-login", async () => {
+    await create("claude-code");
+    await until(() => claude.turns.length === 1);
+    claude.turns[0]!.finish({ status: "failed", reason: "Failed to authenticate. API Error: 403 Request not allowed" });
+    await until(() => mgr.profile("claude-code")!.state === "needs-login");
+    const probe = await claude.probe();
+    mgr.shutdown();
+
+    let calls = 0;
+    const spy = vi.spyOn(claude, "probe").mockImplementation(async () => {
+      calls += 1;
+      return calls === 1 ? { ...probe, state: "needs-login", stateReason: "在线认证未通过" } : { ...probe, authVerified: true };
+    });
+    mgr = make({ skipRecovery: false, authAutoVerifyDelayMs: 5_000, authAutoVerifyRetryMs: 25 });
+    await mgr.recovered;
+    await until(() => mgr.profile("claude-code")!.state === "executable" && !mgr.profile("claude-code")!.lastAuthFailure);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await tick(90);
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it("cached identity cannot clear a Claude auth failure, even after manual confirmation", async () => {
@@ -1558,7 +1666,7 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
   it("新建与续聊都经驱动的角色通道注入同一份角色正文；绑定只存哈希与证据层级", async () => {
     const a = await create("codex", "开始调研", { role, projectRef: "prj-1" });
     await until(() => codex.turns.length === 1);
-    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
     expect(codex.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
     // 角色不混进用户消息
     expect(codex.turns[0]!.args.prompt).toBe("开始调研");
@@ -1571,7 +1679,7 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     expect(JSON.stringify(b)).not.toContain("只负责调研");
     await mgr.sendTurn(b.platformSessionId, { idempotencyKey: key(), prompt: "继续", expectedRevision: b.bindingRevision }, "t");
     await until(() => codex.turns.length === 2);
-    expect(codex.turns[1]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(codex.turns[1]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
     expect(codex.turns[1]!.args.nativeSessionId).toBe(codex.turns[0]!.nativeId);
   });
 
@@ -1580,8 +1688,8 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     await create("codex", "调研", { role });
     const c = await create("claude-code", "做演示稿", { role: other });
     await until(() => codex.turns.length === 1 && claude.turns.length === 1);
-    expect(claude.turns[0]!.args.roleInstructions).toBe([other.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
-    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(claude.turns[0]!.args.roleInstructions).toBe([other.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
+    expect(codex.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
     expect(claude.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
     expect(mgr.store.binding(c.session.platformSessionId)!.role!.injection).toBe("claude.systemPrompt.append");
   });
@@ -1597,7 +1705,7 @@ describe("V3.0 角色指令注入（V30-23/28 的 D 层）", () => {
     const pid = a.session.platformSessionId;
     await again.sendTurn(pid, { idempotencyKey: key(), prompt: "继续", expectedRevision: again.store.binding(pid)!.bindingRevision }, "t");
     await until(() => codex2.turns.length === 1);
-    expect(codex2.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+    expect(codex2.turns[0]!.args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
     codex2.turns[0]!.finish({ status: "completed" });
     await until(() => again.store.binding(pid)!.status === "idle");
     rmSync(join(dir, "data", "runtime", "roles", `${pid}.txt`));
@@ -1782,7 +1890,7 @@ it("dispatches a public link fallback to Antigravity at the normal chat entry", 
   await until(() => antigravity.turns.length === 1);
   const turn = antigravity.turns[0]!;
   expect(turn.args.prompt).toBe(prompt);
-  expect(turn.args.roleInstructions).toBe([SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+  expect(turn.args.roleInstructions).toBe([SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
   expect(turn.args.platformBrowser?.socketPath).toBeTruthy();
   turn.finish({ status: "completed" });
 });
@@ -1796,7 +1904,7 @@ it("V3.1 Pi preserves driver role eligibility, injects role on create and native
   const role = { definitionRef: "requirements-clarifier@1.0.0", templateVersion: "1", instructions: "只澄清需求" };
   const { session } = await create("pi", "澄清目标", { role });
   await until(() => pi.turns.length === 1);
-  expect(pi.turns[0].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+  expect(pi.turns[0].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
   expect(pi.turns[0]!.args.platformBrowser?.socketPath).toBeTruthy();
   expect(mgr.store.binding(session.platformSessionId)!.role!.injection).toBe("pi.appendSystemPrompt");
   pi.turns[0].finish({ status: "completed" });
@@ -1804,7 +1912,7 @@ it("V3.1 Pi preserves driver role eligibility, injects role on create and native
   const b = mgr.store.binding(session.platformSessionId)!;
   await mgr.sendTurn(session.platformSessionId, { idempotencyKey: key(), prompt: "继续澄清", expectedRevision: b.bindingRevision }, "t");
   await until(() => pi.turns.length === 2);
-  expect(pi.turns[1].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS].join("\n\n"));
+  expect(pi.turns[1].args.roleInstructions).toBe([role.instructions, SCREENSHOT_INSTRUCTIONS, LINK_READ_INSTRUCTIONS, PROCESS_CLEANUP_INSTRUCTIONS].join("\n\n"));
   expect(pi.turns[1].args.nativeSessionId).toBe(pi.turns[0].nativeId);
   pi.turns[1].finish({ status: "completed" });
 });

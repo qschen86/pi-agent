@@ -1,5 +1,5 @@
 /** Platform-owned stdio bridge; no browser or arbitrary code runs in the agent process. */
-import {existsSync, readFileSync} from 'node:fs';
+import {existsSync, readFileSync, statSync} from 'node:fs';
 import {createConnection} from 'node:net';
 import {dirname, join} from 'node:path';
 import {createInterface} from 'node:readline';
@@ -9,7 +9,11 @@ const linkDescription='仅在 runtime 自有工具未能读取公开链接正文
 const linkParameters={type:'object',required:['action','url'],additionalProperties:false,properties:{action:{type:'string',enum:['read_link','read_chatgpt_share']},url:{type:'string'}}};
 const parameters={type:'object',required:['action'],additionalProperties:false,properties:{action:{type:'string',enum:['open','inspect','click','fill','select','press','upload','viewport','theme','screenshot','close','read_link','read_chatgpt_share']},url:{type:'string'},selector:{type:'string'},value:{type:'string'},path:{type:'string'},width:{type:'integer',minimum:320,maximum:2560},height:{type:'integer',minimum:320,maximum:2560},theme:{type:'string',enum:['light','dark']},fullPage:{type:'boolean'}}};
 function resolveSocketPath(){
- if(existsSync(initialSocketPath))return initialSocketPath;
+ try{
+  const st=statSync(initialSocketPath);
+  if(st.isSocket())return initialSocketPath;
+  if(st.isFile()){const target=readFileSync(initialSocketPath,'utf8').trim();if(target&&existsSync(target))return target;}
+ }catch{}
  const m=/pb-([0-9a-f]{12})-[^/]+$/.exec(dirname(initialSocketPath));
  if(m){try{const next=readFileSync(join(dirname(dirname(initialSocketPath)),`pb-${m[1]}.sock`),'utf8').trim();if(next&&existsSync(next))return next;}catch{}}
  return initialSocketPath;

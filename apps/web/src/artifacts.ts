@@ -52,6 +52,23 @@ const product = (id: string): ArtifactProduct => {
 
 const SOURCES: Source[] = [
   {
+    // 股票持仓面板不登记在 artifact-products.ts：那份清单是待办分类器的实体词表（一律归入「小游戏」组），
+    // 把金融应用塞进去会污染分类结果。这里单独一条，产物库里仍然只有这一处登记。
+    // category "apps" = 跟待办 / 通讯录 / 股票这些内置应用同住产物库的「应用」页签（前端内置，不占分类）。
+    id: "position-guard",
+    category: "apps",
+    name: "股票持仓",
+    emoji: "📊",
+    accent: "#4d9cff",
+    summary: "港美股 V2.2 · L0 总闸门 + 美港双开关、四舱敞口与风控校验",
+    description:
+      "把港美股限定标的池的 V2.2 交易方案算式化：先算 L0 全球总闸门（VIX÷VIX3M、HYG÷IEF、IEF 波动率代理 MOVE）与美股 L1-A、港股 L1-B 两个子开关，得到五态灯色和降级 2 日、升级 5 日、速度熔断的确认节奏；再按 15% 现金、25% 权益核心、10% 黄金、40% 动态、10% 卫星给出四舱目标敞口，L0 拉红时核心压到 12.5%、动态与卫星归零。录入 NAV 与持仓后，页面同时给出目标 vs 实际和一组硬校验：科技穿透 55%、单标的名义上限、卫星禁 Sell Put、Put 名义预算、单张期权准入、备兑锁仓、分币种现金与交割覆盖、8%/15% 回撤冻结、M7 财报周限制。行情每天收盘后抓东方财富日线 + CBOE 官方 CSV，没有免费源的指标用代理口径并在页面标注。",
+    tags: ["港美股", "仓位管理", "L0 熔断", "四舱", "风控校验", "期权"],
+    version: "",
+    entry: "/games/position-guard/",
+    root: join(HERE, "../../position-guard"),
+  },
+  {
     ...product("pet-math-game"),
     emoji: "🦄",
     accent: "#7fb7e8",
@@ -115,6 +132,7 @@ export { ARTIFACT_PRODUCTS };
 const TOP_FILES = [
   "index.html",
   "styles.css",
+  "embedded.css",
   "sw.js",
   "manifest.webmanifest",
   "icon.svg",

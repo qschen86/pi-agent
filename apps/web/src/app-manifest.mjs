@@ -53,12 +53,12 @@ export const APPS = [
   },
   {
     id: 'auth', name: '登录与设备配对', tier: 'core',
-    api: ['auth'], pages: ['/device-pair', '/login'], views: [], routeModules: [], assets: [], sources: [],
-    data: ['auth-sessions.json', 'auth-sessions.json.mutex.sqlite', 'auth-sessions.json.pairs.json', 'auth-sessions.json.pairs.json.mutex.sqlite', 'device-pairs.json']
+    api: ['auth', 'remote-connect'], pages: ['/device-pair', '/login'], views: [], routeModules: [], assets: [], sources: [],
+    data: ['auth-sessions.json', 'auth-sessions.json.mutex.sqlite', 'auth-sessions.json.pairs.json', 'auth-sessions.json.pairs.json.mutex.sqlite', 'device-pairs.json', 'remote-connect.json', 'remote-connect.json.mutex.sqlite']
   },
   {
     id: 'notifications', name: '通知', tier: 'core',
-    api: ['notifications'], pages: [], views: [], routeModules: [], assets: ['notifications.js'], sources: [],
+    api: ['notifications', 'service-notifications'], pages: [], views: [], routeModules: [], assets: ['notifications.js'], sources: [],
     data: ['notifications/', 'read-state.json']
   },
   {
@@ -72,9 +72,9 @@ export const APPS = [
   },
   {
     id: 'resources', name: '外部资源与用量', tier: 'core',
-    api: ['resources', 'stats'], pages: [], views: ['resources'], routeModules: ['resources', 'stats'],
-    assets: ['resources.js', 'stats.js'], sources: [],
-    data: ['resource-balances.json', 'web-research-provider.json', 'deepseek-usage.jsonl', 'deepseek-usage.jsonl.legacy-imported'],
+    api: ['resources', 'stats', 'capabilities'], pages: [], views: ['resources'], routeModules: ['resources', 'stats'],
+    assets: ['resources.js', 'stats.js'], sources: ['capability-*'],
+    data: ['capability-gateway/', 'resource-balances.json', 'web-research-provider.json', 'deepseek-usage.jsonl', 'deepseek-usage.jsonl.legacy-imported'],
     dataReads: ['runtime-sessions:runtime', 'notes:note-categories.json', 'notes:note-iterations.json', 'shell:runtime-billing.json', 'shell:fx-rates.json']
   },
   {
@@ -86,7 +86,7 @@ export const APPS = [
   },
   {
     id: 'deploy-ops', name: '部署队列、诊断与错误统计', tier: 'core',
-    api: ['diagnostics', 'error-stats'], pages: [], views: [], routeModules: [], assets: [], sources: [],
+    api: ['diagnostics', 'error-stats', 'verify'], pages: [], views: [], routeModules: [], assets: [], sources: [],
     data: ['diagnostics/', 'repair-backups', 'v34-repair-backups'],
     dataReads: ['runtime-sessions:runtime']
   },

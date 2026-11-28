@@ -1,3 +1,4 @@
+import {serveJSON} from '@pi-agent/broker-transport';
 /**
  * Broker 的本机 IPC（v1.8）：Unix domain socket，一行一个 JSON 请求、一行一个 JSON 应答。
  * socket 放在本轮运行目录里（0600），pi 里的门禁扩展经它调用 Broker；Broker 退出即删除。
@@ -87,44 +88,11 @@ export async function handleBrokerRequest(broker: WebResearchBroker, req: Broker
 export interface BrokerServer { socketPath: string; close(): Promise<void> }
 
 export async function startBrokerServer(socketPath: string, broker: WebResearchBroker, onRequest?: (req: BrokerRequest, res: BrokerResponse) => void): Promise<BrokerServer> {
-  if (existsSync(socketPath)) unlinkSync(socketPath);
-  const server: Server = createServer((socket) => {
-    let buf = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => {
-      buf += chunk;
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        void (async () => {
-          let req: BrokerRequest;
-          try {
-            req = JSON.parse(line) as BrokerRequest;
-          } catch {
-            socket.write(JSON.stringify({ ok: false, code: "INVALID_INPUT", text: "请求不是 JSON" }) + "\n");
-            return;
-          }
-          const res = await handleBrokerRequest(broker, req);
-          onRequest?.(req, res);
-          socket.write(JSON.stringify(res) + "\n");
-        })();
-      }
-    });
-    socket.on("error", () => { /* 客户端断开 */ });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socketPath, () => resolve());
-  });
-  chmodSync(socketPath, 0o600);
-  return {
-    socketPath,
-    close: () => new Promise<void>((resolve) => server.close(() => {
-      if (existsSync(socketPath)) unlinkSync(socketPath);
-      resolve();
-    }))
-  };
+  return serveJSON(socketPath, async raw => {
+    const req=raw as BrokerRequest;
+    if (!req.params || typeof req.params !== 'object' || Array.isArray(req.params) || typeof req.toolCallId !== 'string') return {ok:false,code:'INVALID_INPUT',text:'请求参数不正确'};
+    const res=await handleBrokerRequest(broker,req);onRequest?.(req,res);return res;
+  }, {maxRequestBytes:65536,maxResponseBytes:1024*1024});
 }
 
 /** 客户端（门禁扩展里用）：一次连接一个请求。 */

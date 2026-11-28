@@ -63,6 +63,7 @@ export function createPiToolGate(mode: string, community?: PiCommunityGate, nati
     if (scan) return deny(scan);
     const violation=process.env.PI_PLATFORM_BROWSER_SOCKET?screenshotViolation(event.toolName,event.input,worktreeGuard&&worktreeGuard!=="invalid"?worktreeGuard.cwd:process.cwd()):undefined;
     if(violation)return deny(violation);
+    if (process.env.PI_CAPABILITY_SOCKET && ["capability_search","capability_describe","capability_invoke"].includes(event.toolName) && (mode === "pi-ask" || mode === "pi-native")) return;
     if (JOB_TOOLS.has(event.toolName) && (mode === "pi-ask" || mode === "pi-native")) return;
     if (READ_TOOLS.has(event.toolName) || event.toolName === "platform_browser" && !!process.env.PI_PLATFORM_BROWSER_SOCKET) return;
     // codemode 自己没有副作用：脚本里的 write/edit/bash 等嵌套调用会逐个再过这道闸门（读写限制、审批照常）。评测装配不挂它，仍按未知工具拒绝。
@@ -133,6 +134,7 @@ export default function install(pi: {
   }
   pi.on("tool_call", createPiToolGate(process.env["PI_CHAT_PERMISSION_MODE"] ?? "pi-read-only", community, nativeMemory,factsEnabled, parsePiWorktreeWriteGuard(process.env["PI_CHAT_WORKTREE_GUARD"])));
   pi.on("session_start", (_event, ctx) => {
+    if(process.env.PI_CAPABILITY_SOCKET && ["capability_search","capability_describe","capability_invoke"].some(name=>!pi.getActiveTools?.().includes(name)))throw new Error("Capability gateway tools missing from active Pi inventory");
     if(process.env.PI_PLATFORM_BROWSER_SOCKET&&!pi.getActiveTools?.().includes("platform_browser"))throw new Error("Platform browser tool missing from active Pi inventory");
     // The generated managed wrapper announces readiness after the community service initializes.
     if (community) return;

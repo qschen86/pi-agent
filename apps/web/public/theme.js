@@ -39,8 +39,28 @@
   }
   function toggle() {
     const next = isDark() ? "light" : "dark";
-    try { localStorage.setItem(KEY, next); } catch { /* 存储不可用时只在本页生效 */ }
-    apply(next); sync();
+    setMode(next);
+  }
+  /** 显式选深 / 浅 / 跟随系统（设置页的「深色模式」用）；返回实际生效的模式。 */
+  function setMode(next) {
+    const mode = next === "dark" || next === "light" ? next : "system";
+    try {
+      if (mode === "system") localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, mode);
+    } catch { /* 存储不可用时只在本页生效 */ }
+    apply(mode === "system" ? null : mode);
+    sync(); report();
+    return mode;
+  }
+  /** 用户此刻的选择：dark / light，没手动选过是 system（跟随系统）。 */
+  const mode = () => saved() || "system";
+  /*
+   * 深浅选择是「设备级」的。同一个应用会从公网、局域网直连、中继等不同的源加载，而 localStorage 按源隔离——
+   * 用户选一次深色，不该因为换了入口源就变回白天。所以原生壳听着这个事件，把同一个选择带进每个源
+   * （在页面脚本之前写进那个源的 localStorage）。浏览器里没有壳，事件没人接，行为与以前一致。
+   */
+  function report() {
+    try { window.dispatchEvent(new CustomEvent("pi-theme-change", { detail: { mode: mode() } })); } catch { /* 老浏览器没有 CustomEvent：只是不同步给壳 */ }
   }
   function mount() {
     if (button || !document.querySelector(".topbar")) return;
@@ -55,9 +75,11 @@
     if (window.syncNavLayout) window.syncNavLayout();
     sync();
   }
+  window.piTheme = { isDark, toggle, mode, setMode };
   if (media && media.addEventListener) media.addEventListener("change", sync);
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
-  window.piTheme = { isDark, toggle };
+  // 有没有装到顶栏都不影响上报：主题是整页的，壳要的是「用户选了什么」。
+  const boot = () => { mount(); report(); };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();
 
 /*

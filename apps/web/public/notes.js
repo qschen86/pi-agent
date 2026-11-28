@@ -834,7 +834,7 @@ function noteKindPendingBadge(note) {
 // 推荐行右侧只留一个「处理」按钮：点开轻量弹窗看完整需求，并在弹窗里选择「忽略 / 发起迭代对话」。
 
 function noteUpcomingState() {
-  return (ui.notesUpcoming ||= { events: [], total: 0, loaded: false, loading: false, error: "", external: [] });
+  return (ui.notesUpcoming ||= { events: [], total: 0, pending: [], pendingTotal: 0, loaded: false, loading: false, error: "", external: [] });
 }
 
 function noteUpcomingDay(event) {
@@ -1195,8 +1195,159 @@ function noteUpcomingSection() {
       : h("span", { class: "muted small notes-today-empty" },
         !st.loaded && !st.error ? "正在读取日程…"
           : st.error ? `日程读取失败：${st.error}`
-          : "未来 48 小时没有日程"));
+          : "未来 48 小时没有日程"),
+    notePendingScheduleList());
 }
+
+/* ------------------------- 待定日程：已判定为日程、只差一个起算日期 ------------------------- */
+
+const NOTE_PENDING_REPEAT_UNIT = { daily: "天", weekly: "周", monthly: "个月", yearly: "年" };
+
+/** 「每 90 天」这种周期说法；没给周期只说明还差日期。 */
+function notePendingRepeatText(pending) {
+  const repeat = pending && pending.repeat;
+  if (!repeat) return "";
+  if (repeat.lunar) return repeat.freq === "yearly" ? "每年（农历）" : "每月（农历）";
+  const interval = repeat.interval || 1;
+  const unit = NOTE_PENDING_REPEAT_UNIT[repeat.freq] || "天";
+  return interval === 1 ? `每${unit}` : `每 ${interval} ${unit}`;
+}
+
+/** 这条待定日程在等什么（一句话）。 */
+function notePendingText(pending) {
+  if (pending && pending.hint) return pending.hint;
+  const every = notePendingRepeatText(pending);
+  return every ? `${every}一次，还差第一次的日期` : "日程还差一个起算日期";
+}
+
+function notePendingTitle(entry) {
+  return String(entry?.text || "").split("\n").find((line) => line.trim())?.slice(0, 80) || "（图片记录）";
+}
+
+/** 今日卡片「日程」模块底下的一行：待定日程不占日历，但也不能看不见。 */
+function notePendingScheduleList() {
+  const pending = noteUpcomingState().pending || [];
+  if (!pending.length) return null;
+  return h("div", { class: "notes-pending-block" },
+    h("div", { class: "notes-pending-head" },
+      h("span", { class: "notes-pending-title" }, "待定时间"),
+      h("span", { class: "notes-pending-count muted small" }, String(pending.length)),
+      h("button", {
+        type: "button", class: "notes-pending-all", "data-key": "notes-pending-all",
+        title: "逐条补一个起算日期", "aria-label": `补日期（${pending.length} 条待定日程）`,
+        onclick: () => void noteOpenPendingSchedule()
+      }, "补日期")),
+    h("ul", { class: "notes-pending-list", "aria-label": "待定时间的日程" }, pending.map((entry) =>
+      h("li", { class: "notes-pending-item" },
+        h("button", {
+          type: "button", class: "notes-pending-card", "data-note-id": entry.id, "data-pending-note": entry.id,
+          "aria-label": `${notePendingTitle(entry)}，${notePendingText(entry.pending)}，补日期`,
+          title: notePendingText(entry.pending),
+          onclick: () => void noteOpenPendingSchedule(entry.id)
+        },
+          h("span", { class: "notes-pending-when", "aria-hidden": "true" }, "待定"),
+          h("span", { class: "notes-pending-note" }, notePendingTitle(entry)),
+          h("span", { class: "notes-pending-hint" }, notePendingText(entry.pending)))))));
+}
+
+/**
+ * 补日期弹窗：待定日程逐条列出来，每行一个日期输入（默认平台推算的候选日期）。
+ * 只写日期不写时刻：待定日程只知道大概哪一天。
+ */
+function notePendingScheduleDialog(focusId) {
+  const pending = noteUpcomingState().pending || [];
+  if (!pending.length) return;
+  const heading = h("h2", { id: "notes-pending-title" }, focusId ? "补一个起算日期" : "待定时间的日程");
+  const status = h("p", { class: "notes-pending-status muted small", role: "status", hidden: true });
+  const rows = new Map();
+  const body = h("div", { class: "notes-pending-dialog-body" }, pending.map((entry) => {
+    const suggested = entry.pending?.suggest || "";
+    const input = h("input", {
+      type: "date", class: "notes-pending-date", value: suggested, "aria-label": `${notePendingTitle(entry)} 的起算日期`
+    });
+    const submit = h("button", { type: "button", class: "btn small primary notes-pending-submit" }, "设为日程");
+    const error = h("p", { class: "field-error small", role: "alert", hidden: true });
+    const row = h("div", { class: "notes-pending-row", "data-pending-row": entry.id },
+      h("p", { class: "notes-pending-row-text" }, notePendingTitle(entry)),
+      h("p", { class: "notes-pending-row-hint muted small" }, notePendingText(entry.pending),
+        entry.pending?.repeat ? h("span", { class: "notes-pending-row-repeat" }, ` · ${notePendingRepeatText(entry.pending)}`) : null),
+      h("div", { class: "notes-pending-row-form" }, input, submit),
+      error);
+    const apply = async () => {
+      const start = String(input.value || "").trim();
+      error.hidden = true;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) { error.textContent = "请选一个日期"; error.hidden = false; return; }
+      submit.disabled = true; input.disabled = true; submit.textContent = "保存中…";
+      try {
+        await api(`/api/notes/${encodeURIComponent(entry.id)}/schedule`, { method: "POST", body: JSON.stringify({ start }) });
+      } catch (e) {
+        submit.disabled = false; input.disabled = false; submit.textContent = "设为日程";
+        error.textContent = e?.message || "保存失败，请稍后重试"; error.hidden = false;
+        return;
+      }
+      row.remove();
+      rows.delete(entry.id);
+      status.hidden = false;
+      status.textContent = `已设为日程：${notePendingTitle(entry)}`;
+      void noteRefreshPendingSurfaces();
+      if (!rows.size) { close(); noteAnnouncePendingAdded(entry); }
+    };
+    submit.addEventListener("click", () => void apply());
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); void apply(); } });
+    rows.set(entry.id, row);
+    return row;
+  }));
+  const closeButton = h("button", { type: "button", class: "btn notes-pending-close", "data-key": "notes-pending-close" }, "关闭");
+  const dialog = h("dialog", { class: "notes-pending-dialog", "aria-labelledby": "notes-pending-title" },
+    h("div", { class: "notes-pending-dialog-head" }, heading), status, body,
+    h("div", { class: "notes-pending-dialog-actions" }, closeButton));
+  const close = () => { try { dialog.close(); } catch { /* 已经关了 */ } dialog.remove(); };
+  closeButton.addEventListener("click", close);
+  dialog.addEventListener("cancel", (ev) => { ev.preventDefault(); close(); });
+  dialog.addEventListener("click", (ev) => { if (ev.target === dialog) close(); });
+  (document.body || document.documentElement).append(dialog);
+  dialog.showModal();
+  const first = focusId ? dialog.querySelector(`[data-pending-row="${CSS.escape(focusId)}"] .notes-pending-date`) : null;
+  const target = first || dialog.querySelector(".notes-pending-date");
+  requestAnimationFrame(() => { try { target?.focus({ preventScroll: true }); } catch { target?.focus?.(); } });
+}
+
+/** 打开补日期弹窗：待定列表还没读到时先读一次；给了 id 就把焦点放到那一行。 */
+async function noteOpenPendingSchedule(id) {
+  const st = noteUpcomingState();
+  if (!st.loaded || !Array.isArray(st.pending)) {
+    try { await noteLoadUpcoming(); } catch { /* 读不到就按已知列表来 */ }
+  }
+  notePendingScheduleDialog(id);
+}
+
+/** 补完日期后刷新会展示待定日程的三处：今日卡片、列表、日历。 */
+async function noteRefreshPendingSurfaces() {
+  try { await noteLoadUpcoming(); } catch { /* 列表刷新失败不影响已保存的日程 */ }
+  try { noteRefreshLive(); } catch { /* 列表还没渲染 */ }
+  if (ui.notesCalendar && (noteCalendarInlineOpen() || ui.notesCalendar.docked)) {
+    ui.notesCalendar.monthCache = {};
+    void noteLoadCalendar(true);
+  }
+}
+
+/** 补完最后一条：把结果说清楚（关掉弹窗后不再有可见反馈）。 */
+function noteAnnouncePendingAdded(entry) {
+  noteAnswer(`${notePendingTitle(entry)} 已设为日程`);
+}
+
+/** 轻量状态提示（不抢焦点）：屏幕阅读器与可见提示共用一句话。 */
+function noteAnswer(message) {
+  if (!message) return;
+  let el = document.getElementById("notes-pending-announcer");
+  if (!el) {
+    el = h("p", { id: "notes-pending-announcer", class: "notes-pending-announcer", role: "status", "aria-live": "polite" });
+    (document.body || document.documentElement).append(el);
+  }
+  el.textContent = message;
+  setTimeout(() => { if (el.isConnected && el.textContent === message) el.textContent = ""; }, 4000);
+}
+
 
 /* --------------------- Agent 的今天卡片：今日概览 + Agent 日程 --------------------- */
 // 「人」和「Agent」两张卡片放在同一个「今天」卡片里，卡头最右侧的分段按钮 / 左右滑切换：
@@ -1972,10 +2123,12 @@ function noteInstallTodaySwipe(body) {
     body.style.transform = dx ? `translateX(${dx}px)` : "";
     body.style.opacity = dx ? String(Math.max(0.25, 1 - Math.abs(dx) / (width * 0.9))) : "";
   };
-  const clearOffset = () => { body.style.transition = ""; body.style.transform = ""; body.style.opacity = ""; section()?.classList.remove("is-sliding"); };
+  const clearOffset = () => { delete body.dataset.todayTouch; body.style.transition = ""; body.style.transform = ""; body.style.opacity = ""; section()?.classList.remove("is-sliding"); };
   body.addEventListener("pointerdown", (ev) => {
     drag = null;
+    delete body.dataset.todayTouch;
     if (ev.pointerType !== "touch" || ev.target.closest?.(NOTE_TODAY_SWIPE_IGNORE) || body.dataset.todayLeaving) return;
+    body.dataset.todayTouch = "1";
     drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, width: body.clientWidth || window.innerWidth || 1, active: false };
   });
   body.addEventListener("pointermove", (ev) => {
@@ -1985,7 +2138,7 @@ function noteInstallTodaySwipe(body) {
     if (!s.active) {
       if (Math.max(Math.abs(dx), Math.abs(dy)) < 10) return;
       // 竖滑留给页面滚动；方向不对（人的卡片往右、Agent 的卡片往左）也不接管
-      if (!noteTodaySwipeNext(dx, dy)) { drag = null; return; }
+      if (!noteTodaySwipeNext(dx, dy)) { delete body.dataset.todayTouch; drag = null; return; }
       s.active = true;
       body.style.transition = "none";
       section()?.classList.add("is-sliding");
@@ -1998,6 +2151,7 @@ function noteInstallTodaySwipe(body) {
   });
   body.addEventListener("pointerup", (ev) => {
     const s = drag; drag = null;
+    delete body.dataset.todayTouch;
     try { body.releasePointerCapture?.(ev.pointerId); } catch { /* 没有捕获就忽略 */ }
     if (!s || !s.active || s.id !== ev.pointerId) return;
     const dx = ev.clientX - s.x;
@@ -2028,6 +2182,7 @@ function noteInstallTodaySwipe(body) {
   });
   body.addEventListener("pointercancel", () => {
     const s = drag; drag = null;
+    delete body.dataset.todayTouch;
     if (s?.active) clearOffset();
   });
 }
@@ -2106,6 +2261,9 @@ function noteLoadUpcoming() {
         .then((d) => (Array.isArray(d?.google) ? d.google : [])).catch(() => null);
       const data = await api("/api/notes/upcoming?limit=10", noteReadOptions());
       st.events = Array.isArray(data?.events) ? data.events : [];
+      // 待定日程（已判定为日程、缺起算日期）不进日历：随同一次读取带回来，卡片里单独列一行。
+      st.pending = Array.isArray(data?.pending) ? data.pending : [];
+      st.pendingTotal = typeof data?.pendingTotal === "number" ? data.pendingTotal : st.pending.length;
       st.total = typeof data?.total === "number" ? data.total : st.events.length;
       st.loaded = true; st.error = "";
       noteReplaceUpcoming();
@@ -2117,6 +2275,8 @@ function noteLoadUpcoming() {
       st.loading = false;
       if (noteUpcomingFlight === flight) noteUpcomingFlight = null;
       noteReplaceUpcoming();
+      // 日历顶部那行「待补时间」也是这份数据：打开着日历就一起重画（保持滚动位置）。
+      if (noteCalendarInlineOpen() && document.getElementById("notes-calendar-panel")) noteReplaceCalendarPanel();
       noteLoadTodayRecsLater();
       if (noteUpcomingAgain) { noteUpcomingAgain = false; void noteLoadUpcoming(); }
     }
@@ -2614,7 +2774,52 @@ function noteDoubleClickEditEnabled() {
   try { return !!(noteHoverYes && noteHoverYes.matches); } catch { return false; }
 }
 
-/** 打开一条记录的编辑态；focus 为真时顺势把光标放进输入框（双击进入时用）。 */
+/**
+ * 编辑态输入框的高度：进编辑时按已有正文多少一次撑开，最多到 styles.css 里 .notes-edit 的 max-height
+ * （手机更矮，弹键盘后再按 --kb-vh 收），超出部分在框内滚动。max-height 写的是 min() / dvh，
+ * getComputedStyle 读到的是解析后的 px；万一拿不到就退回 320px。
+ */
+function noteEditMaxHeight(area) {
+  let css = NaN;
+  try { css = parseFloat(window.getComputedStyle(area).maxHeight); } catch { css = NaN; }
+  return Number.isFinite(css) && css > 0 ? css : 320;
+}
+function noteEditAutosize(area) {
+  if (!area || !area.isConnected) return;
+  const max = noteEditMaxHeight(area);
+  // 先回到 auto 再量，否则量到的是上一次写死的高度
+  area.style.height = "auto";
+  // scrollHeight 含上下内边距、不含边框；border-box 下补回 2px 边框，免得最后一行差一点被裁
+  const wanted = area.scrollHeight + 2;
+  area.style.height = `${Math.min(wanted, max)}px`;
+  area.style.overflowY = wanted > max + 1 ? "auto" : "hidden";
+}
+
+// 弹键盘 / 收键盘 / 旋转都会改 .notes-edit 的上限（dvh 与 --kb-vh）：改完要再量一次，
+// 免得上限变了但高度还停在旧值，把保存键顶出屏幕。这些监听只在这个编辑框存在时挂上，
+// 离开编辑（输入框被换掉）就自己摘掉：页面空闲时不多占 window 上的 resize 监听。
+const noteEditRefitHandlers = new WeakMap();
+function noteEditUnwatch(area) {
+  const refit = noteEditRefitHandlers.get(area);
+  if (!refit) return;
+  noteEditRefitHandlers.delete(area);
+  try { document.removeEventListener("pi-keyboard", refit); } catch { /* 没有 document */ }
+  try { window.removeEventListener("resize", refit); } catch { /* 没有 window */ }
+}
+function noteEditWatch(area) {
+  if (!area || noteEditRefitHandlers.has(area)) return;
+  const refit = () => {
+    if (!area.isConnected) { noteEditUnwatch(area); return; }
+    noteEditAutosize(area);
+  };
+  noteEditRefitHandlers.set(area, refit);
+  document.addEventListener("pi-keyboard", refit);
+  window.addEventListener("resize", refit);
+}
+
+/**
+ * 打开一条记录的编辑态；focus 为真时顺势把光标放进输入框（双击进入时用）。
+ */
 function noteBeginEdit(note, focus) {
   if (!note || ui.notesEdit || ui.notesBusy) return false;
   for (const id of notePendingExpand.keys()) noteCancelPendingExpand(id);
@@ -2761,6 +2966,8 @@ function noteConversationPrompt(note) {
   const quote = raw ? raw.split("\n").map((line) => (line ? `> ${line}` : ">")).join("\n") : "> （无正文）";
   const parts = [`引用待办记录（记于 ${noteStamp(note.createdAt)}）：`, "", quote];
   if (note.schedule) parts.push("", `日程：${noteScheduleLabel(note.schedule)}`);
+  // 待定日程也要跟着走：引到会话里时对方知道这是「还差一个起算日期」的日程。
+  if (note.schedulePending) parts.push("", `日程（待定时间）：${notePendingText(note.schedulePending)}`);
   if ((note.images || []).length) parts.push("", "（这条记录附带的图片见附件）");
   return parts.join("\n");
 }
@@ -2853,7 +3060,8 @@ function noteKindFilter() {
 
 /** 页面上的三类：没有 kind 的旧记录按待办；待办带时间就是日程。 */
 function noteDisplayKind(note) {
-  return note?.kind === "note" ? "note" : note?.schedule ? "event" : "todo";
+  // 待定日程（已判定为日程、缺起算日期）也算日程：不降级成待办（v3.121）。
+  return note?.kind === "note" ? "note" : note?.schedule || note?.schedulePending ? "event" : "todo";
 }
 
 function noteMatchesKind(note, filter = noteKindFilter()) {
@@ -4528,7 +4736,7 @@ function noteEntry(note) {
     const area = h("textarea", {
       class: "notes-edit", "data-key": `note-edit-${note.id}`, rows: "4", value: ui.notesEdit.text,
       "aria-label": "编辑这条记录",
-      oninput: (e) => { ui.notesEdit.text = e.target.value; },
+      oninput: (e) => { ui.notesEdit.text = e.target.value; noteEditAutosize(e.target); },
       onpaste: (e) => notePaste(items, e),
       ondrop: (e) => noteDropImage(items, e),
       ondragover: (e) => { if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); },
@@ -4537,6 +4745,8 @@ function noteEntry(note) {
         if (e.key === "Escape") { e.preventDefault(); ui.notesEdit = null; renderMain(); }
       }
     });
+    // 进入编辑就按正文多少把高度展开（最多到上限）：固定 4 行会把长正文裁掉一截
+    requestAnimationFrame(() => { noteEditAutosize(area); noteEditWatch(area); });
     if (ui.notesEditFocus === note.id) {
       ui.notesEditFocus = null;
       requestAnimationFrame(() => {
@@ -4627,6 +4837,13 @@ function noteEntry(note) {
       title: "在日历中查看这条日程", "aria-label": `在日历中查看日程：${noteScheduleLabel(note.schedule)}`,
       onclick: () => noteOpenNoteInCalendar(note)
     }, "日程 · " + noteScheduleLabel(note.schedule)) : null,
+    // 待定日程：同样是日程，只是还差一个起算日期；点一下就能补，不靠用户自己去日历里找。
+    note.schedulePending ? h("button", {
+      type: "button", class: "note-schedule-badge is-pending", "data-pending-note": note.id,
+      title: "补一个起算日期，这条日程就会进日历",
+      "aria-label": `待定日程：${notePendingText(note.schedulePending)}，补日期`,
+      onclick: (ev) => { ev.stopPropagation(); void noteOpenPendingSchedule(note.id); }
+    }, "日程 · 待定时间") : null,
     note.schedule?.remind
       ? h("span", { class: "note-remind-badge", title: `到点前全端推送（${NOTE_REMIND_SCENE_TEXT[note.schedule.remind.scene] || "按场景推断"}）` }, noteRemindAlarm(), noteRemindSummary(note.schedule.remind.offsets) + "提醒")
       : null,
@@ -5672,6 +5889,19 @@ function noteCalendarAnchorToday() {
   });
 }
 
+/** 日历顶部的一行：有日程还没定日期就摆在这里，点一下就能补（不然它会从日历里消失，用户找不到）。 */
+function noteCalendarPendingStrip() {
+  const pending = noteUpcomingState().pending || [];
+  if (!pending.length) return null;
+  return h("div", { class: "notes-calendar-pending", role: "status" },
+    h("span", { class: "notes-calendar-pending-text" }, `${pending.length} 条日程待补时间`),
+    h("button", {
+      type: "button", class: "btn small notes-calendar-pending-action", "data-key": "calendar-pending",
+      "aria-label": `补日期（${pending.length} 条待定日程）`,
+      onclick: () => void noteOpenPendingSchedule()
+    }, "补日期"));
+}
+
 function noteCalendarPanelChildren() {
   const st = noteCalendarState();
   const selected = noteCalendarSelected(st);
@@ -5699,6 +5929,7 @@ function noteCalendarPanelChildren() {
   return [
     noteCalendarTopbar(st),
     h("div", { class: "notes-calendar-scroll", role: "region", "aria-label": "日历内容" },
+      noteCalendarPendingStrip(),
       alertBox,
       settingsView || noteCalendarGrid(st, events, selected)),
     noteCalendarInlineOpen() ? null : noteCalendarFooter(st, allEvents),
@@ -5734,6 +5965,8 @@ function noteReplaceCalendarPanel() {
 
 async function noteLoadCalendar(force = false) {
   if (force) void noteLoadCalendarRecent(true);
+  // 待定日程随今日卡片那次读取带回来：日历还没读过就补读一次，不另开接口。
+  if (!noteUpcomingState().loaded) void noteLoadUpcoming();
   const st = noteCalendarState();
   if (force) st.monthCache = {};
   const scope = noteCalendarReadScope(st);

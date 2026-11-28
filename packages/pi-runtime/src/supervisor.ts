@@ -54,7 +54,7 @@ export class PiRuntimeSupervisor extends EventEmitter {
           profile=spec.resumeCommunityProfilePath;
         }
       }
-      const boundary=this.boundary=await preparePiChatBoundary({workspace:spec.workspace,worktree:spec.worktree,mode:spec.mode,provider:spec.provider,model:spec.model,memorySource:spec.memorySource,sourceAgentDir:spec.sourceAgentDir,runtimeRoot:join(root,'runtime'),guardDir:join(root,'guard'),roleInstructions:spec.roleInstructions,recordReadRoots:spec.recordReadRoots,platformBrowser:spec.platformBrowser,evaluation:spec.evaluation,communityProfilePath:profile,nativeMemoryProfilePath:spec.nativeMemoryProfilePath ?? spec.communityProfilePath,...(spec.webResearch?{webResearch:{sourceDomains:spec.webResearch.sourceDomains,...(spec.webResearch.budget?{budget:spec.webResearch.budget}:{})}}:{})});
+      const boundary=this.boundary=await preparePiChatBoundary({workspace:spec.workspace,worktree:spec.worktree,mode:spec.mode,provider:spec.provider,model:spec.model,memorySource:spec.memorySource,sourceAgentDir:spec.sourceAgentDir,runtimeRoot:join(root,'runtime'),guardDir:join(root,'guard'),roleInstructions:spec.roleInstructions,recordReadRoots:spec.recordReadRoots,capabilityGateway:spec.capabilityGateway,platformBrowser:spec.platformBrowser,evaluation:spec.evaluation,communityProfilePath:profile,nativeMemoryProfilePath:spec.nativeMemoryProfilePath ?? spec.communityProfilePath,...(spec.webResearch?{webResearch:{sourceDomains:spec.webResearch.sourceDomains,...(spec.webResearch.budget?{budget:spec.webResearch.budget}:{})}}:{})});
       this.checkOpen();
       // Mode selects the active tool boundary; it does not replace the pinned installation.
       // Read-only/native turns keep community permissions dormant and validate their identity.
@@ -123,7 +123,7 @@ export class PiRuntimeSupervisor extends EventEmitter {
       if(state.sessionId!==spec.sessionId||!state.sessionFile||!isWithin(canonicalPath(state.sessionFile),canonicalPath(boundary.env.TMPDIR)))throw new Error('Pi runtime session location is invalid');
       this.checkOpen();
       if(spec.historyDestination){mkdirSync(dirname(spec.historyDestination),{recursive:true,mode:0o700});this.history={source:state.sessionFile,destination:spec.historyDestination};this.checkpoint();}
-      this.publish({type:'runtime_ready',version:1,platformBrowser:spec.platformBrowser?1:undefined,permissionGrantControl:1,sessionId:spec.sessionId,workspace:canonicalPath(spec.workspace),sessionDirectory:boundary.env.TMPDIR,fingerprint,...(evaluationInventory?{inventory:evaluationInventory}:{})});
+      this.publish({type:'runtime_ready',version:1,capabilityGateway:spec.capabilityGateway?1:undefined,platformBrowser:spec.platformBrowser?1:undefined,permissionGrantControl:1,sessionId:spec.sessionId,workspace:canonicalPath(spec.workspace),sessionDirectory:boundary.env.TMPDIR,fingerprint,...(evaluationInventory?{inventory:evaluationInventory}:{})});
     }catch(error){await this.stop();await this.boundary?.dispose();rmSync(root,{recursive:true,force:true});throw error;}
   }
   private ask(request:RuntimeApproval,signal:AbortSignal):Promise<{approve:boolean;reason:string;scope?:string}>{

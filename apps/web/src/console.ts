@@ -1,3 +1,4 @@
+import { ServiceNotifications } from './service-notifications.js';
 import { NoteRelationService } from "./note-relation-service.js";
 import type { RelationContext } from "./note-relation-types.js";
 /**
@@ -13,11 +14,12 @@ import { NoteCategories } from "./note-categories.js";
 import { NoteKinds } from "./note-kind.js";
 import { NOTE_MAX_CATEGORIES } from "./note-category-policy.js";
 import { alignLunarStart } from "./lunar.js";
-import { NoteStore, NOTE_MAX_LENGTH, NOTE_SCHEDULE_MAX_REPEATS, NoteImageError, isNoteRepeat, normalizeNoteRepeat } from "./notes.js";
-import type { Note, NoteImage, NoteImportEntry, NoteKind, NoteRepeat, NoteSchedule, NoteWriting } from "./notes.js";
+import { NoteStore, NOTE_MAX_LENGTH, NOTE_SCHEDULE_MAX_REPEATS, NoteImageError, isNoteRepeat, isNoteRemind, normalizeNoteRepeat } from "./notes.js";
+import type { Note, NoteImage, NoteImportEntry, NoteKind, NoteRepeat, NoteSchedule, NoteSchedulePending, NoteWriting } from "./notes.js";
 import { noteDisplayKind, isNoteAutomation } from "./notes.js";
 import { noteScheduleExpired } from "./calendar.js";
 import { withNoteRemind } from "./note-reminder.js";
+import { pendingScheduleSuggest, scheduleFromPending } from "./note-schedule-pending.js";
 import { EventEmitter } from "node:events";
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -34,7 +36,7 @@ import { pickFolderNative } from "./pick-folder.js";
 import { appData } from "./app-data.js";
 import { DeepSeekUsageLedger, DeepSeekUsageTracker, readLegacyDeepSeekUsage, recordDeepSeekPort } from "./deepseek-usage.js";
 import type { DeepSeekDailyRow, DeepSeekDeviceOf, DeepSeekRuntimeSession, DeepSeekUsageView } from "./deepseek-usage.js";
-import { PLATFORM_TIME_ZONE } from "./platform-time.js";
+import { PLATFORM_TIME_ZONE, beijingDateKey } from "./platform-time.js";
 import { scanRuntimeConfigs } from "./runtime-configs.js";
 import type { RuntimeConfigsView } from "./runtime-configs.js";
 import type { FolderPicker } from "./pick-folder.js";
@@ -137,7 +139,13 @@ function noteScheduleInput(value: unknown): NoteSchedule | null {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ConsoleError("日程时间格式不正确");
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some((key) => key !== "start" && key !== "end" && key !== "allDay" && key !== "repeats" && key !== "repeat")) throw new ConsoleError("日程时间只能包含开始、结束、全天标记、重复的几天和周期规则");
+  if (Object.keys(v).some((key) => key !== "start" && key !== "end" && key !== "allDay" && key !== "repeats" && key !== "repeat" && key !== "remind")) throw new ConsoleError("日程时间只能包含开始、结束、全天标记、重复的几天、周期规则和提醒");
+  // 补日期、导入日程时可以一并给出提醒计划；不给就照旧按正文里的「提前多久」重算。
+  const remind = (): NoteSchedule["remind"] => {
+    if (v.remind === undefined || v.remind === null) return undefined;
+    if (!isNoteRemind(v.remind)) throw new ConsoleError("提醒计划不正确：offsets 是 1–8 个 1–30 天的整数分钟，source 与 scene 要配套");
+    return { ...v.remind, offsets: [...v.remind.offsets] };
+  };
   const repeat = (rawAllDay: boolean): NoteRepeat | undefined => {
     if (v.repeat === undefined || v.repeat === null) return undefined;
     if (v.repeats !== undefined && v.repeats !== null) throw new ConsoleError("周期重复与另外几天只能选一种");
@@ -168,10 +176,11 @@ function noteScheduleInput(value: unknown): NoteSchedule | null {
     const start = day(v.start, "开始日期"), end = day(v.end, "结束日期");
     const extra = repeats(true);
     const period = repeat(true);
+    const alarm = remind();
     const slots = noteScheduleSlots(start, extra);
     if (!slots.start && !end) return null;
     if (slots.start && end && end < slots.start) throw new ConsoleError("结束日期不能早于开始日期");
-    return alignLunarStart({ ...slots, ...(end ? { end } : {}), ...(period ? { repeat: period } : {}), allDay: true });
+    return alignLunarStart({ ...slots, ...(end ? { end } : {}), ...(period ? { repeat: period } : {}), ...(alarm ? { remind: alarm } : {}), allDay: true });
   }
   const parse = (raw: unknown, label: string): string | undefined => {
     if (raw === undefined || raw === null || raw === "") return undefined;
@@ -184,12 +193,42 @@ function noteScheduleInput(value: unknown): NoteSchedule | null {
   const end = parse(v.end, "结束时间");
   const slots = noteScheduleSlots(start, repeats(false));
   const period = repeat(false);
+  const alarm = remind();
   if (!slots.start && !end) return null;
   if (slots.start && end && Date.parse(end) < Date.parse(slots.start)) throw new ConsoleError("结束时间不能早于开始时间");
-  return alignLunarStart({ ...slots, ...(end ? { end } : {}), ...(period ? { repeat: period } : {}) });
+  return alignLunarStart({ ...slots, ...(end ? { end } : {}), ...(period ? { repeat: period } : {}), ...(alarm ? { remind: alarm } : {}) });
+}
+
+/**
+ * 待定日程的输入（v3.121）：只接「判定了是日程、但缺起算日期」的周期安排。
+ * 周期必须给（否则不知道多久一次）；候选日期不给就按周期从今天往后推。
+ */
+function noteSchedulePendingInput(value: unknown, now = new Date()): NoteSchedulePending | null {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ConsoleError("待定日程格式不正确");
+  const v = value as Record<string, unknown>;
+  if (Object.keys(v).some((key) => key !== "reason" && key !== "repeat" && key !== "suggest" && key !== "hint")) throw new ConsoleError("待定日程只能包含原因、周期、候选日期和说明");
+  if (v.reason !== undefined && v.reason !== "missing-anchor") throw new ConsoleError("待定日程的原因只能是缺起算日期");
+  if (v.repeat === undefined || v.repeat === null) throw new ConsoleError("待定日程要给周期规则：缺日期时至少要知道多久一次");
+  if (!isNoteRepeat(v.repeat, true)) throw new ConsoleError("周期规则不正确：待定日程的 repeat 是全天周期规则，频率 daily / weekly / monthly / yearly，间隔 1–99，until 与 count 只能给一个");
+  const suggest = typeof v.suggest === "string" ? v.suggest.trim() : "";
+  if (suggest && (!/^\d{4}-\d{2}-\d{2}$/.test(suggest) || !Number.isFinite(Date.parse(suggest)))) throw new ConsoleError("候选首次日期必须是 YYYY-MM-DD");
+  if (v.hint !== undefined && (typeof v.hint !== "string" || v.hint.length > 200)) throw new ConsoleError("待定日程的说明最多 200 字");
+  const repeat = normalizeNoteRepeat(v.repeat);
+  const today = beijingDateKey(now);
+  const day = suggest && suggest >= today ? suggest : pendingScheduleSuggest(repeat, now);
+  const hint = typeof v.hint === "string" ? v.hint.trim() : "";
+  return { reason: "missing-anchor", repeat, suggest: day, ...(hint ? { hint } : {}) };
+}
+
+/** 本次显式给了提醒计划（补日期、导入日程）时以它为准；否则照旧按正文里的「提前多久」重算。 */
+function keepExplicitRemind(schedule: NoteSchedule | null, source: NoteSchedule | null): NoteSchedule | null {
+  if (!schedule || !source?.remind) return schedule;
+  return { ...schedule, remind: { ...source.remind, offsets: [...source.remind.offsets] } };
 }
 
 export class ConsoleService extends EventEmitter {
+  readonly serviceNotifications: ServiceNotifications;
   /** 平台级提供方调用日志（只记元数据）；历史记录仍在资源页显示 */
   readonly callLog: ProviderCallLog;
   /** 待办记录：按时间顺序存下的小想法（大备忘录） */
@@ -215,12 +254,13 @@ export class ConsoleService extends EventEmitter {
 
   constructor(private readonly options: ConsoleOptions) {
     super();
+    this.serviceNotifications = new ServiceNotifications(join(appData(options.dataDir, "notifications").path("notifications"), "service-notifications.sqlite"), () => this.emit("update", { sessionId: "service-notifications", kind: "service-notifications" }));
     this.callLog = new ProviderCallLog(appData(options.dataDir, "runtime-sessions").path("provider-calls.jsonl"));
     this.deepseekUsage = new DeepSeekUsageLedger(appData(options.dataDir, "resources").path("deepseek-usage.jsonl"));
     this.deepseekUsage.bootstrap(readLegacyDeepSeekUsage(options.dataDir));
     this.deepseekTracker = new DeepSeekUsageTracker(appData(options.dataDir, "resources").path("deepseek-usage.jsonl"));
     this.notes = new NoteStore(appData(options.dataDir, "notes").path("notes.json"));
-    this.noteRelations = new NoteRelationService(this.notes, (input, applyRelations, relationContext) => this.addNote(input.text, input.images, input.schedule, {kind:input.kind,timeZone:input.timeZone,pinned:input.pinned,automation:input.automation,applyRelations,relationContext}), () => this.emit("update", {sessionId:"",kind:"notes"}));
+    this.noteRelations = new NoteRelationService(this.notes, (input, applyRelations, relationContext) => this.addNote(input.text, input.images, input.schedule, {kind:input.kind,timeZone:input.timeZone,pinned:input.pinned,automation:input.automation,schedulePending:input.schedulePending,applyRelations,relationContext}), () => this.emit("update", {sessionId:"",kind:"notes"}));
     const pi = options.pi;
     const rawClassificationPort = options.noteClassification?.enabled === false ? undefined : options.noteClassification?.port ?? (pi ? piModelPort({
       ...(pi.bin ? { bin: pi.bin } : {}), ...(pi.osSandbox === false ? { osSandbox: false } : {}),
@@ -397,24 +437,32 @@ export class ConsoleService extends EventEmitter {
    * skipWriting=true 时不排「整理」：平台自己生成的正文（如故障诊断待办）不需要再被改写，
    * 改写会换掉正文哈希，触发 AI 重新分类并冲掉人工指定的分类。
    */
-  addNote(text: unknown, imageIds?: unknown, schedule?: unknown, options: { kind?: unknown; timeZone?: unknown; pinned?: unknown; automation?: unknown; skipWriting?: boolean; applyRelations?: (notes: Note[], note: Note) => void; relationContext?: RelationContext } = {}): Note {
+  addNote(text: unknown, imageIds?: unknown, schedule?: unknown, options: { kind?: unknown; timeZone?: unknown; pinned?: unknown; automation?: unknown; schedulePending?: unknown; skipWriting?: boolean; applyRelations?: (notes: Note[], note: Note) => void; relationContext?: RelationContext } = {}): Note {
     const images = this.resolveNoteImages(imageIds);
     const body = typeof text === "string" ? text.trim() : "";
     if (!body && !images.length) throw new ConsoleError("写点什么或加张图片再保存");
     if (body.length > NOTE_MAX_LENGTH) throw new ConsoleError(`一条记录最多 ${NOTE_MAX_LENGTH} 个字符`);
     const parsedSchedule = noteScheduleInput(schedule);
-    const plannedSchedule = withNoteRemind(parsedSchedule, body);
+    if (parsedSchedule && options.schedulePending !== undefined && options.schedulePending !== null) throw new ConsoleError("日程时间与待定日程只能给一个");
+    const plannedSchedule = keepExplicitRemind(withNoteRemind(parsedSchedule, body), parsedSchedule);
+    const pendingSchedule = noteSchedulePendingInput(options.schedulePending);
     const kind = noteKindInput(options.kind);
-    if (kind === "note" && plannedSchedule) throw new ConsoleError("笔记不能带日程时间");
+    if (kind === "note" && (plannedSchedule || pendingSchedule)) throw new ConsoleError("笔记不能带日程时间");
     if (options.pinned !== undefined && typeof options.pinned !== "boolean") throw new ConsoleError("pinned 必须是布尔值");
     if (options.automation !== undefined && !isNoteAutomation(options.automation)) throw new ConsoleError("automation 必须包含有效的 taskId 和布尔值 needsHuman");
+    const isEvent = !!plannedSchedule || !!pendingSchedule;
     const meta = {
       ...(isNoteAutomation(options.automation) ? { automation: options.automation } : {}),
-      ...(kind || plannedSchedule ? { kind: kind ?? "todo", kindSource: "user" as const } : this.noteKinds.enabled ? { kindPending: true } : {}),
+      ...(kind || isEvent ? { kind: kind ?? "todo", kindSource: "user" as const } : this.noteKinds.enabled ? { kindPending: true } : {}),
+      ...(pendingSchedule ? { schedulePending: pendingSchedule } : {}),
       ...(options.pinned ? { pinned: true } : {}),
-      ...(this.noteKinds.enabled && body && !plannedSchedule && !options.skipWriting ? { writing: { state: "pending" as const } } : {})
+      ...(this.noteKinds.enabled && body && !isEvent && !options.skipWriting ? { writing: { state: "pending" as const } } : {})
     };
     const note = this.notes.add(body, undefined, images, plannedSchedule ?? undefined, meta, options.applyRelations, options.relationContext);
+    if (note.automation) {
+      try { this.serviceNotifications.publish({ id: `automation-note:${note.id}`, app: '定时任务', scene: 'automation-alert', title: body.split('\n')[0]!.slice(0,120) || '任务通知', body: body.slice(0,8000), href: `#/notes/widget/${note.createdAt.slice(0,10)}/${encodeURIComponent(note.id)}`, at: note.createdAt }); }
+      catch (error) { console.error('自动任务服务通知写入失败', error); }
+    }
     if (note.kindPending || note.writing?.state === "pending") this.noteKinds.enqueue(note.id, options.timeZone);
     this.emit("update", { sessionId: "", kind: "notes" });
     this.noteCategories.sync();
@@ -496,7 +544,7 @@ export class ConsoleService extends EventEmitter {
     return this.noteRelations.decorate([this.noteCategories.decorate(note)])[0];
   }
 
-  updateNote(id: string, patch: { text?: unknown; images?: unknown; done?: unknown; schedule?: unknown; categoryId?: unknown; categoryIds?: unknown; reclassify?: unknown; newCategory?: unknown; categoryVersion?: unknown; kind?: unknown; reclassifyKind?: unknown; timeZone?: unknown; pinned?: unknown; writingAction?: unknown; expectedText?: unknown; writingId?: unknown }, options: { skipWriting?: boolean } = {}): Note {
+  updateNote(id: string, patch: { text?: unknown; images?: unknown; done?: unknown; schedule?: unknown; schedulePending?: unknown; categoryId?: unknown; categoryIds?: unknown; reclassify?: unknown; newCategory?: unknown; categoryVersion?: unknown; kind?: unknown; reclassifyKind?: unknown; timeZone?: unknown; pinned?: unknown; writingAction?: unknown; expectedText?: unknown; writingId?: unknown }, options: { skipWriting?: boolean } = {}): Note {
     const existing = this.notes.get(String(id));
     if (!existing) throw new ConsoleError("记录不存在，可能已被删除");
     if (patch.writingAction !== undefined) {
@@ -514,7 +562,7 @@ export class ConsoleService extends EventEmitter {
     }
     if (newCategory?.primaryId !== undefined && !this.noteCategories.snapshot().categories.some(c => c.id === newCategory.primaryId && !c.parentId)) throw new ConsoleError("请选择有效一级分类");
     if (newCategory && patch.categoryVersion !== undefined && patch.categoryVersion !== this.noteCategories.snapshot().version) throw new ConsoleError("分类目录已变更，请刷新后再操作");
-    const next: { text?: string; images?: NoteImage[]; done?: boolean; schedule?: NoteSchedule | null; kind?: NoteKind; kindSource?: "ai" | "user" | null; kindPending?: boolean; pinned?: boolean; writing?: NoteWriting | null } = {};
+    const next: { text?: string; images?: NoteImage[]; done?: boolean; schedule?: NoteSchedule | null; schedulePending?: NoteSchedulePending | null; kind?: NoteKind; kindSource?: "ai" | "user" | null; kindPending?: boolean; pinned?: boolean; writing?: NoteWriting | null } = {};
     if (patch.text !== undefined) {
       const body = typeof patch.text === "string" ? patch.text.trim() : "";
       if (body.length > NOTE_MAX_LENGTH) throw new ConsoleError(`一条记录最多 ${NOTE_MAX_LENGTH} 个字符`);
@@ -522,10 +570,12 @@ export class ConsoleService extends EventEmitter {
     }
     if (patch.images !== undefined) next.images = this.resolveNoteImages(patch.images);
     if (patch.schedule !== undefined) next.schedule = noteScheduleInput(patch.schedule);
+    if (patch.schedulePending !== undefined) next.schedulePending = noteSchedulePendingInput(patch.schedulePending);
     // 正文或时间改了就重算提醒：删掉「提前 1 小时提醒」这句话后，旧提醒不会留着。
+    // 本次显式给了提醒（补日期这类操作）就以它为准，不被「正文里没写提前多久」覆盖。
     if (patch.schedule !== undefined || patch.text !== undefined) {
       const schedule = next.schedule !== undefined ? next.schedule : existing.schedule;
-      if (schedule) next.schedule = withNoteRemind(schedule, next.text !== undefined ? next.text : existing.text);
+      if (schedule) next.schedule = keepExplicitRemind(withNoteRemind(schedule, next.text !== undefined ? next.text : existing.text), next.schedule !== undefined ? next.schedule : null);
     }
     if (patch.done !== undefined) {
       if (typeof patch.done !== "boolean") throw new ConsoleError("done 必须是布尔值");
@@ -539,22 +589,26 @@ export class ConsoleService extends EventEmitter {
     if (patch.reclassifyKind !== undefined && typeof patch.reclassifyKind !== "boolean") throw new ConsoleError("reclassifyKind 必须是布尔值");
     const kind = noteKindInput(patch.kind);
     if (kind && patch.reclassifyKind === true) throw new ConsoleError("指定类型与 AI 重新判断不能同时提交");
-    if (kind === "note" && next.schedule) throw new ConsoleError("笔记不能带日程时间");
+    if (kind === "note" && (next.schedule || next.schedulePending)) throw new ConsoleError("笔记不能带日程时间");
     if (kind) {
       next.kind = kind; next.kindSource = "user"; next.kindPending = false;
       // 改为笔记或待办都去掉时间（日程 = 有时间的待办）；笔记也没有完成状态。
       if (next.schedule === undefined && existing.schedule) next.schedule = null;
+      // 人工改成笔记 / 待办，就是不认可「这是日程」：待定日程一起清掉。
+      if (next.schedulePending === undefined && existing.schedulePending) next.schedulePending = null;
       if (kind === "note" && existing.done && next.done === undefined) next.done = false;
-    } else if (patch.reclassifyKind === true || (existing.kindSource !== "user" && patch.schedule === undefined
+    } else if (patch.reclassifyKind === true || (existing.kindSource !== "user" && patch.schedule === undefined && patch.schedulePending === undefined
       && ((next.text !== undefined && next.text !== existing.text) || (next.images !== undefined && JSON.stringify(next.images.map(i => i.id)) !== JSON.stringify((existing.images ?? []).map(i => i.id)))))) {
       if (patch.reclassifyKind === true && !this.noteKinds.enabled) throw new ConsoleError("没有配置 AI 模型，无法重新判断类型");
       if (this.noteKinds.enabled) { next.kindPending = true; if (patch.reclassifyKind === true) next.kindSource = null; }
     }
     if (patch.schedule !== undefined && next.schedule && !kind) { next.kind = "todo"; next.kindSource = "user"; next.kindPending = false; }
+    // 补上日期 / 人工设了待定日程，都是「确定是日程」：记成 todo + 时间（displayKind 会派生成日程）。
+    if (!kind && (next.schedulePending !== undefined ? next.schedulePending : null)) { next.kind = "todo"; next.kindSource = "user"; next.kindPending = false; }
     if (next.done === true && (next.kind ?? existing.kind) === "note") throw new ConsoleError("笔记没有完成状态，可以先改为待办");
     if ((next.text !== undefined && next.text !== existing.text)
       || (next.images !== undefined && JSON.stringify(next.images.map(i => i.id)) !== JSON.stringify((existing.images ?? []).map(i => i.id)))) {
-      next.writing = !options.skipWriting && this.noteKinds.enabled && (next.text ?? existing.text) && !(next.schedule === undefined ? existing.schedule : next.schedule) ? { state: "pending" } : null;
+      next.writing = !options.skipWriting && this.noteKinds.enabled && (next.text ?? existing.text) && !(next.schedule === undefined ? (existing.schedule || existing.schedulePending) : (next.schedule || next.schedulePending)) ? { state: "pending" } : null;
     }
     if (next.schedule) next.writing = null;
     if (!Object.keys(next).length) throw new ConsoleError("没有要更新的内容");
@@ -577,6 +631,20 @@ export class ConsoleService extends EventEmitter {
       return this.noteCategories.decide(id, { ...pick, inputHash: this.noteCategories.decorate(note).classification.inputHash });
     }
     return this.noteRelations.decorate([this.noteCategories.decorate(note)])[0];
+  }
+
+  /**
+   * 补一个起算日期（v3.121）：待定日程变成真正的日程，沿用已知周期，并补上默认提醒。
+   * 只收 YYYY-MM-DD：待定日程只知道大概哪一天，不猜几点。
+   */
+  resolvePendingSchedule(id: string, input: { start?: unknown } = {}): Note {
+    const note = this.notes.get(String(id));
+    if (!note) throw new ConsoleError("记录不存在，可能已被删除");
+    const pending = note.schedulePending;
+    if (!pending) throw new ConsoleError("这条记录不是待定日程");
+    const day = typeof input.start === "string" ? input.start.trim() : "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(day))) throw new ConsoleError("请选一个有效日期（YYYY-MM-DD）");
+    return this.updateNote(id, { schedule: scheduleFromPending(pending, day) });
   }
 
   deleteNote(id: string): { ok: true } {

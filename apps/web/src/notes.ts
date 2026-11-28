@@ -19,6 +19,22 @@ import { RelationError, emptyRelations, type RelationReceipt, type RelationConte
 
 export type NoteImageMime = "image/png" | "image/jpeg" | "image/webp";
 
+/**
+ * 已判定为日程、但缺起算日期（v3.121）：像「每 90 天续费一次」这种周期安排，用户没说上次是哪天，
+ * 模型不许编造日期。这时先按日程记下来、等补一个起算日期，不降级成待办；补上后转成 schedule。
+ * 与 schedule 互斥（有 schedule 时这份标记会被清掉）。
+ */
+export interface NoteSchedulePending {
+  /** 缺的是什么：目前只有「缺起算日期」 */
+  reason: "missing-anchor";
+  /** 已经知道的周期规则（全天口径） */
+  repeat?: NoteRepeat;
+  /** 平台按周期推算的候选首次日期（YYYY-MM-DD），页面可一键采用 */
+  suggest: string;
+  /** 在等哪条信息：一句话，最多 200 字 */
+  hint?: string;
+}
+
 /** 记录里附带的一张图片；字节存在 notes-images/ 下，按 id 取。 */
 export interface NoteImage {
   id: string;
@@ -47,8 +63,8 @@ export interface NoteSchedule {
   remind?: NoteRemind;
 }
 
-/** 提醒场景：用户明说的，或需求里明确的三种场景（出门上班回家 / 生日纪念日 / 机票火车票）。 */
-export type NoteReminderScene = "explicit" | "commute" | "birthday" | "travel";
+/** 提醒场景：用户明说的、需求里明确的三种场景（出门上班回家 / 生日纪念日 / 机票火车票），或周期事项（续费）。 */
+export type NoteReminderScene = "explicit" | "commute" | "birthday" | "travel" | "renewal";
 
 /** 一条日程的提醒计划：每个提前量各提醒一次，页面上合并成一句话展示。 */
 export interface NoteRemind {
@@ -66,7 +82,7 @@ export function isNoteRemind(value: unknown): value is NoteRemind {
   if (!Array.isArray(r.offsets) || !r.offsets.length || r.offsets.length > 8) return false;
   if (r.offsets.some((m) => !Number.isInteger(m) || m < 1 || m > 30 * 1440) || new Set(r.offsets).size !== r.offsets.length) return false;
   if (r.source !== "explicit" && r.source !== "inferred") return false;
-  if (r.scene !== "explicit" && r.scene !== "commute" && r.scene !== "birthday" && r.scene !== "travel") return false;
+  if (r.scene !== "explicit" && r.scene !== "commute" && r.scene !== "birthday" && r.scene !== "travel" && r.scene !== "renewal") return false;
   return r.source === "explicit" ? r.scene === "explicit" : r.scene !== "explicit";
 }
 
@@ -175,8 +191,10 @@ export function noteAutomation(note: Pick<Note, "text" | "automation">): NoteAut
 }
 /** 页面看到的三类：日程由「待办 + 时间」派生，不单独存。 */
 export type NoteDisplayKind = "note" | "todo" | "event";
-export const noteDisplayKind = (note: Pick<Note, "kind" | "schedule">): NoteDisplayKind =>
-  note.kind === "note" ? "note" : note.schedule ? "event" : "todo";
+export const noteDisplayKind = (
+  note: Pick<Note, "kind"> & Partial<Pick<Note, "schedule" | "schedulePending">>
+): NoteDisplayKind =>
+  note.kind === "note" ? "note" : note.schedule || note.schedulePending ? "event" : "todo";
 
 export type NoteWriting = { state: "pending" | "failed" } | {
   state: "ready"; id: string; originalText: string; formattedText: string; refinedText: string; suggestion: string;
@@ -202,6 +220,8 @@ export interface Note {
   images?: NoteImage[];
   /** 关联日程的开始 / 结束时间；没有时间时字段缺省，不进入日历 */
   schedule?: NoteSchedule;
+  /** 已判定为日程、但还缺起算日期；与 schedule 互斥，补上日期后清掉 */
+  schedulePending?: NoteSchedulePending;
   /** 大类；缺省为待办 */
   kind?: NoteKind;
   /** 谁定的大类：AI 判断，或人工指定（人工指定后编辑正文不再让 AI 改大类） */
@@ -270,6 +290,27 @@ export function isSchedule(value: unknown): value is NoteSchedule {
   return true;
 }
 
+/** 待定日程校验：字段白名单、原因、候选日期；repeat 必须是合法的全天周期规则。 */
+export function isNoteSchedulePending(value: unknown): value is NoteSchedulePending {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const p = value as Partial<NoteSchedulePending>;
+  if (Object.keys(p).some((key) => key !== "reason" && key !== "repeat" && key !== "suggest" && key !== "hint")) return false;
+  if (p.reason !== "missing-anchor") return false;
+  if (typeof p.suggest !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(p.suggest) || !Number.isFinite(Date.parse(p.suggest))) return false;
+  if (p.repeat !== undefined && !isNoteRepeat(p.repeat, true)) return false;
+  if (p.hint !== undefined && (typeof p.hint !== "string" || !p.hint.trim() || p.hint.length > 200)) return false;
+  return true;
+}
+
+function cloneSchedulePending(pending: NoteSchedulePending): NoteSchedulePending {
+  return {
+    reason: pending.reason,
+    suggest: pending.suggest,
+    ...(pending.repeat ? { repeat: normalizeNoteRepeat(pending.repeat) } : {}),
+    ...(pending.hint ? { hint: pending.hint } : {})
+  };
+}
+
 function cloneSchedule(schedule: NoteSchedule): NoteSchedule {
   return {
     ...schedule,
@@ -287,7 +328,8 @@ function cloneNote(note: Note): Note {
     ...(automation ? { automation: { ...automation } } : {}),
     ...(note.writing ? { writing: { ...note.writing } } : {}),
     ...(note.images ? { images: note.images.map((i) => ({ ...i })) } : {}),
-    ...(note.schedule ? { schedule: cloneSchedule(note.schedule) } : {})
+    ...(note.schedule ? { schedule: cloneSchedule(note.schedule) } : {}),
+    ...(note.schedulePending ? { schedulePending: cloneSchedulePending(note.schedulePending) } : {})
   };
 }
 
@@ -299,7 +341,8 @@ function isNote(value: unknown): value is Note {
     && (n.done === undefined || typeof n.done === "boolean")
     && (n.doneAt === undefined || typeof n.doneAt === "string")
     && (n.images === undefined || (Array.isArray(n.images) && n.images.every(isImage)))
-    && (n.schedule === undefined || (!!n.schedule && typeof n.schedule === "object" && !Array.isArray(n.schedule)));
+    && (n.schedule === undefined || (!!n.schedule && typeof n.schedule === "object" && !Array.isArray(n.schedule)))
+    && (n.schedulePending === undefined || isNoteSchedulePending(n.schedulePending));
 }
 
 /** 大类字段是 v3.17 新加的：不认识的取值只丢掉这些字段（按待办），不丢掉整条记录。 */
@@ -539,6 +582,11 @@ export class NoteStore {
           delete cleaned.schedule;
           return cleaned;
         }
+        if (note.schedulePending && !isNoteSchedulePending(note.schedulePending)) {
+          const cleaned = { ...note };
+          delete cleaned.schedulePending;
+          return cleaned;
+        }
         return note;
       });
       // 导入历史记录后数组里可能出现时间乱序（旧记录被插到了新的前面）：读盘时按记录时间归位。
@@ -616,12 +664,13 @@ export class NoteStore {
     return hit ? cloneNote(hit) : undefined;
   }
 
-  add(text: string, at = new Date().toISOString(), images: NoteImage[] = [], schedule?: NoteSchedule, meta: { kind?: NoteKind; kindSource?: "ai" | "user"; kindPending?: boolean; pinned?: boolean; writing?: NoteWriting; automation?: NoteAutomation } = {}, apply?: (notes: Note[], note: Note) => void, context?: RelationContext): Note {
+  add(text: string, at = new Date().toISOString(), images: NoteImage[] = [], schedule?: NoteSchedule, meta: { kind?: NoteKind; kindSource?: "ai" | "user"; kindPending?: boolean; pinned?: boolean; writing?: NoteWriting; automation?: NoteAutomation; schedulePending?: NoteSchedulePending } = {}, apply?: (notes: Note[], note: Note) => void, context?: RelationContext): Note {
     const note: Note = {
       id: `n-${randomUUID()}`, text, createdAt: at,
       ...(meta.automation ? { automation: { ...meta.automation } } : {}),
       ...(images.length ? { images: images.map((i) => ({ ...i })) } : {}),
       ...(schedule ? { schedule: cloneSchedule(schedule) } : {}),
+      ...(meta.schedulePending ? { schedulePending: cloneSchedulePending(meta.schedulePending) } : {}),
       ...(meta.kind ? { kind: meta.kind } : {}),
       ...(meta.kindSource ? { kindSource: meta.kindSource } : {}),
       ...(meta.kindPending ? { kindPending: true } : {}),
@@ -665,7 +714,7 @@ export class NoteStore {
    * 只改提供的字段；改文字、图片或日程时刷新 updatedAt（`touch: false` 时不刷新，例如 AI 判断大类写入时间），
    * 改完成状态时维护 doneAt。kindSource 传 null 表示清掉。
    */
-  update(id: string, patch: { text?: string; images?: NoteImage[]; done?: boolean; schedule?: NoteSchedule | null; kind?: NoteKind; kindSource?: "ai" | "user" | null; kindPending?: boolean; pinned?: boolean; touch?: boolean; writing?: NoteWriting | null }, at = new Date().toISOString()): Note | undefined {
+  update(id: string, patch: { text?: string; images?: NoteImage[]; done?: boolean; schedule?: NoteSchedule | null; schedulePending?: NoteSchedulePending | null; kind?: NoteKind; kindSource?: "ai" | "user" | null; kindPending?: boolean; pinned?: boolean; touch?: boolean; writing?: NoteWriting | null }, at = new Date().toISOString()): Note | undefined {
     const index = this.notes.findIndex((n) => n.id === id);
     if (index < 0) return undefined;
     // 把旧告警识别出的来源一并保留，编辑正文后也不会退回人的日历。
@@ -677,8 +726,13 @@ export class NoteStore {
     if (patch.images !== undefined) { if (patch.images.length) next.images = patch.images.map((i) => ({ ...i })); else delete next.images; }
     if (patch.done !== undefined) { next.done = patch.done; if (patch.done) next.doneAt = at; else delete next.doneAt; }
     if (patch.schedule !== undefined) {
-      if (patch.schedule) next.schedule = cloneSchedule(patch.schedule);
+      if (patch.schedule) { next.schedule = cloneSchedule(patch.schedule); delete next.schedulePending; }
       else delete next.schedule;
+    }
+    // 待定日程与确定时间互斥：补上日期时旧标记要清掉，否则列表会同时算两种状态。
+    if (patch.schedulePending !== undefined) {
+      if (patch.schedulePending) { next.schedulePending = cloneSchedulePending(patch.schedulePending); delete next.schedule; }
+      else delete next.schedulePending;
     }
     if (patch.kind !== undefined) next.kind = patch.kind;
     if (patch.kindSource !== undefined) { if (patch.kindSource) next.kindSource = patch.kindSource; else delete next.kindSource; }
@@ -687,7 +741,7 @@ export class NoteStore {
       if (patch.pinned) { next.pinned = true; if (!next.pinnedAt) next.pinnedAt = at; }
       else { delete next.pinned; delete next.pinnedAt; }
     }
-    if (patch.touch ?? (patch.text !== undefined || patch.images !== undefined || patch.schedule !== undefined)) next.updatedAt = at;
+    if (patch.touch ?? (patch.text !== undefined || patch.images !== undefined || patch.schedule !== undefined || patch.schedulePending !== undefined)) next.updatedAt = at;
     this.notes[index] = next;
     this.save("deleted", {actor:{kind:patch.touch===false?"system":"user",scopeId:"local"},channel:"web"}, at);
     return this.get(id);

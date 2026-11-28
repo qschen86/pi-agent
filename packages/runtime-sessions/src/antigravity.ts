@@ -5,6 +5,8 @@
  *  - 会话 ID 由 agy 在 session/new 时分配（与 Codex 同类，平台不预分配）；
  *  - session/resume 在新进程里恢复同一会话；session/load 回放历史（只有消息与工具，没有 token 用量和时间）；
  *  - 执行命令 / 写文件前发 session/request_permission（allow_once / reject_once）；
+ *  - ask_question 工具经 elicitation/create（mode=form，受限 JSON Schema）向人提问：
+ *    客户端在 initialize 里声明 elicitation.form 才走表单，否则 agy 退回在聊天里问；
  *  - session/prompt 响应带本轮 usage（输入、输出、缓存读、思考）；session/cancel 后 stopReason=cancelled；
  *  - 角色指令经 session/new 的 _meta.antigravity.systemPrompt.append 注入；
  *  - 账户额度由只读 CLI `-p /usage --output-format json` 读取；ACP usage_update 仅是上下文窗口。
@@ -23,6 +25,7 @@ import { underRoots } from "./codex.js";
 import { cap, DriverStageError } from "./driver.js";
 import type { DriverApproval, DriverEvent, HistoryItem, HistoryRead, NativeFingerprint, ProbeOutcome, RuntimeDriver, StartTurnArgs, TurnHandle, TurnResult, TurnSink } from "./driver.js";
 import { defaultPermissionMode, permissionOption, permissionOptions } from "./permissions.js";
+import { elicitationForm, questionsText } from "./questions.js";
 import { bounded, LIMITS, stringifyInput } from "./redact.js";
 import type { Capability, CapabilityName, ModelOption, UsageRecord } from "./types.js";
 import { CAPABILITIES } from "./types.js";
@@ -32,6 +35,9 @@ const run = promisify(execFile);
 let sqliteModule: typeof import("node:sqlite") | undefined;
 const sqlite = (): typeof import("node:sqlite") => (sqliteModule ??= createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite"));
 export const ANTIGRAVITY_PARSER = "antigravity-acp@1";
+/** ACP 不提供账号 ID：仅代表本机登录上下文，不把套餐或凭据当成账号证据。 */
+export const ANTIGRAVITY_IDENTITY_SOURCE = "agy acp authenticated local context (account unavailable)";
+export const ANTIGRAVITY_IDENTITY_FINGERPRINT = "google-oauth|local-context-v1";
 /** steps 语义指纹的语式：s{条数}i{最大 idx}。上一版是「主库大小:mtime:WAL 大小」，两者不可比 */
 export const ANTIGRAVITY_STEPS_FP = /^s\d+i-?\d+$/;
 /** 没有活动轮次后保留 agy 进程的时间：避免每轮重新登录握手，又不长期占 75～100 MB 内存 */
@@ -74,6 +80,9 @@ interface ActiveTurn {
   client: AcpClient; sessionId: string; sink: TurnSink; clientMessageId: string; model?: string;
   browserSocket?: string; browserOutputLines: number;
   message: string; lastMessage: string; thought: string; messageNo: number; thoughtNo: number; lastText: "message" | "thought" | null;
+  /** ACP usage_update 报的上下文占用与窗口上限：本轮最后一次的值，随这一轮的用量记录保存 */
+  contextUsed?: number;
+  contextSize?: number;
   readOnly: boolean; tools: Map<string, Json>; approvals: Map<string, AbortController>; finish: (r: TurnResult) => void; settled: boolean; cancelled: boolean;
 }
 
@@ -124,7 +133,10 @@ export class AntigravityDriver implements RuntimeDriver {
     const bin = this.resolveBinary();
     if (!bin) throw new Error("找不到 agy：请先安装 Antigravity CLI（curl -fsSL https://antigravity.google/cli/install.sh | bash）");
     const args = slot === "bypass" ? ["acp", "--process-per-session", "--dangerously-skip-permissions"] : ["acp", "--process-per-session"];
-    const client = new AcpClient({ binaryPath: bin, args, env: this.processEnv(), requestTimeoutMs: 60_000 });
+    // 显式固定 agy 进程的启动 cwd，绝不继承宿主进程的 process.cwd()（蓝绿部署时为 slots/blue 或 slots/green）：
+    // agy 会把启动 cwd 自动写进系统提示顶部的 Active Workspaces，切槽若跟着变会导致前缀缓存 0% 命中。
+    mkdirSync(this.probeDir, { recursive: true });
+    const client = new AcpClient({ binaryPath: bin, args, cwd: this.probeDir, env: this.processEnv(), requestTimeoutMs: 60_000 });
     client.on("notification", (m: NotificationMsg) => this.onNotification(client, m));
     client.on("request", (m: ServerRequestMsg) => this.onServerRequest(client, m));
     client.on("exit", (info: { code: number | null; signal: string | null; stderrTail: string }) => this.onClientExit(client, info));
@@ -222,7 +234,7 @@ export class AntigravityDriver implements RuntimeDriver {
       stream: cap("supported", "session/update 流式通知（文字、思考、工具调用）", version),
       resume: has("resume") ? cap("supported", "session/resume 可在新进程里恢复同一会话", version) : cap("unsupported", "agy 未声明 session/resume", version),
       interrupt: cap("supported", "session/cancel，实测返回 stopReason=cancelled", version),
-      approval: cap("supported", "session/request_permission（allow_once / reject_once）", version),
+      approval: cap("supported", "session/request_permission（allow_once / reject_once）与 elicitation/create 表单提问", version),
       usage: cap("supported", "session/prompt 响应带本轮输入、输出、缓存读与思考 token", version),
       rateLimits: cap("supported", "只读 agy -p /usage --output-format json：按模型组读取额度与重置时间", version),
       roleInstructions: obj(meta["systemPrompt"])["append"] === true ? cap("supported", "session/new 的 _meta.antigravity.systemPrompt.append", version) : cap("unknown", "未确认系统提示追加", version),
@@ -231,9 +243,9 @@ export class AntigravityDriver implements RuntimeDriver {
     const missing = (["create", "stream", "resume", "interrupt", "approval"] as CapabilityName[]).filter((k) => capabilities[k].status !== "supported");
     const identity: ProbeOutcome["identity"] = {
       authMode: "google-oauth",
-      summary: `Google 登录 · ${tier?.name ?? "套餐未知"}`,
-      source: "agy acp session/new _meta.antigravity.tier",
-      fingerprint: `google-oauth|${tier?.id ?? ""}`
+      summary: `Google 登录 · ${tier?.name ?? "套餐未知"} · 账号标识不可用`,
+      source: ANTIGRAVITY_IDENTITY_SOURCE,
+      fingerprint: ANTIGRAVITY_IDENTITY_FINGERPRINT
     };
     return {
       authVerified: true,
@@ -303,10 +315,12 @@ export class AntigravityDriver implements RuntimeDriver {
     try { client = await this.ensureClient(bypass ? "bypass" : "turn"); }
     catch (e) { throw new DriverStageError((e as Error).message, "spawn", args.nativeSessionId, true); }
     const meta = args.roleInstructions ? { _meta: { antigravity: { systemPrompt: { append: args.roleInstructions } } } } : {};
+    // agy 在同一 worker 内 session/resume 时，若同名 MCP 的 args 变化会额外注册 platform_browser_<hash> 工具，
+    // 导致每回合顶部工具声明变化、Gemini 前缀缓存 0% 命中并泄漏 MCP 子进程；传按会话固定的 pointerPath，调用时再解析本轮 socket。
     const mcpServers = args.platformBrowser && !args.readOnlyRoom ? [{
       name: "platform_browser",
       command: process.execPath,
-      args: [args.platformBrowser.bridgePath, args.platformBrowser.socketPath],
+      args: [args.platformBrowser.bridgePath, args.platformBrowser.pointerPath ?? args.platformBrowser.socketPath],
       env: [],
     }] : [];
     let sessionId = args.nativeSessionId;
@@ -386,7 +400,7 @@ export class AntigravityDriver implements RuntimeDriver {
       const res = obj(r);
       const usage = obj(res["usage"]);
       const record = antigravityUsage(usage, turn.clientMessageId, turn.model, new Date().toISOString());
-      if (record) sink.usage(record);
+      if (record) sink.usage({ ...record, ...(turn.contextUsed ? { contextTokens: turn.contextUsed } : {}), ...(turn.contextSize ? { contextWindow: turn.contextSize } : {}) });
       const stop = str(res["stopReason"]) ?? "end_turn";
       const quotaNotice = stop === "end_turn" ? antigravityQuotaNotice(turn.message || turn.lastMessage) : undefined;
       if (quotaNotice) {
@@ -497,12 +511,61 @@ export class AntigravityDriver implements RuntimeDriver {
       }
       // session_info_update（agy 自动起的标题）不转发：agy 看到的是平台注入公共记忆之后的整段 prompt，起出来的名字
       // 是「Platform Skills Overview」这类前言内容，会盖掉平台自己的标题生成。只读历史（外部会话）才用 agy 的标题。
-      default: return; // usage_update（上下文窗口）、available_commands_update、mode / config 变化：不进会话记录
+      case "usage_update": {
+        const used = num(update["used"]); if (used !== undefined && used > 0) turn.contextUsed = used;
+        const size = num(update["size"]); if (size !== undefined && size > 0) turn.contextSize = size;
+        return;
+      } // 上下文占用与窗口上限：只记数字，不进会话记录
+      default: return; // available_commands_update、mode / config 变化：不进会话记录
     }
   }
 
   private onServerRequest(client: AcpClient, m: ServerRequestMsg): void {
-    if (m.method !== "session/request_permission") { try { client.respondError(m.id, `pi-agent 不支持 ${m.method}`); } catch { /* 进程已退出 */ } return; }
+    if (m.method === "session/request_permission") return this.onPermissionRequest(client, m);
+    if (m.method === "elicitation/create") return this.onElicitation(client, m);
+    try { client.respondError(m.id, `pi-agent 不支持 ${m.method}`); } catch { /* 进程已退出 */ }
+  }
+
+  /** 一次请求所属的活动通道：本轮或 end_turn 后的后台续报；客户端必须是发起它的那条 ACP 连接 */
+  private approvalChannel(client: AcpClient, sid: string | undefined): { channel: ActiveTurn | BackgroundContinuationChannel; background: boolean } | undefined {
+    const turn = sid ? this.active.get(sid) : undefined;
+    if (turn && turn.client === client) return { channel: turn, background: false };
+    const bg = sid ? this.continuations.get(sid) : undefined;
+    return bg && bg.client === client ? { channel: bg, background: true } : undefined;
+  }
+
+  /**
+   * agy 的 ask_question 工具经 ACP elicitation/create（mode=form）向人提问。
+   * requestedSchema 是受限 JSON Schema，转成平台题库后由 sink.approval(kind="question") 渲染面板；
+   * 找不到活动会话、只读成员或看不懂的表单都回 decline，让 agy 回到它自己的聊天提问，不挂住这一轮。
+   */
+  private onElicitation(client: AcpClient, m: ServerRequestMsg): void {
+    const reply = (result: unknown) => { try { client.respond(m.id, result); } catch { /* 进程已退出 */ } };
+    const target = this.approvalChannel(client, str(m.params["sessionId"]));
+    if (!target || target.channel.readOnly) { reply({ action: "decline" }); return; }
+    const form = str(m.params["mode"]) === "form" ? elicitationForm(m.params["requestedSchema"]) : undefined;
+    const message = str(m.params["message"])?.trim();
+    if (!form || !message) { reply({ action: "decline" }); return; }
+    if (target.background) this.armLinger(client);
+    const { channel } = target;
+    const approvalId = String(m.id);
+    const ac = new AbortController();
+    channel.approvals.set(approvalId, ac);
+    const approval: DriverApproval = {
+      nativeRequestId: approvalId, nativeTurnId: channel.clientMessageId, kind: "question", title: "Antigravity 想问你",
+      questions: form.questions, action: bounded(`${message}\n${questionsText(form.questions)}`, LIMITS.toolInput).text,
+      scope: "回答后 Antigravity 会按你的选择继续", source: "Antigravity · elicitation/create",
+      params: { method: m.method, mode: "form", toolCallId: str(m.params["toolCallId"]), questions: form.questions }
+    };
+    channel.sink.approval(approval, ac.signal).then((d) => {
+      const content = d.approve && d.answers ? form.content(d.answers) : undefined;
+      // 没回答（表单全部选填且没填）、答案不合 schema（如数字题填了非数字）、或用户跳过：都回 decline，让 agy 自己决定怎么继续
+      reply(content && Object.keys(content).length ? { action: "accept", content } : { action: "decline" });
+    }, () => reply({ action: "cancel" }))
+      .finally(() => { channel.approvals.delete(approvalId); });
+  }
+
+  private onPermissionRequest(client: AcpClient, m: ServerRequestMsg): void {
     const sid = str(m.params["sessionId"]);
     const turn = sid ? this.active.get(sid) : undefined;
     const bg = !turn && sid ? this.continuations.get(sid) : undefined;
@@ -708,9 +771,9 @@ export class AntigravityDriver implements RuntimeDriver {
 
 /**
  * agy 在流式轮次里撞上额度上限时，有时不返回 JSON-RPC error，而是发出一条简短的系统告警消息并以 end_turn 结束。
- * 只认整条单行系统额度告警（如 `⚠ Individual quota reached...`），避免误判普通对话里提到 quota 的回复。
+ * 只认整条单行系统额度告警（如 `⚠ Individual quota reached...`、`⚠ Third-party quota reached...`，额度池前缀不限），避免误判普通对话里提到 quota 的回复。
  */
-const ANTIGRAVITY_QUOTA_NOTICE = /^(?:⚠\s*)?(?:individual\s+|model\s+|weekly\s+|session\s+)?quota\s+(?:reached|exceeded|exhausted|limit\s+reached)\b[^\n]{0,240}$/i;
+const ANTIGRAVITY_QUOTA_NOTICE = /^(?:⚠\s*)?(?:[a-z]+(?:-[a-z]+)*\s+)?quota\s+(?:reached|exceeded|exhausted|limit\s+reached)\b[^\n]{0,240}$/i;
 export function antigravityQuotaNotice(text: string): string | undefined {
   const trimmed = text.trim();
   if (!trimmed || trimmed.includes("\n")) return undefined;

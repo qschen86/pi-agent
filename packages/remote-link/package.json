@@ -1,0 +1,15 @@
+{
+  "name": "@pi-agent/remote-link",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Heji Remote Connect 共享协议包：Noise IK/IKpsk2、QR 配对、无状态 Room Ticket、DataChannel 分片、HTTP/SSE 多路复用与 Mac 本地转发适配",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.33.6"
+  }
+}

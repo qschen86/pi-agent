@@ -116,6 +116,21 @@ describe("Antigravity 本轮后台续写来源核对", () => {
     } finally { f.db.close(); }
   });
 
+  it("schedule 定时器任务不计入 pending：轮次结束后定时器不会再回报，否则「本轮完成」的会话被永久拦住续聊", () => {
+    const f = fixture();
+    try {
+      // 基线里两个后台任务改成 schedule 定时器（到点由原生侧在原轮次内发起任务并回报通知）
+      f.bgTool(1, "prompt", { callId: "call-1", name: "schedule", bgTask: true, args: { Prompt: "检查构建" } });
+      f.bgTool(3, "prompt", { callId: "call-3", name: "schedule", bgTask: true, args: { Prompt: "超时检查" } });
+      expect(f.readDb()).toMatchObject({ events: [], pending: false, active: false });
+      // 同轮仍有普通后台命令时照旧拦住：只放过定时器，不放过真正在跑的后台任务
+      f.task(1);
+      expect(f.readDb()).toMatchObject({ pending: true, active: false });
+      f.notify(5, 1); f.reply(6, 1, "构建完成");
+      expect(f.readDb()).toMatchObject({ fingerprint: "s7i6", pending: false, active: false });
+    } finally { f.db.close(); }
+  });
+
   it("仅承载该会话的 agy 进程仍存活时才上报 pending；进程退出或重启后不再永久拦截", async () => {
     const f = fixture("sess-0");
     try {

@@ -24,6 +24,22 @@ document.addEventListener("focusin", (ev) => {
   if (ev.target instanceof Element && ev.target.matches(".rt-new-center .rt-new-prompt")) rtNewPinComposer();
 });
 
+/** 手机底栏紧凑模型名：默认态写「默认」，长模型名去掉冗余品牌前缀或括号，避免生硬截断 */
+function rtCompactModelLabel(kind, label, isDefault) {
+  if (isDefault) return "默认";
+  let s = String(label || "").trim();
+  if (!s) return "默认";
+  const paren = s.match(/\(([^)]+)\)/);
+  if (/^orchestrator\b/i.test(s) && paren) return paren[1].trim();
+  s = s.replace(/^Gemini\s+/i, "").replace(/^Claude\s+/i, "").replace(/\s+Codex$/i, "");
+  if (kind === "codex") s = s.replace(/^Codex\s+/i, "");
+  s = s.replace(/^DeepSeek\s+Reasoner$/i, "DS R1").replace(/^DeepSeek\s+/i, "DS ");
+  return s || label;
+}
+function rtCompactEffortLabel(effortShort) {
+  return effortShort === "极高" ? "极" : effortShort === "很高" ? "高+" : effortShort === "最高" ? "满" : effortShort === "最低" ? "低" : effortShort;
+}
+
 /** 新建页常驻提醒的审批模式：不经确认就能改文件、跑命令 */
 const RT_RISKY_PERMISSIONS = new Set(["full-access", "bypassPermissions"]);
 
@@ -36,21 +52,6 @@ function renderRtNewWorkbench() {
   const layout = h("div", { class: `rt-layout rt-layout-new${ui.rt.listOpen ? " list-open" : ""}` }, rtList(), h("section", { class: "rt-center rt-new-center", "aria-label": "新建会话" },
     h("button", { type: "button", class: "btn small rt-list-toggle", "aria-expanded": String(ui.rt.listOpen), onclick: () => rtSetListOpen(!ui.rt.listOpen) }, "会话列表"), renderRtNew()));
   return h("div", { class: `rt-page rt-page-new${enter ? " rt-page-enter" : ""}` }, rtAccessNote(), layout);
-}
-
-/* ------------------------------ 运行时能力对比入口 ------------------------------ */
-
-/** 跳资源页只看运行时，并滚到那张完整的运行时能力对比表 */
-function rtOpenResourceCapabilities() {
-  ui.resourceFilter = "runtime"; ui.resourceScrollTo = "capabilities";
-  location.hash = "#/resources";
-}
-/** 新建页不再铺对比表，只留这一行入口（输入卡片下面正中）：小箭头表示整块标题可点，跳到资源页的完整对比 */
-function rtCompareEntry() {
-  return h("section", { class: "rt-compare", "aria-label": "运行时能力对比" },
-    h("div", { class: "rt-compare-head" },
-      h("h2", {}, h("a", { class: "rt-compare-link", href: "#/resources", title: "到「资源 · 运行时」查看完整能力对比，并设置新建会话默认配置", onclick: (ev) => { ev.preventDefault(); rtOpenResourceCapabilities(); } }, "运行时能力对比",
-        h("span", { class: "rt-compare-go", "aria-hidden": "true" }, "→")))));
 }
 
 /** 输入框里移除待办引用 chip 时，同步解除这次会话与那条待办的关联（发送时不再带 noteId）。
@@ -202,12 +203,17 @@ function rtLaunchView(launch) {
     rtLaunchComposer(launch));
 }
 
+/** 新建页与 PC 首页即用工作台共用输入逻辑 */
+function rtNewRouteVisible() {
+  return ui.view === "rt-new" || (ui.view === "rt" && !rtId() && !rtPhone.matches);
+}
+
 // 只做连接/认证探测，不发送模型任务。同一时刻只允许一次，切走或已提交后不打断当前页面。
 async function rtCheckAntigravityConnection() {
   const check = ui.rt.antigravityCheck ||= { pending: false, error: "" };
   if (check.pending) return;
   check.pending = true; check.generation = ui.rt.gen; check.error = "";
-  const visible = () => ui.view === "rt-new" && !ui.rt.launch && !ui.rt.confirm && rtForm().runtimeKind === "antigravity";
+  const visible = () => rtNewRouteVisible() && !ui.rt.launch && !ui.rt.confirm && rtForm().runtimeKind === "antigravity";
   if (visible()) renderMain();
   try {
     await rtLoadAccess();
@@ -233,7 +239,8 @@ async function rtCheckAntigravityConnection() {
   }
 }
 
-function renderRtNew() {
+function renderRtNew(opts = {}) {
+  const home = !!opts.home;
   if (ui.rt.launch) return rtLaunchView(ui.rt.launch);
   const f = rtForm();
   const a = ui.rt.access;
@@ -243,7 +250,7 @@ function renderRtNew() {
   // 后台探测不阻塞已有可用配置的新建提交；只在明确检查失败时才拦截发送。
   const checkBlocksSend = !!check?.error;
   const roots = rtWorkspaceRoots(f.runtimeKind);
-  if (a && !a.control) return h("div", { class: "rt-form-page" }, h("h1", {}, "新建运行时会话"), rtAccessNote() || h("p", { class: "muted" }, "当前入口没有控制权限"));
+  if (a && !a.control) return h("div", { class: "rt-form-page" }, h("h1", {}, home ? "合己工作台" : "新建运行时会话"), rtAccessNote() || h("p", { class: "muted" }, "当前入口没有控制权限"));
   // pending 也用于保存正在提交的请求；仅恢复未完成请求时进入确认页，提交期间保持输入页。
   if (ui.rt.busy !== "create" && !ui.rt.confirm && rtImageDraft("new").pending) ui.rt.confirm = rtImageDraft("new").pending;
   if (ui.rt.confirm) return rtConfirmView(ui.rt.confirm);
@@ -256,50 +263,96 @@ function renderRtNew() {
   if (p && f.effort && !(rtModelOption(p, f.model)?.efforts || []).includes(f.effort)) f.effort = "";
   if (p && !permissions.some((x) => x.id === f.permissionMode)) f.permissionMode = permissions[0].id;
   const selectedPermission = permissions.find((x) => x.id === f.permissionMode) || permissions[0];
+  const mo = rtModelOption(p, f.model);
+  const modelLabel = f.model ? (selectable.models.find((m) => m.id === f.model)?.label || f.model) : "默认模型";
+  const activeEffort = f.effort || mo?.defaultEffort || "";
+  const effortShort = activeEffort ? (activeEffort === "ultra" ? "极高" : (RT_EFFORT[activeEffort] || activeEffort).split("（")[0]) : "";
+  const compactModel = rtCompactModelLabel(f.runtimeKind, modelLabel, !f.model);
+  const compactEffort = rtCompactEffortLabel(effortShort);
+  const workspaceText = (f.workspace || "").trim();
+  const permIconPath = RT_MINI_PATHS[RT_PERMISSION_ICON[selectedPermission.id]] || RT_MINI_PATHS.help;
+  const permShortLabel = RT_PERMISSION_ICON_LABEL[selectedPermission.id] || rtPermissionShort(selectedPermission);
+  const orderedKinds = typeof rtOrderedNewKinds === "function" ? rtOrderedNewKinds(profiles) : RT_KINDS;
   // 图片加号放到输入框底部工具栏最左，和发送按钮同一行；草稿缩略图留在输入框上方
   const att = rtAttachmentComposer("new", f.runtimeKind, f.model || "", !!ui.rt.busy);
   const uploadDraft = rtImageDraft("new"), uploadingCount = uploadDraft.images.filter(i => i.state === "uploading").length;
   rtRevealSelected(".rt-runtime-choices", ".rt-runtime-choice.selected");
-  return h("div", { class: "rt-new-page" },
-    h("div", { class: "rt-new-nav" }, rtNewBackLink(), h("a", { href: "#/runtimes" }, "运行时配置")),
-    // 上方只留一句标题（对比表已从新建页去掉）；输入区固定在底部，和进行中对话的输入框同一位置
+  const openOptionsSheet = (ctx) => {
+    if (ui.rt.newOptionsOpen && ui.rt.newOptionsOpener === ctx) {
+      rtSetNewOptionsOpen(false);
+      return;
+    }
+    ui.rt.newOptionsOpener = ctx;
+    rtSetNewOptionsOpen(true);
+  };
+  return h("div", { class: `rt-new-page rt-new-session${home ? " rt-home-page" : ""}` },
+    home ? null : h("div", { class: "rt-new-nav" }, rtNewBackLink(), h("a", { href: "#/runtimes" }, "运行时配置")),
+    // 统一合己品牌 Hero（桌面首页与独立新建页同构，保留 .rt-new-intro 供布局定位与测试使用）
     h("div", { class: "rt-new-scroll", "data-keep-scroll": "rt-new-scroll" },
-      // 只留一句标题：选运行时、写任务的说明就在下方控件上，不再重复
-      h("div", { class: "rt-new-intro" }, h("h1", {}, "想让它做什么？"))),
-    h("section", { class: "rt-new-dock", "aria-label": "新建运行时会话" },
+      h("div", { class: "rt-heji-hero rt-new-intro" },
+        h("div", { class: "rt-heji-logo-wrap" },
+          h("img", { class: "rt-heji-logo rt-heji-logo-light", src: "/icons/heji-logo-light.png", alt: "合己 heji" }),
+          h("img", { class: "rt-heji-logo rt-heji-logo-dark", src: "/icons/heji-logo-dark.png", alt: "合己 heji" }),
+          h("span", { class: "rt-heji-sparkle s1", "aria-hidden": "true" }, "✦"),
+          h("span", { class: "rt-heji-sparkle s2", "aria-hidden": "true" }, "✦")),
+        h("h1", {}, "想让合己做什么？"),
+        h("p", { class: "rt-heji-sub" }, home ? "选一个运行时直接开始，或从左侧继续进行中的会话" : "按当前余量优先级排序，点选即可开始"))),
+    h("section", { class: "rt-new-dock", "aria-label": home ? "合己即用输入框" : "新建运行时会话" },
       rtNewModeSwitch(),
+      // 单行可横向滑动的运行时优先级条：有额度按 Codex → Antigravity → Claude Code → Pi 排序，无额度自动后置
+      h("div", { class: "rt-runtime-choices", role: "radiogroup", "aria-label": "运行时", "data-keep-scroll-x": "rt-new-runtimes" }, orderedKinds.map((kind) => {
+        const profile = profiles.find((x) => x.runtimeKind === kind);
+        const checking = kind === "antigravity" && ui.rt.antigravityCheck;
+        const loadingLabel = checking?.pending ? "正在检查 Antigravity 连接与登录状态…" : !profile && ui.rt.profiles === null ? "读取中" : "";
+        const exhausted = profile?.state === "executable" && !checking?.error && typeof rtRuntimeQuotaExhausted === "function" && rtRuntimeQuotaExhausted(kind, profile);
+        const [status, tone] = checking?.error ? ["检查失败", "bad"] : exhausted ? ["无额度", "bad"] : profile ? RT_PROFILE_STATE[profile.state] || [profile.state, ""] : ["未检查", "warn"];
+        const statusBadge = loadingLabel || (profile?.state === "executable" && !checking?.error && !exhausted) ? null : badge(status, tone);
+        if (statusBadge && exhausted) statusBadge.classList.add("rt-exhausted-badge");
+        return h("div", { class: `rt-runtime-choice${kind === f.runtimeKind ? " selected" : ""}${exhausted ? " exhausted" : ""}`, "data-runtime": kind },
+          h("label", { class: "rt-runtime-select" },
+            h("input", { type: "radio", name: "rt-new-runtime", "data-key": `rt-kind-${kind}`, value: kind, checked: kind === f.runtimeKind, "aria-label": RT_KIND[kind], onchange: () => rtSelectRuntime(kind) }),
+            h("span", { class: "rt-runtime-head" },
+              h("span", { class: "rt-runtime-name" },
+                typeof rtRuntimeBrandIcon === "function" ? rtRuntimeBrandIcon(kind) : h("span", { class: `rt-glyph ${kind}`, "aria-hidden": "true" }, RT_GLYPH[kind]),
+                // 手机新版卡片用单色品牌图标（与会话列表底部小卡同源），彩色图标仅桌面显示，由 CSS 二选一
+                h("span", { class: "rt-name-mono", "aria-hidden": "true" }, RT_ACCOUNT_LOGO[kind] ? rtAccountLogo(RT_ACCOUNT_LOGO[kind]) : "π"),
+                h("span", { class: "rt-name-full" }, RT_KIND[kind]),
+                h("span", { class: "rt-name-short", "aria-hidden": "true" }, RT_SHORT[kind]),
+                loadingLabel ? h("span", { class: "rt-runtime-loading", role: "status", title: loadingLabel }, h("span", { class: "rt-note-launch-spinner", "aria-hidden": "true" }), h("span", { class: "sr-only" }, loadingLabel)) : null),
+              statusBadge,
+              h("span", { class: "rt-runtime-check-mark", "aria-hidden": "true" }, "✓")),
+            rtQuotaStrip(profile?.rateLimit, "short", "", "", kind, undefined, true) || rtBalanceStrip(profile?.balances)));
+      })),
       h("div", { class: "rt-new-composer" },
-        h("div", { class: "rt-runtime-choices", role: "radiogroup", "aria-label": "运行时", "data-keep-scroll-x": "rt-new-runtimes" }, RT_KINDS.map((kind) => {
-          const profile = profiles.find((x) => x.runtimeKind === kind);
-          const checking = kind === "antigravity" && ui.rt.antigravityCheck;
-          const loadingLabel = checking?.pending ? "正在检查 Antigravity 连接与登录状态…" : !profile && ui.rt.profiles === null ? "读取中" : "";
-          const [status, tone] = checking?.error ? ["检查失败", "bad"] : profile ? RT_PROFILE_STATE[profile.state] || [profile.state, ""] : ["未检查", "warn"];
-          return h("div", { class: `rt-runtime-choice${kind === f.runtimeKind ? " selected" : ""}` },
-            h("label", { class: "rt-runtime-select" },
-              h("input", { type: "radio", name: "rt-new-runtime", "data-key": `rt-kind-${kind}`, value: kind, checked: kind === f.runtimeKind, "aria-label": RT_KIND[kind], onchange: () => rtSelectRuntime(kind) }),
-              h("span", { class: "rt-runtime-head" },
-                h("span", { class: "rt-runtime-name" },
-                  h("span", { class: `rt-glyph ${kind}`, "aria-hidden": "true" }, RT_GLYPH[kind]),
-                  h("span", { class: "rt-name-full" }, RT_KIND[kind]),
-                  h("span", { class: "rt-name-short", "aria-hidden": "true" }, RT_SHORT[kind]),
-                  loadingLabel ? h("span", { class: "rt-runtime-loading", role: "status", title: loadingLabel }, h("span", { class: "rt-note-launch-spinner", "aria-hidden": "true" }), h("span", { class: "sr-only" }, loadingLabel)) : null),
-                // 正常可执行是常态，查询/读取中由名字后的小 loading 表达，不再插徽标撑高卡片；只在异常或未检查时显示状态
-                loadingLabel || (profile?.state === "executable" && !checking?.error) ? null : badge(status, tone)),
-              rtQuotaStrip(profile?.rateLimit, "short", "", "", kind) || rtBalanceStrip(profile?.balances)));
-        })),
         att.node,
         rtSessionMentionInput({ onpaste: ev => rtImagePaste("new", ev), ondragover: ev => ev.preventDefault(), ondrop: ev => rtImageDrop("new", ev), onNoteRemove: rtClearNoteReference, class: "rt-new-prompt", rows: "3", "aria-label": "首条消息", "data-key": "rt-prompt", value: f.prompt, oninput: set("prompt"), placeholder: "描述任务，输入 @ 引用未归档会话，/ 调用技能…", onkeydown: (ev) => { if (!rtIsSendKey(ev)) return; ev.preventDefault(); if (!ui.rt.busy) rtPrepareConfirm(); } }),
         h("div", { class: "rt-new-toolbar" },
           att.addButton,
+          // 双端统一方案 C（极简两段式，无 · 分隔符）：左段工作目录，右段融合权限+模型胶囊；
+          // 手机端极简显示「目录 + [权限图标] 短模型名」，PC 宽屏自然释放 worktree 微标、权限短字、完整模型名与强度角标
+          h("div", { class: "rt-new-ctx-bar", "aria-label": "当前会话配置" },
+            h("button", { type: "button", class: "rt-new-ctx-pill", "data-ctx": "workspace", "aria-haspopup": "dialog", "aria-expanded": String(!!ui.rt.newOptionsOpen), "aria-label": `${workspaceText || "选择目录"}${f.worktree ? "（独立 worktree）" : ""}`, title: `${workspaceText || "选择工作目录"}${f.worktree ? " · 独立 worktree" : ""}`, onclick: () => openOptionsSheet("workspace") },
+              rtMiniIcon(f.worktree ? RT_MINI_PATHS.worktree : RT_MINI_PATHS["worktree-off"], { className: `rt-new-ctx-ico${f.worktree ? " on" : ""}`, size: 12 }),
+              h("span", { class: "rt-new-ctx-txt rt-new-options-path" }, workspaceText ? rtFolderName(workspaceText) : "目录"),
+              f.worktree ? h("span", { class: "rt-new-ctx-wt-tag", "aria-hidden": "true" }, "worktree") : null),
+            h("button", { type: "button", class: `rt-new-ctx-pill rt-new-ctx-tune${RT_RISKY_PERMISSIONS.has(selectedPermission.id) ? " risk" : ""}`, "data-ctx": "model", "data-perm": selectedPermission.id, "aria-haspopup": "dialog", "aria-expanded": String(!!ui.rt.newOptionsOpen), "aria-label": `${modelLabel}${effortShort ? ` · 推理强度 ${effortShort}` : ""} · 审批：${selectedPermission.label}`, title: [modelLabel, effortShort ? `推理强度 ${effortShort}` : "", selectedPermission.label, selectedPermission.detail].filter(Boolean).join(" · "), onclick: () => openOptionsSheet("model") },
+              rtMiniIcon(permIconPath, { className: "rt-new-ctx-ico rt-new-options-perm", size: 12, attrs: { "data-perm": selectedPermission.id } }),
+              h("span", { class: "rt-new-ctx-perm-word" }, permShortLabel),
+              h("span", { class: "rt-new-ctx-divider", "aria-hidden": "true" }),
+              rtAvatar(f.runtimeKind, f.model || mo?.id || "", "xxs"),
+              h("span", { class: "rt-new-ctx-txt rt-new-options-model-name rt-ctx-model-short" }, compactModel),
+              h("span", { class: "rt-new-ctx-txt rt-ctx-model-full" }, modelLabel),
+              compactEffort ? h("span", { class: "rt-new-ctx-effort" }, compactEffort) : null)),
           rtNewOptions(
-            rtNewOptionsSummary(f, p, selectedPermission),
+            "全部选项",
             rtWorkspacePicker(f, roots, a),
             h("label", { class: `rt-new-control rt-new-worktree${f.worktree ? " on" : ""}`, title: "从工作目录所在 git 仓库的 main 切出这个会话专用的 worktree（分支 pi/<会话>），会话只在里面改，不和其他会话的未提交改动混在一起；改完可在会话页「提交并在空闲时部署」。工作目录要在 git 仓库里。" },
-              h("input", { type: "checkbox", "data-key": "rt-worktree", checked: !!f.worktree, onchange: (ev) => { f.worktree = ev.target.checked; renderMain(); } }), h("span", {}, "独立 worktree")),
-            h("label", { class: "rt-new-control", title: selectedPermission.detail }, h("span", { class: "rt-new-option-label" }, rtMiniIcon(RT_MINI_PATHS[RT_PERMISSION_ICON[selectedPermission.id]] || RT_MINI_PATHS.help, { className: "rt-new-field-icon", size: 11 }), "审批模式"),
-              rtMiniIcon(RT_MINI_PATHS[RT_PERMISSION_ICON[selectedPermission.id]] || RT_MINI_PATHS.help, { className: "rt-new-desktop-perm", size: 11 }),
+              h("input", { type: "checkbox", class: "settings-switch sm", "data-key": "rt-worktree", checked: !!f.worktree, onchange: (ev) => { f.worktree = ev.target.checked; renderMain(); } }), h("span", {}, "独立 worktree")),
+            h("label", { class: "rt-new-control", title: selectedPermission.detail }, h("span", { class: "rt-new-option-label" }, rtMiniIcon(permIconPath, { className: "rt-new-field-icon", size: 12 }), "审批模式"),
+              rtMiniIcon(permIconPath, { className: "rt-new-desktop-perm", size: 12 }),
               h("select", { "aria-label": "审批模式", "data-key": "rt-permission", onchange: (ev) => { f.permissionMode = ev.target.value; f.browserProfileId = "isolated"; renderMain(); } }, permissions.map((x) => h("option", { value: x.id, selected: x.id === f.permissionMode }, x.label)))),
-            h("label", { class: "rt-new-control" }, h("span", { class: "rt-new-option-label" }, rtAvatar(f.runtimeKind, f.model || rtModelOption(p, f.model)?.id || "", "xxs"), "模型"), h("select", { "aria-label": "模型", "data-key": "rt-model", onchange: (ev) => { f.model = ev.target.value; const mo = rtModelOption(p, f.model); if (!mo || !(mo.efforts || []).includes(f.effort)) f.effort = ""; renderMain(); rtPatchQuotaViews(); } },
+            selectedPermission.detail ? h("p", { class: `rt-new-drawer-perm-note small${RT_RISKY_PERMISSIONS.has(selectedPermission.id) ? " warn-text" : " muted"}` }, selectedPermission.detail) : null,
+            h("label", { class: "rt-new-control" }, h("span", { class: "rt-new-option-label" }, rtAvatar(f.runtimeKind, f.model || mo?.id || "", "xxs"), "模型"), h("select", { "aria-label": "模型", "data-key": "rt-model", onchange: (ev) => { f.model = ev.target.value; const nextMo = rtModelOption(p, f.model); if (!nextMo || !(nextMo.efforts || []).includes(f.effort)) f.effort = ""; renderMain(); rtPatchQuotaViews(); } },
               selectable.defaultAllowed ? h("option", { value: "", selected: !f.model }, "默认模型") : null,
               selectable.models.map((m) => h("option", { value: m.id, selected: f.model === m.id }, m.label)))),
             // 只有确实有得选（多于一个配置）且当前审批模式支持持久浏览器（工作区沙盒）时才显示；
@@ -307,8 +360,9 @@ function renderRtNew() {
             f.runtimeKind === "pi" && f.permissionMode === "pi-ask" && p?.browserProfiles?.length > 1 ? h("label", { class: "rt-new-control", title: "持久浏览器保留登录状态，同一配置同时只供一个任务使用；仅工作区沙盒模式可用" }, h("span", { class: "rt-new-option-label" }, "浏览器配置"),
               // 选项文字保持短名：浏览器下拉按最长选项定宽，长后缀会把工具栏撑宽
               h("select", { "aria-label": "浏览器配置", "data-key": "rt-browser-profile", onchange: ev => { f.browserProfileId = ev.target.value; renderMain(); } }, p.browserProfiles.map(x => h("option", { value: x.id, selected: x.id === (f.browserProfileId || "isolated"), title: x.persistent ? `${x.label}：保留登录状态，同一时间只供一个任务使用` : `${x.label}：每个任务都从空白浏览器状态开始` }, x.label)))) : null,
-            rtEffortSelect(rtModelOption(p, f.model), f.effort, (v) => { f.effort = v; }, "rt-effort", true)),
-          h("button", { type: "button", class: `rt-new-send${uploadingCount ? " waiting" : ""}`, "aria-label": uploadingCount ? "发送（图片上传中）" : "发送", ...(uploadingCount ? { "aria-disabled": "true" } : {}), title: uploadingCount ? `正在上传图片（${uploadingCount} 张），上传完成后才能发送` : ui.rt.busy ? "正在准备附件…" : "点击发送，长按预约发送（Alt + ↓）", disabled: !!ui.rt.busy || checkBlocksSend || !roots.length || !p || p.state !== "executable", ...rtSchedulePress(() => rtPrepareConfirm(), () => rtScheduleOpen(time => rtPrepareConfirm(time)), () => !checkBlocksSend && !rtImageDraft("new").images.some(i => i.state === "uploading")) }, ui.rt.busy ? "…" : uploadingCount ? h("span", { class: "rt-note-launch-spinner on-accent", "aria-hidden": "true" }) : "↑"))),
+            rtEffortSelect(mo, f.effort, (v) => { f.effort = v; renderMain(); }, "rt-effort", true)),
+          h("span", { class: "rt-new-send-hint", "aria-hidden": "true" }, "长按可预约"),
+          h("button", { type: "button", class: `rt-new-send${uploadingCount ? " waiting" : ""}`, "aria-label": uploadingCount ? "发送（图片上传中）" : "发送", ...(uploadingCount ? { "aria-disabled": "true" } : {}), title: uploadingCount ? `正在上传图片（${uploadingCount} 张），上传完成后才能发送` : ui.rt.busy ? "正在准备附件…" : "点击发送，长按预约发送（Alt + ↓）", disabled: !!ui.rt.busy || checkBlocksSend || !roots.length || !p || p.state !== "executable", ...rtSchedulePress(() => rtPrepareConfirm(), () => rtScheduleOpen(time => rtPrepareConfirm(time)), () => !checkBlocksSend && !rtImageDraft("new").images.some(i => i.state === "uploading")) }, ui.rt.busy ? "…" : uploadingCount ? h("span", { class: "rt-note-launch-spinner on-accent", "aria-hidden": "true" }) : "发送"))),
       check?.error ? h("div", { class: "rt-runtime-check small", role: "alert" },
         h("span", {}, check.error),
         h("button", { type: "button", class: "btn small", onclick: () => void rtCheckAntigravityConnection() }, "重试检查")) : null,
@@ -320,11 +374,8 @@ function renderRtNew() {
       uploadingCount ? h("p", { class: "rt-new-upload-status small", role: "status", "data-key": "rt-upload-status" }, h("span", { class: "rt-note-launch-spinner", "aria-hidden": "true" }), `正在上传图片（${uploadingCount}/${uploadDraft.images.length}），上传完成后才能发送`) : null,
       ui.rt.noteLaunch ? h("p", { class: "rt-note-launch-status muted small", role: "status" }, h("span", { class: "rt-note-launch-spinner", "aria-hidden": "true" }), `正在附上推荐来源的图片（${ui.rt.noteLaunch.count} 张）…`) : null,
       ui.rt.formError ? h("p", { class: "field-error", role: "alert" }, ui.rt.formError) : null,
-      // 审批模式说明平时在选择框的悬停提示里；只有完全访问这类高风险模式才常驻提醒
-      RT_RISKY_PERMISSIONS.has(selectedPermission.id) ? h("p", { class: "rt-new-permission-note small warn-text" }, selectedPermission.detail) : null,
-      rtQuotaWarning(p),
-      // 完整对比的入口放在输入卡片下面正中：新建页不再铺表，但入口照旧能跳到资源页那张完整表
-      rtCompareEntry()));
+      // 审批模式说明平时在选择框的悬停提示里；只有完全访问这类高风险模式才在桌面常驻提醒（手机端收进配置抽屉）
+      RT_RISKY_PERMISSIONS.has(selectedPermission.id) ? h("p", { class: "rt-new-permission-note small warn-text" }, selectedPermission.detail) : null));
 }
 
 async function rtPrepareConfirm(scheduledFor) {
@@ -358,6 +409,20 @@ async function rtPrepareConfirm(scheduledFor) {
   const p = (ui.rt.profiles || []).find((x) => x.runtimeKind === f.runtimeKind);
   if (!p) { ui.rt.formError = "先到运行时配置检查连接"; return renderMain(); }
   if (p.state !== "executable") { ui.rt.formError = `${RT_KIND[f.runtimeKind]} 当前不可执行：${p.stateReason}`; return renderMain(); }
+  // 额度余量 <3%：先问要不要等到下个周期再发起。已经自己选了预约时间的不再问
+  let toScheduledList = false;
+  if (typeof scheduledFor !== "string") {
+    const low = rtQuotaLowInfo(f.runtimeKind, f.model || "");
+    if (low) {
+      if (ui.rt.quotaLowOpen) return;
+      ui.rt.quotaLowOpen = true;
+      let choice;
+      try { choice = await rtQuotaLowPrompt(low, "session"); } finally { ui.rt.quotaLowOpen = false; }
+      if (choice.action === "cancel") return;
+      if (choice.action === "wait") { scheduledFor = low.at; toScheduledList = true; }
+      if (ui.rt.launch && !ui.rt.launch.error) return;
+    }
+  }
   // 提交后不再占着表单：请求交给后台条目（列表顶部显示进度），页面立刻回到空白的新建表单
   const draft = rtImageDraft("new");
   const noteRef = draft.noteRef;
@@ -370,7 +435,11 @@ async function rtPrepareConfirm(scheduledFor) {
   const images = draft.images.filter(i => i.state === "ready").map(i => ({ ...i }));
   rtClearImageDraft("new"); ui.rt.form = null; ui.rt.draftsByRuntime = {}; ui.rt.confirm = null; ui.rt.formError = ""; ui.rt.busy = "";
   const job = rtBgSubmit(req, images, rtNewSubmitOrigin());
-  if (rtNewFromList() && rtPhone.matches) {
+  if (toScheduledList) {
+    // 预约到下个周期：直接回会话列表；创建成功后条目自己收进右上角时钟，要看再点时钟
+    announce(`已预约：${rtScheduleLabel(scheduledFor)} 额度重置后发起会话`);
+    if (rtNewFromList() && rtPhone.matches) rtLeaveNewAfterSubmit(); else location.replace("#/rt");
+  } else if (rtNewFromList() && rtPhone.matches) {
     // 手机：从会话列表来就回会话列表；列表顶部「正在创建」条目显示进度
     announce("已提交：会话在后台创建，可在会话列表查看");
     rtLeaveNewAfterSubmit();
@@ -392,7 +461,7 @@ async function rtCreateSession(c) {
   ui.rt.busy = "create"; ui.rt.formError = ""; renderMain();
   try {
     const noteRef = rtImageDraft("new").noteRef;
-    const r = await api("/api/runtime-sessions", { method: "POST", onDeploymentWait: () => { launch.phase = "deployment"; if (ui.view === "rt-new" && ui.rt.launch === launch) renderMain(); }, body: JSON.stringify({
+    const r = await api("/api/runtime-sessions", { method: "POST", onDeploymentWait: () => { launch.phase = "deployment"; if (rtNewRouteVisible() && ui.rt.launch === launch) renderMain(); }, body: JSON.stringify({
       idempotencyKey: c.key, ...(c.scheduledFor ? { scheduledFor: c.scheduledFor } : {}), runtimeKind: c.runtimeKind, workspace: c.workspace, prompt: c.prompt, attachmentIds: c.attachmentIds || [],
       ...(c.model ? { model: c.model } : {}), ...(c.effort ? { effort: c.effort } : {}), ...(c.worktree ? { worktree: true } : {}), ...(c.runtimeKind === "pi" && c.browserProfileId ? { browserProfileId: c.browserProfileId } : {}), ...(c.recommendationRef ? { recommendationId: c.recommendationRef.taskId, recommendationRevision: c.recommendationRef.revision } : noteRef?.noteId ? { noteId: noteRef.noteId } : {}), permissionMode: c.permissionMode, confirmedProfileVersion: c.preview.profileVersion
     }) });
@@ -408,7 +477,7 @@ async function rtCreateSession(c) {
         ...(r.session.turns?.[0]?.clientMessageId ? { eventKey: `user:${r.session.turns[0].clientMessageId}` } : {}) } }),
       atBottom: true, reading: { atBottom: true, top: 0 }, tab: "chat"
     });
-    const active = ui.view === "rt-new" && ui.rt.launch === launch;
+    const active = rtNewRouteVisible() && ui.rt.launch === launch;
     const away = active && rtPageAway();
     if (!away) ui.rt.launch = null;
     if (launch.draft?.trim()) { ui.rt.drafts[id] = launch.draft; rtSaveImageDraft(id, launch.draft); }
@@ -430,7 +499,7 @@ async function rtCreateSession(c) {
     if (e.status && e.status < 500) { delete rtImageDraft("new").pending; rtSaveImageDraft("new"); }
     if (e.status === 409 && /重新检查过/.test(e.message)) { ui.rt.confirm = null; launch.request = null; await rtLoadProfiles(); }
   }
-  if (ui.view === "rt-new" && ui.rt.launch === launch) { ui.rt.busy = ""; renderMain(); }
+  if (rtNewRouteVisible() && ui.rt.launch === launch) { ui.rt.busy = ""; renderMain(); }
 }
 
 function rtConfirmView(c) {

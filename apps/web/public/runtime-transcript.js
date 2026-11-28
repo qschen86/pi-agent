@@ -43,7 +43,10 @@ function rtTurnEndRows(events) {
 }
 const RT_QUOTA_ERROR = /you.ve hit your .*limit|usage limit|quota|rate.?limit|额度.*(?:用尽|不足|耗尽)|限流/i;
 function rtStandaloneQuotaError(e) {
-  return e.kind === "message" && e.role === "assistant" && /^you.ve hit your [^\n]*limit[^\n]*$/i.test(rtErrorText(e.text));
+  if (e.kind !== "message" || e.role !== "assistant") return false;
+  const text = rtErrorText(e.text);
+  // Claude / Codex 的「you've hit your … limit」，以及 Antigravity 的单行系统额度告警（⚠ Individual / Third-party quota reached…）
+  return /^you.ve hit your [^\n]*limit[^\n]*$/i.test(text) || /^(?:⚠\s*)?(?:[a-z]+(?:-[a-z]+)*\s+)?quota\s+(?:reached|exceeded|exhausted|limit\s+reached)\b[^\n]*$/i.test(text);
 }
 /** 当前未完成的一轮：只认最后一轮，自动继续只认同轮后台计划。 */
 function rtRecoveryState(s = ui.rt.view?.session, events = ui.rt.events) {
@@ -61,9 +64,38 @@ function rtRecoveryState(s = ui.rt.view?.session, events = ui.rt.events) {
   const weekly = /weekly|周/.test(raw + (plan?.window || ""));
   return { end, rows, raw, plan, quota, title: quota ? `本轮未完成 · ${weekly ? "周额度已用尽" : /session limit|5 小时/i.test(raw + (plan?.window || "")) ? "当前时段额度已用尽" : "额度暂时受限"}` : (RT_TURN_END_LABEL[end.status] || "本轮未完成") };
 }
+/** 距恢复的剩余时间：小时级只到分钟，最后一小时到秒。 */
+function rtRecoveryLeftText(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+  if (m > 0) return `${m} 分 ${sec % 60} 秒`;
+  return `${sec} 秒`;
+}
+/** 自动继续的倒计时：每秒只改这一个文本节点，行被重渲染或移除后自行停表。 */
+function rtRecoveryCountdown(scheduledFor) {
+  const target = Date.parse(scheduledFor);
+  if (!Number.isFinite(target)) return null;
+  const el = h("b", { class: "rt-recovery-cd" });
+  let timer = null;
+  const paint = (initial) => {
+    if (!initial && !el.isConnected) { if (timer) { clearInterval(timer); timer = null; } return; }
+    const left = target - Date.now();
+    el.textContent = left > 0 ? rtRecoveryLeftText(left) : "即将恢复";
+  };
+  paint(true);
+  timer = setInterval(() => paint(false), 1000);
+  return el;
+}
 function rtRecoveryCanSend(s) {
   return ui.rt.access?.control && !ui.rt.access?.draining && ui.rt.statusConfirmed !== false && !ui.rt.busy && !rtImageDraft(s.platformSessionId).pending && !s.archived && !s.conflict && !s.worktree?.removedAt && !!s.nativeSessionId;
 }
+/** 本设备是否开启「回合汇总模式」（默认关闭；关闭时保持原有完整消息流与恢复区样式）。 */
+function rtTurnSummaryModeEnabled() {
+  if (typeof window !== "undefined" && typeof window.piTurnSummaryMode?.enabled === "function") return !!window.piTurnSummaryMode.enabled();
+  try { return localStorage.getItem("pi-agent:turn-summary-mode:v1") === "1"; } catch { return false; }
+}
+
 function rtRecoveryRow(e, sid, time, flags) {
   const state = sid === rtId() ? rtRecoveryState() : null;
   if (!state || state.end.key !== e.key) return null;
@@ -72,17 +104,280 @@ function rtRecoveryRow(e, sid, time, flags) {
   const capped = /不再自动继续|上限/.test(s.statusReason || "");
   const note = q ? q.known ? `预计北京时间 ${when} 恢复后自动继续` : `北京时间 ${when} 左右自动再试一次` : capped ? "已达到自动重试上限，不会自动继续" : "不会自动继续，可手动继续或重试";
   const canSend = rtRecoveryCanSend(s);
-  const action = (label, text) => rtQuickReplyButton({ type: "button", class: "chip", disabled: !canSend, onclick: () => {
+  const summaryMode = rtTurnSummaryModeEnabled();
+  // 等待额度恢复时「立即重试」几乎必定再失败，不算主操作；只有计划已结束（取消/达上限）时「继续」才是下一步。
+  const forward = (label, text, emphasized = false) => rtQuickReplyButton({ type: "button", class: emphasized ? "chip is-forward" : "chip", disabled: !canSend, onclick: () => {
     const current = rtRecoveryState();
     if (current?.end.key === e.key && rtRecoveryCanSend(ui.rt.view.session)) void rtComposer(ui.rt.view, text);
   } }, label);
-  return h("div", { class: `rt-row rt-recovery ${e.status}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq) },
-    h("strong", {}, state.title), h("p", { class: "muted small", role: "status" }, note),
-    ui.rt.access?.control ? h("div", { class: "rt-recovery-actions" },
-      q ? rtQuickReplyButton({ type: "button", class: "chip", disabled: !!ui.rt.busy || ui.rt.statusConfirmed === false, onclick: () => void rtQuotaResumeCancel(sid) }, "取消自动继续")
-        : action("继续", "请从刚才中断的地方继续，已经完成的部分不用重做。"),
-      action(q ? "立即重试" : "重试本轮", "请重试刚才没有完成的这一步，已经完成的部分不用重做。")) : null,
+  const retryText = "请重试刚才没有完成的这一步，已经完成的部分不用重做。";
+  const continueText = "请从刚才中断的地方继续，已经完成的部分不用重做。";
+  const cancel = () => rtQuickReplyButton({ type: "button", class: "chip", disabled: !!ui.rt.busy || ui.rt.statusConfirmed === false, onclick: () => void rtQuotaResumeCancel(sid) }, "取消自动继续");
+  if (!summaryMode) {
+    // 系统消息级：淡告警底的信息条，一行结论 + 一行计划 + 一行轻动作，不再用卡片和实心按钮抢正文的注意力。
+    const countdown = q?.known ? rtRecoveryCountdown(q.scheduledFor) : null;
+    return h("div", { class: `rt-row rt-recovery ${e.status}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq) },
+      h("div", { class: "rt-recovery-head" },
+        h("span", { class: "rt-recovery-dot", "aria-hidden": "true" }, "!"),
+        h("b", { class: "rt-recovery-title" }, state.title), time),
+      h("p", { class: "rt-recovery-note", role: "status" },
+        countdown ? [countdown, `后自动继续 · 北京时间 ${when} 恢复`] : note),
+      h("div", { class: "rt-recovery-actions" },
+        ui.rt.access?.control ? (q ? cancel() : forward("继续", continueText, true)) : null,
+        ui.rt.access?.control ? (q ? forward("立即重试", retryText) : forward("重试本轮", retryText)) : null,
+        rtLazyFold({ class: "rt-recovery-details" }, h("summary", {}, "查看详情"), () => h("pre", {}, state.raw), null, `${sid}:${e.key}:recovery`)),
+      flags);
+  }
+  const editedFiles = rtTurnEditedFiles(state.rows);
+  const metaParts = [state.quota ? "额度用尽" : null, e.turnNo ? `第 ${e.turnNo} 轮` : null].filter(Boolean);
+  return h("div", { class: `rt-row rt-recovery rt-turn-card is-recovery ${e.status}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq) },
+    h("div", { class: "rt-tc-status" },
+      h("span", { class: "rt-tc-dot warn", "aria-hidden": "true" }, "!"),
+      h("b", { class: "rt-tc-state warn" }, "本轮没做完"),
+      metaParts.length ? h("span", { class: "rt-tc-meta" }, `· ${metaParts.join(" · ")}`) : null),
+    h("strong", { class: "rt-tc-headline" }, state.title),
+    editedFiles > 0 ? h("div", { class: "rt-tc-arts" },
+      h("span", { class: "rt-tc-chip" }, h("i", {}, "改动"), h("b", {}, `${editedFiles} 个文件`))) : null,
+    h("div", { class: "rt-tc-ask has-decision" },
+      h("p", { class: "rt-tc-ask-q", role: "status" }, note),
+      ui.rt.access?.control ? h("div", { class: "rt-recovery-actions" },
+        q ? rtQuickReplyButton({ type: "button", class: "chip", disabled: !!ui.rt.busy || ui.rt.statusConfirmed === false, onclick: () => void rtQuotaResumeCancel(sid) }, "取消自动继续")
+          : action("继续", "请从刚才中断的地方继续，已经完成的部分不用重做。", true),
+        action(q ? "立即重试" : "重试本轮", "请重试刚才没有完成的这一步，已经完成的部分不用重做。", !!q)) : null),
     rtLazyFold({ class: "rt-recovery-details" }, h("summary", {}, "查看详情"), () => h("pre", {}, state.raw), null, `${sid}:${e.key}:recovery`), flags, time);
+}
+
+/* ------------------------------ 回合收束卡片（方案 A · 结论头条） ------------------------------ */
+
+const RT_EDIT_TOOL_RE = /^(?:edit|write|multiedit|notebookedit|edit_file|write_file|apply_patch|replace_file_content|multi_replace_file_content)$/i;
+const RT_CARD_FILE_EXT_RE = /\.(md|html?|pdf|svg)$/i;
+
+/** 从一轮的工具调用中确定性统计改过的文件数（去重路径，绝不靠模型猜）。 */
+function rtTurnEditedFiles(turnEvents) {
+  const files = new Set();
+  for (const ev of turnEvents || []) {
+    if (ev?.kind !== "tool" || !ev.tool) continue;
+    const name = String(ev.tool.name || "").trim();
+    if (!RT_EDIT_TOOL_RE.test(name)) continue;
+    const raw = String(ev.tool.input || "");
+    if (!raw) continue;
+    let matched = false;
+    try {
+      const parsed = JSON.parse(raw);
+      const p = parsed?.file_path || parsed?.path || parsed?.Path || parsed?.TargetFile || parsed?.file;
+      if (typeof p === "string" && p.trim()) { files.add(p.trim()); matched = true; }
+    } catch { /* 非 JSON 输入走文本匹配 */ }
+    if (!matched) {
+      for (const m of raw.matchAll(/(?:\*\*\* (?:Update|Add|Delete) File:\s*|"?(?:file_path|path|Path|TargetFile)"?\s*[:=]\s*["']?)([^\r\n"']+)/g)) {
+        const p = m[1]?.trim();
+        if (p) files.add(p);
+      }
+    }
+  }
+  return files.size;
+}
+
+function rtTurnDurationText(turnRecord, turnEvents) {
+  let start = turnRecord?.startedAt ? Date.parse(turnRecord.startedAt) : NaN;
+  let end = turnRecord?.endedAt ? Date.parse(turnRecord.endedAt) : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    const times = (turnEvents || []).map(x => Date.parse(x.occurredAt || x.recordedAt || "")).filter(Number.isFinite);
+    if (times.length >= 2) { start = Math.min(...times); end = Math.max(...times); }
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "";
+  const sec = Math.round((end - start) / 1000);
+  if (sec < 5 || sec >= 86400) return "";
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h > 0) return m > 0 ? `${h}小时${m}分` : `${h}小时`;
+  if (m > 0) return s > 0 ? `${m}分${s}秒` : `${m}分`;
+  return `${s}秒`;
+}
+
+/** 提取本轮事件切片（从上一条人类消息之后到本轮结束为止）。 */
+function rtEventsForTurn(events, target) {
+  const idx = events.indexOf(target);
+  if (idx < 0) return [target];
+  if (target.turnNo !== undefined) {
+    return events.filter(x => !x.subagent && x.turnNo === target.turnNo);
+  }
+  let start = idx;
+  while (start > 0) {
+    const prev = events[start - 1];
+    if (prev.kind === "turn-status" || (prev.kind === "message" && prev.role === "user" && !rtDeploymentNotice(prev) && !rtEnforcementNotice(prev))) break;
+    start--;
+  }
+  let end = idx;
+  while (end + 1 < events.length) {
+    const next = events[end + 1];
+    if (next.kind === "message" && next.role === "user" && !rtDeploymentNotice(next) && !rtEnforcementNotice(next)) break;
+    end++;
+    if (next.kind === "turn-status") break;
+  }
+  return events.slice(start, end + 1).filter(x => !x.subagent);
+}
+
+/** 确定性抽取本轮产出物 chip：部署结果、截图、文档/HTML 路径。 */
+function rtTurnArtifacts(e, turnEvents, sid) {
+  const chips = [];
+  // 1. 部署结果
+  for (let i = turnEvents.length - 1; i >= 0; i--) {
+    const d = rtDeploymentNotice(turnEvents[i]);
+    if (!d) continue;
+    const ok = d.tone === "ok";
+    const sha = /([0-9a-f]{7,12})\b/i.exec(d.title || d.summary || "")?.[1] || "";
+    chips.push({ kind: "deploy", tag: ok ? "已部署" : "部署", label: sha || d.title.replace(/^自动部署[：:\s]*/, ""), ok });
+    break;
+  }
+  // 2. 截图 / 图片
+  let imageCount = 0;
+  for (const x of turnEvents) {
+    if (x.kind === "image" && x.image?.status === "completed") imageCount++;
+    else if (x.kind === "notice" && x.image?.path) imageCount++;
+    else if (x.kind === "tool" && x.tool?.name === "platform_browser.receipt") imageCount++;
+  }
+  if (imageCount > 0) chips.push({ kind: "image", tag: "截图", label: `${imageCount} 张` });
+  // 3. 回复正文里明确提到的文档 / HTML 交付物路径（最多 2 个，避免挤爆）
+  const text = String(e.text || "");
+  const hints = typeof fileDirectoryHints === "function" ? fileDirectoryHints(text) : [];
+  const seenFiles = new Set();
+  const tryAddFile = (raw) => {
+    if (chips.length >= 4 || seenFiles.size >= 2) return;
+    const ref = typeof fileReference === "function" ? fileReference(raw, false, false) : null;
+    const p = ref?.path || (RT_CARD_FILE_EXT_RE.test(String(raw || "").trim()) && String(raw || "").includes("/") ? String(raw).trim() : "");
+    if (!p || !RT_CARD_FILE_EXT_RE.test(p)) return;
+    const base = p.split("/").pop() || p;
+    if (seenFiles.has(base)) return;
+    seenFiles.add(base);
+    const ext = (base.split(".").pop() || "").toLowerCase();
+    chips.push({ kind: "file", tag: ext === "html" || ext === "htm" ? "网页" : ext === "svg" ? "图示" : "文档", label: base, path: p, hints });
+  };
+  for (const m of text.matchAll(/`([^`\n]+)`/g)) tryAddFile(m[1]);
+  for (const m of text.matchAll(/\[[^\]\n]+\]\(([^)\n]+)\)/g)) tryAddFile(m[1]);
+  return chips;
+}
+
+/**
+ * 判断一条助手回复是否展示为「回合收束卡片（方案 A · 结论头条）」。
+ * 规则：
+ * - 仅单聊、非流式、非子 Agent，且为该轮最后一条助手回复；
+ * - 必须有真实生成的 headline（模型不可用或尚未到达时直接展示原回复，不编造标题）；
+ * - 短回复（< 240 字且 < 6 行）且无产出物、无明确待决定时不出卡，保持原样对话节奏。
+ */
+function rtTurnCardData(e, sid, events = ui.rt.events) {
+  if (!rtTurnSummaryModeEnabled()) return null;
+  if (!e || e.kind !== "message" || e.role !== "assistant" || e.partial || e.subagent) return null;
+  if (!sid || sid !== rtId()) return null;
+  if (rtStandaloneQuotaError(e)) return null;
+  const s = ui.rt.view?.session;
+  if (!s || s.platformSessionId !== sid || s.roomRef || s.comparisonRef || s.projectRef) return null;
+  const recovery = rtRecoveryState(s, events);
+  if (recovery && e.turnNo !== undefined && recovery.end.turnNo === e.turnNo) return null;
+  const turnEvents = rtEventsForTurn(events, e);
+  const lastAsstInTurn = [...turnEvents].reverse().find(x => x.kind === "message" && x.role === "assistant" && !x.partial && !x.subagent && String(x.text || "").trim());
+  if (!lastAsstInTurn || lastAsstInTurn.key !== e.key) return null;
+  const isLatest = typeof rtLastAssistantKey === "function" && rtLastAssistantKey() === e.key;
+  let headline = "", decision = "";
+  if (isLatest) {
+    const cur = typeof rtResolveQuickReplies === "function" ? rtResolveQuickReplies(sid, e.key, { fetch: false }) : ui.rt.quickReplies?.[sid];
+    if (cur && cur.key === e.key && cur.state === "ready") {
+      headline = cur.headline || "";
+      decision = cur.decision || "";
+    }
+    if (!headline && s.quickReplies?.eventKey === e.key) {
+      headline = s.quickReplies.headline || "";
+      decision = decision || s.quickReplies.decision || "";
+    }
+  }
+  if (!headline && s.turnSummaries?.[e.key]?.headline) {
+    headline = s.turnSummaries[e.key].headline;
+    decision = decision || s.turnSummaries[e.key].decision || "";
+  }
+  if (!headline) return null;
+  const text = String(e.text || "").trim();
+  const lineCount = text ? text.split(/\r?\n/).filter(l => l.trim()).length : 0;
+  const isLong = text.length >= 240 || lineCount >= 6;
+  const editedFiles = rtTurnEditedFiles(turnEvents);
+  const artifacts = rtTurnArtifacts(e, turnEvents, sid);
+  const hasArtifacts = artifacts.length > 0 || editedFiles > 0;
+  const hasDecision = !!decision;
+  if (!isLong && !hasArtifacts && !hasDecision) return null;
+  const turnRecord = e.turnNo !== undefined ? (s.turns || []).find(t => t.turnNo === e.turnNo) : null;
+  return {
+    headline,
+    decision,
+    isLong,
+    lineCount,
+    turnNo: e.turnNo,
+    durationText: rtTurnDurationText(turnRecord, turnEvents),
+    editedFiles,
+    artifacts,
+    isLatest
+  };
+}
+
+/** 输入区渲染快捷回复前检查：如果最新一轮已由回合收束卡片承接按钮，则不在输入区重复渲染。 */
+function rtTurnCardOwnsQuickReplies(id, key, events = ui.rt.events) {
+  if (!id || !key || !Array.isArray(events)) return false;
+  const target = events.find(e => e.key === key && e.kind === "message" && e.role === "assistant");
+  return !!target && !!rtTurnCardData(target, id, events);
+}
+
+function rtTurnCardRow(e, sid, card, time, meta, flags, copy) {
+  const attrs = { "data-ev-key": e.key, "data-ev-seq": String(e.seq) };
+  const statusParts = [
+    card.turnNo ? `第 ${card.turnNo} 轮` : null,
+    card.durationText || null,
+    card.editedFiles > 0 ? `改了 ${card.editedFiles} 个文件` : null
+  ].filter(Boolean);
+  const arts = card.artifacts.length ? h("div", { class: "rt-tc-arts" }, ...card.artifacts.map((a) => {
+    if (a.kind === "file" && typeof openFilePreview === "function") {
+      return h("button", {
+        type: "button", class: "rt-tc-chip is-link", title: `预览 ${a.path}`,
+        onclick: (ev) => void openFilePreview({ path: a.path, hints: a.hints }, { sessionId: sid }, ev.currentTarget)
+      }, h("i", {}, a.tag), h("b", {}, a.label));
+    }
+    return h("span", { class: `rt-tc-chip${a.ok ? " is-ok" : ""}` }, h("i", {}, a.tag), h("b", {}, a.label));
+  })) : null;
+  const actionGroup = card.isLatest && typeof rtTurnCardQuickReplies === "function" ? rtTurnCardQuickReplies(sid, e.key) : null;
+  const askBox = actionGroup ? h("div", { class: `rt-tc-ask${card.decision ? " has-decision" : " is-next"}` },
+    h("div", { class: "rt-tc-ask-k" }, card.decision ? "⚑ 要你决定" : "下一步"),
+    card.decision ? h("p", { class: "rt-tc-ask-q" }, card.decision) : null,
+    actionGroup) : null;
+  const mdBody = rtMarkdown(e.text, { sessionId: sid, streaming: false });
+  let moreSection = null;
+  if (card.isLong) {
+    const foldKey = `${sid}:${e.key}:turn-card`;
+    const isOpen = !!ui.rt.folds?.[foldKey];
+    const closedLabel = `展开完整说明 · 约 ${card.lineCount} 行`;
+    const lbl = h("span", { class: "rt-tc-toggle-lbl" }, isOpen ? "收起完整说明" : closedLabel);
+    const wrap = h("div", { class: `rt-tc-more${isOpen ? " is-open" : ""}`, "data-fold-key": foldKey },
+      h("div", { class: "rt-tc-clip" }, mdBody),
+      h("button", {
+        type: "button", class: "rt-tc-toggle", "aria-expanded": isOpen ? "true" : "false",
+        onclick: (ev) => {
+          const next = wrap.classList.toggle("is-open");
+          (ui.rt.folds ||= {})[foldKey] = next;
+          ev.currentTarget.setAttribute("aria-expanded", next ? "true" : "false");
+          lbl.textContent = next ? "收起完整说明" : closedLabel;
+        }
+      }, lbl, h("span", { class: "rt-tc-caret", "aria-hidden": "true" }, "›")));
+    moreSection = wrap;
+  } else {
+    moreSection = h("div", { class: "rt-tc-more is-inline" }, h("div", { class: "rt-tc-inline-body" }, mdBody));
+  }
+  return h("div", { ...attrs, class: "rt-row assistant has-turn-card" },
+    h("section", { class: "rt-turn-card", "aria-label": "本轮结果摘要" },
+      h("div", { class: "rt-tc-status" },
+        h("span", { class: "rt-tc-dot ok", "aria-hidden": "true" }, "✓"),
+        h("b", { class: "rt-tc-state ok" }, "已完成"),
+        statusParts.length ? h("span", { class: "rt-tc-meta" }, `· ${statusParts.join(" · ")}`) : null,
+        h("span", { class: "rt-tc-badge", title: "由轻量模型根据本轮回复提炼，下方可一键查看完整原文" }, "摘要")),
+      h("p", { class: "rt-tc-headline" }, card.headline),
+      arts,
+      askBox,
+      moreSection),
+    flags,
+    h("div", { class: "rt-row-meta" }, copy(e.text), time, meta));
 }
 /** 已有合并状态卡时，只有与详情重复的独立报错才收进详情。 */
 function rtRecoveryDuplicate(e, state) {
@@ -97,7 +392,10 @@ function rtBlocks(events, group = true) {
   const checks = new Map();
   const background = new Map();
   const recovery = rtRecoveryState();
+  // 同一次部署结果可能同时有时间线与平台系统事件两条：只画一行
+  const hidden = rtDeploymentNoticeDuplicates(events);
   for (const e of rtTurnEndRows(rtThinkingFirst(events))) {
+    if (hidden.has(e.key)) continue;
     if (rtRecoveryDuplicate(e, recovery)) continue;
     if (rtBackgroundTask(e)) {
       const key = `${e.turnNo ?? "legacy"}:${e.subagent || ""}`;
@@ -136,11 +434,28 @@ function rtBlocks(events, group = true) {
   }
   // 校验通常晚于结束事件到达；先归组再关联，也兼容历史记录的相反顺序。
   const ends = new Map(out.filter(b => b.event?.kind === "turn-status" && b.event.turnNo !== undefined).map(b => [b.event.turnNo, b]));
-  return out.filter(b => {
+  const merged = out.filter(b => {
     const e = b.event, end = e?.kind === "notice" && e.enforcementGroups && ends.get(e.turnNo);
     if (!end) return true;
     end.event = { ...end.event, enforcementGroups: e.enforcementGroups };
     return false;
+  });
+  // 已由「回合收束卡片」展示完成态的正常轮次，去掉紧跟其后的纯文字「本轮完成」分割线（含强约束校验的保留）。
+  if (!rtTurnSummaryModeEnabled()) return merged;
+  const sid = typeof rtId === "function" ? rtId() : "";
+  const cardTurns = new Set();
+  for (const b of merged) {
+    if (b.event?.kind === "message" && b.event.role === "assistant" && rtTurnCardData(b.event, sid, events)) {
+      if (b.event.turnNo !== undefined) cardTurns.add(b.event.turnNo);
+    }
+  }
+  return merged.filter((b, idx) => {
+    const e = b.event;
+    if (!e || e.kind !== "turn-status" || e.status !== "completed" || e.enforcementGroups?.length || e.cacheStats || e.contextStats) return true;
+    if (e.turnNo !== undefined && cardTurns.has(e.turnNo)) return false;
+    const prev = idx > 0 ? merged[idx - 1]?.event : null;
+    if (prev?.kind === "message" && prev.role === "assistant" && rtTurnCardData(prev, sid, events)) return false;
+    return true;
   });
 }
 /** 用源事件定位合并块，确保增量更新可以替换已有结束行。 */
@@ -300,26 +615,318 @@ function rtSystemNotice(e, notice, { sid, time, flags, deployment }) {
         deployment ? rtText(notice.summary, sid) : null,
         notice.detail ? rtText(notice.detail, sid) : null,
         notice.log ? h("div", { class: "rt-system-log" }, h("span", {}, "部署日志"), rtText(notice.log, sid)) : null,
+        deployment && typeof rtDeployNoticeGateSection === "function" ? rtDeployNoticeGateSection(e, sid) : null,
         flags), null, `${sid}:${e.key}:${deployment ? "deployment" : "enforcement"}`));
+}
+
+/** 创建安全内联 SVG 元素（避免 innerHTML，遵循全局 DOM 构建约定）。 */
+function rtSvg(tag, attrs, ...children) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    el.setAttribute(k, String(v));
+  }
+  for (const c of children.flat(Infinity)) {
+    if (c) el.append(c);
+  }
+  return el;
+}
+
+function rtTurnIconShield(mark) {
+  const inner = mark === "ok"
+    ? rtSvg("path", { d: "M6.8 10.6 9.1 13l4.2-4.6", "stroke-linecap": "round" })
+    : mark === "bad"
+      ? rtSvg("path", { d: "M10 6.8v4.6M10 14.3h.01", "stroke-linecap": "round" })
+      : rtSvg("path", { d: "M7 10.8h6", "stroke-linecap": "round" });
+  return rtSvg("svg", { viewBox: "0 0 20 22", fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linejoin": "round", "aria-hidden": "true" },
+    rtSvg("path", { d: "M10 1.8 18 5.2v5.8c0 5-3.4 7.7-8 9.2-4.6-1.5-8-4.2-8-9.2V5.2z" }), inner);
+}
+
+function rtTurnIconBolt() {
+  return rtSvg("svg", { viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", "stroke-width": "1.65", "stroke-linejoin": "round", "stroke-linecap": "round", "aria-hidden": "true" },
+    rtSvg("path", { d: "M11.2 2.5 4.8 11h4.6l-.6 6.5 6.4-8.5h-4.6z" }));
+}
+
+function rtTurnIconInfo() {
+  return rtSvg("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+    rtSvg("circle", { cx: "8", cy: "8", r: "6.2" }),
+    rtSvg("path", { d: "M8 7.3v3.6M8 5.1h.01" }));
+}
+
+/** 缓存检测口径说明（点 tips 入口展开）：术语 → 含义，与 cache-monitor.ts 的统计口径保持一致 */
+const RT_CACHE_TIPS = [
+  ["本轮首调", "你发出消息后，模型第一次调用的缓存命中比例（命中 ÷ 总输入）。最能反映上一轮留下的缓存还在不在，不会被后面多步工具调用的平均值掩盖。"],
+  ["本轮整轮", "本轮所有模型调用累计的命中与总输入，用来看整体成本。每一步工具调用都会重读上下文，所以总量通常是首调的数倍。"],
+  ["续聊间隔", "距上一轮结束过了多久。热窗内缓存应该还活着：Claude 50 分钟，其余 runtime 5 分钟；超出热窗是自然冷缓存，不判故障。"],
+  ["基线", "首调命中率的达标线：Claude / Codex / Pi ≥85%，Antigravity ≥80%。低于 30% 且多算 ≥3 万 tokens 为严重掉底，单次即告警；轻度偏低需连续 2 次。"],
+  ["前缀指纹", "系统提示 + MCP 参数的哈希，缓存要命中前缀必须逐字一致。未变化＝前缀稳定；同版本内漂移＝有字段在飘；跨版本变化＝发版有意改动，重建一次属正常。"],
+  ["计入条件", "第 ≥2 轮、上轮上下文 ≥3 万 tokens、同模型未压缩、距上轮结束在热窗内。不满足时只标注原因，不判好坏。"]
+];
+
+function rtCacheTipsToggle(panelId) {
+  const btn = h("button", {
+    type: "button", class: "rt-cert-tips-btn", "aria-expanded": "false", "aria-controls": panelId, "aria-label": "缓存统计口径说明", title: "口径说明",
+    onclick: (ev) => {
+      const b = ev.currentTarget;
+      const panel = b.closest(".rt-cert-sec")?.querySelector(".rt-cert-tips");
+      if (!panel) return;
+      const open = panel.hidden;
+      panel.hidden = !open;
+      b.setAttribute("aria-expanded", String(open));
+      b.classList.toggle("is-on", open);
+    }
+  }, rtTurnIconInfo(), h("span", {}, "口径"));
+  return btn;
+}
+
+function rtTurnIconRing(pct) {
+  const r = 5.4, c = 2 * Math.PI * r, clamped = Math.min(1, Math.max(0.04, Number.isFinite(pct) ? pct : 0.14));
+  const off = c * (1 - clamped);
+  return rtSvg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" },
+    rtSvg("circle", { class: "rt-cert-ring-bg", cx: "8", cy: "8", r: String(r) }),
+    rtSvg("circle", { class: "rt-cert-ring-fg", cx: "8", cy: "8", r: String(r), "stroke-dasharray": c.toFixed(1), "stroke-dashoffset": off.toFixed(1) }));
+}
+
+function rtTurnIconCaret() {
+  return rtSvg("svg", { viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" },
+    rtSvg("path", { d: "M6 3.5 10.5 8 6 12.5" }));
+}
+
+function rtFmtTokensShort(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v < 100_000) return `${(v / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  return `${Math.round(v / 1000)}k`;
+}
+
+function rtFmtTokensCn(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v < 10_000) return `${(v / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (v >= 1_000_000) return `${(v / 10_000).toFixed(0)} 万`;
+  return `${(v / 10_000).toFixed(1).replace(/\.0$/, "")} 万`;
+}
+
+function rtTurnCacheStatusTag(cs) {
+  if (!cs) return "";
+  if (cs.tone === "ok") return "达标";
+  if (cs.tone === "warn") return "偏低";
+  if (cs.tone === "bad") return "异常";
+  return ({ "first-turn": "首轮", "idle-beyond-warm-window": "已冷", "context-compacted": "压缩", "expected-version-prefix-change": "重建", "short-context": "短上下文" })[cs.skipReason] || "参考";
+}
+
+function rtTurnCacheRateText(cs) {
+  if (!cs) return "";
+  if (typeof cs.primaryRate === "number" && Number.isFinite(cs.primaryRate)) {
+    return `${(Math.max(0, cs.primaryRate) * 100).toFixed(1)}%`;
+  }
+  return cs.badgeLabel || "";
+}
+
+function rtTurnEndMeta(e, time) {
+  const parts = [h("span", { class: "rt-cert-label" }, e.text || RT_TURN[e.status] || "本轮结束")];
+  if (e.turnNo) parts.push(h("span", {}, `第 ${e.turnNo} 轮`));
+  if (time) parts.push(time);
+  return h("div", { class: "rt-cert-meta" }, parts.flatMap((part, i) => i ? [h("span", { "aria-hidden": "true" }, "·"), part] : [part]));
 }
 
 function rtEnforcementEnd(e, sid, time, flags) {
   if (e.occurredAt) time = h("time", { class: "rt-time", datetime: e.occurredAt, title: "北京时间（UTC+8）" }, new Date(e.occurredAt).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false, hour: "2-digit", minute: "2-digit" }));
-  const notice = rtEnforcementNotice({ ...e.enforcementGroups[0], enforcementGroups: e.enforcementGroups });
-  const { passed, failed, skipped } = notice.counts;
-  const total = passed + failed + skipped;
-  const state = failed ? "bad" : skipped || !total ? "neutral" : "ok";
-  const extras = [failed ? `未通过 ${failed}` : null, skipped ? `跳过 ${skipped}` : null].filter(Boolean);
-  // CSS mask 使用现有盾牌轮廓，内部符号明确区分全通过、未通过及跳过。
-  const icon = h("span", { class: "rt-cert-icon", "aria-hidden": "true" }, state === "ok" ? "✓" : state === "bad" ? "!" : "−");
-  const label = e.text || RT_TURN[e.status] || "本轮结束";
-  const summary = h("summary", { class: `rt-cert-summary ${state}`, "aria-label": `强约束校验，共 ${total} 项，${notice.summary}，展开或收起明细`, title: `强约束校验：${notice.summary}` },
-    h("span", { class: "rt-cert-label" }, label), h("span", { class: "rt-cert-badge" }, icon, h("span", { class: "rt-cert-count" }, total), ...extras.map(text => h("span", { class: "rt-cert-extra" }, `· ${text}`))));
-  const fold = rtLazyFold({ class: "rt-cert-details" }, summary, () => h("div", {},
-    h("strong", {}, `强约束校验 · 共 ${total} 项`), h("p", {}, notice.summary), rtText(notice.detail, sid),
-    rtCopyButton(notice.detail, "复制", { announce: "已复制检查明细" })), null, `${sid}:${e.key}:certification`);
-  return h("section", { class: `rt-row rt-certified-end ${e.status || ""}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq), "aria-label": "本轮结束与强约束校验" },
-    h("div", { class: "rt-cert-meta" }, time, e.turnNo ? h("span", {}, `第 ${e.turnNo} 轮`) : null),
+  const hasEnforce = !!e.enforcementGroups?.length;
+  const cs = e.cacheStats || null;
+  const ctx = e.contextStats && e.contextStats.totalTokens > 0 ? e.contextStats : null;
+  let state = "neutral";
+  let enforceMark = "skip";
+  let enforceTone = "neutral";
+  let enforceBadge = null;
+  let notice = null;
+  let total = 0;
+  if (hasEnforce) {
+    notice = rtEnforcementNotice({ ...e.enforcementGroups[0], enforcementGroups: e.enforcementGroups });
+    const { passed, failed, skipped } = notice.counts;
+    total = passed + failed + skipped;
+    enforceTone = failed ? "bad" : skipped || !total ? "neutral" : "ok";
+    enforceMark = failed ? "bad" : skipped || !total ? "skip" : "ok";
+    state = enforceTone;
+    enforceBadge = h("span", {
+      class: `rt-cert-ind rt-cert-badge ${enforceTone}`,
+      "data-jump": "enforce",
+      title: `强约束检测：${notice.summary}`
+    },
+    h("span", { class: "rt-cert-icon", "data-mark": enforceMark, "aria-hidden": "true" }, rtTurnIconShield(enforceMark)),
+    h("span", { class: "rt-cert-count" }, total));
+  } else if (cs) {
+    state = cs.tone === "bad" ? "bad" : cs.tone === "warn" ? "warn" : cs.tone === "ok" ? "ok" : "neutral";
+  } else if (ctx) {
+    state = ctx.tone || "neutral";
+  }
+
+  const cacheRateText = rtTurnCacheRateText(cs);
+  const cacheTag = rtTurnCacheStatusTag(cs);
+  const cacheBadge = cs
+    ? h("span", {
+      class: `rt-cert-ind rt-cert-cache ${cs.tone || "neutral"}`,
+      "data-jump": "cache",
+      title: `缓存检测：${cacheRateText}${cacheTag ? `（${cacheTag}）` : ""} · ${cs.summary}`
+    },
+    h("span", { class: "rt-cert-ind-ico", "aria-hidden": "true" }, rtTurnIconBolt()),
+    h("span", { class: "rt-cert-cache-val" }, cacheRateText))
+    : null;
+
+  const ctxPct = ctx?.usageRatio !== undefined ? Math.round(ctx.usageRatio * 100) : null;
+  const ctxSummaryText = ctx
+    ? (ctx.windowTokens
+      ? `${rtFmtTokensCn(ctx.totalTokens)} / ${rtFmtTokensCn(ctx.windowTokens)}（${ctxPct}%${ctx.tone === "bad" ? " · 临近满窗" : ctx.tone === "warn" ? " · 接近上限" : ""}）`
+      : `${rtFmtTokensCn(ctx.totalTokens)} tokens`)
+    : "";
+  const ctxDeltaText = ctx && typeof ctx.deltaTokens === "number" && Number.isFinite(ctx.deltaTokens) && ctx.deltaTokens !== 0
+    ? ` · 本轮 ${ctx.deltaTokens > 0 ? "+" : "-"}${rtFmtTokensCn(Math.abs(ctx.deltaTokens))}`
+    : "";
+  const ctxBadge = ctx
+    ? h("span", {
+      class: `rt-cert-ind rt-cert-ctx ${ctx.tone || "neutral"}`,
+      "data-jump": "ctx",
+      title: `上下文占比：${ctxSummaryText}${ctxDeltaText}`
+    },
+    h("span", { class: "rt-cert-ind-ico", "aria-hidden": "true" }, rtTurnIconRing(ctx.usageRatio ?? 0.14)),
+    h("span", { class: "rt-cert-ctx-short" }, rtFmtTokensShort(ctx.totalTokens)))
+    : null;
+
+  const ariaParts = [
+    hasEnforce ? `强约束检测，共 ${total} 项，${notice.summary}` : null,
+    cs ? `缓存检测 ${cacheRateText}（${cacheTag}），${cs.summary}` : null,
+    ctx ? `上下文占用 ${ctxSummaryText}` : null
+  ].filter(Boolean);
+
+  let pendingJump = null;
+  const summary = h("summary", {
+    class: `rt-cert-summary ${state}`,
+    "aria-label": `${ariaParts.join("；")}，展开或收起明细`,
+    title: ariaParts.join(" · "),
+    onclick: (ev) => {
+      const target = ev.target instanceof Element ? ev.target.closest("[data-jump]") : null;
+      pendingJump = target ? target.getAttribute("data-jump") : null;
+    }
+  },
+  h("span", { class: "rt-cert-trigger" },
+    enforceBadge,
+    cacheBadge,
+    ctxBadge,
+    h("span", { class: "rt-cert-caret", "aria-hidden": "true" }, rtTurnIconCaret())));
+
+  const fold = rtLazyFold({ class: "rt-cert-details" }, summary, () => {
+    const sections = [];
+    if (hasEnforce) {
+      const ruleNodes = [];
+      const feedbackNodes = [];
+      for (const g of e.enforcementGroups) {
+        if (rtEnforcementFeedback(g)) {
+          feedbackNodes.push(h("div", { class: "rt-cert-feedback" },
+            h("div", { class: "rt-cert-feedback-title" }, "自动补救指令："),
+            rtText(g.text, sid)));
+          continue;
+        }
+        const check = g.enforcement;
+        if (!check?.rules?.length) continue;
+        const mark = check.phase === "passed" ? "ok" : check.phase === "skipped" ? "skip" : "bad";
+        const glyph = mark === "ok" ? "✓" : mark === "bad" ? "!" : "−";
+        for (const r of check.rules) {
+          const desc = [
+            r.problem ? `问题：${r.problem}` : null,
+            r.fix ? `怎么改：${r.fix}` : null,
+            r.note ? `原因：${r.note}` : null,
+            !r.problem && !r.fix && !r.note && r.statement ? `记忆「${r.topic || "规则"}」：${r.statement}` : null
+          ].filter(Boolean).join(" · ");
+          ruleNodes.push(h("div", { class: "rt-cert-rule" },
+            h("span", { class: `rt-cert-rule-mark ${mark}`, "aria-hidden": "true" }, glyph),
+            h("div", { class: "rt-cert-rule-body" },
+              h("span", {}, r.title || r.topic || "强约束项"),
+              desc ? h("span", { class: `rt-cert-rule-sub${mark === "bad" ? " bad" : ""}` }, desc) : null)));
+        }
+      }
+      sections.push(h("div", { class: "rt-cert-sec", "data-sec": "enforce" },
+        h("div", { class: "rt-cert-sec-head" },
+          h("span", { class: `rt-cert-ind ${enforceTone}`, "aria-hidden": "true" }, rtTurnIconShield(enforceMark)),
+          h("span", {}, "强约束检测"),
+          h("span", { class: `rt-cert-sec-tag ${enforceTone}` }, notice.summary),
+          rtCopyButton(notice.detail, "复制", { announce: "已复制检查明细" })),
+        ruleNodes.length ? h("div", { class: "rt-cert-rules" }, ruleNodes) : rtText(notice.detail, sid),
+        feedbackNodes));
+    }
+    if (cs) {
+      const detailText = cs.detail || cs.summary || "";
+      const tipsId = `rt-cache-tips-${String(e.key).replace(/[^\w-]/g, "_")}`;
+      const rows = detailText.split("\n").filter(Boolean).map((line) => {
+        const idx = line.indexOf("：");
+        if (idx > 0 && idx <= 8) {
+          // 旧消息持久化的明细仍是「跨回合首调」，展示时统一成「本轮首调」
+          const k = line.slice(0, idx) === "跨回合首调" ? "本轮首调" : line.slice(0, idx);
+          const v = line.slice(idx + 1);
+          const vCls = (k === "本轮首调" && (cs.tone === "bad" || cs.tone === "warn"))
+            ? cs.tone
+            : (k === "前缀指纹" && /漂移|变更/.test(v) ? "bad" : "");
+          return h("div", { class: "rt-cert-cache-row" },
+            h("span", { class: "rt-cert-cache-k" }, k),
+            h("span", { class: `rt-cert-cache-v${vCls ? ` ${vCls}` : ""}` }, v));
+        }
+        return h("p", { class: "rt-cert-cache-line" }, line);
+      });
+      sections.push(h("div", { class: "rt-cert-sec", "data-sec": "cache" },
+        h("div", { class: "rt-cert-sec-head" },
+          h("span", { class: `rt-cert-ind ${cs.tone || "neutral"}`, "aria-hidden": "true" }, rtTurnIconBolt()),
+          h("span", {}, "缓存检测"),
+          h("span", { class: `rt-cert-sec-tag ${cs.tone || "neutral"}` }, cacheTag),
+          rtCacheTipsToggle(tipsId),
+          rtCopyButton(detailText, "复制", { announce: "已复制缓存明细" })),
+        h("div", { class: "rt-cert-cache-list" }, rows),
+        h("dl", { class: "rt-cert-tips", id: tipsId, hidden: true },
+          RT_CACHE_TIPS.map(([k, v]) => h("div", { class: "rt-cert-tips-row" }, h("dt", {}, k), h("dd", {}, v))))));
+    }
+    if (ctx) {
+      const parts = Array.isArray(ctx.parts) ? ctx.parts.filter((p) => p && p.percent > 0) : [];
+      const toolParts = Array.isArray(ctx.toolBreakdown) ? ctx.toolBreakdown.filter((p) => p && p.tokens > 0) : [];
+      sections.push(h("div", { class: "rt-cert-sec", "data-sec": "ctx" },
+        h("div", { class: "rt-cert-sec-head" },
+          h("span", { class: `rt-cert-ind ${ctx.tone || "neutral"}`, "aria-hidden": "true" }, rtTurnIconRing(ctx.usageRatio ?? 0.14)),
+          h("span", {}, "上下文占比"),
+          h("span", { class: "rt-cert-sec-right" }, `${ctxSummaryText}${ctxDeltaText}`)),
+        parts.length ? h("div", { class: "rt-cert-ctx-bar", "aria-hidden": "true" },
+          parts.map((p) => {
+            const seg = h("span", { class: `rt-cert-ctx-seg is-${p.key}` });
+            // style-src 'self' 会拦内联 style 属性，改用 CSSOM 设占比宽度
+            seg.style.flexGrow = String(p.percent);
+            seg.style.flexBasis = "0%";
+            return seg;
+          })) : null,
+        parts.length ? h("div", { class: "rt-cert-ctx-grid" },
+          parts.map((p) => h("div", { class: "rt-cert-ctx-row" },
+            h("i", { class: `rt-cert-ctx-dot is-${p.key}`, "aria-hidden": "true" }),
+            h("span", { class: "rt-cert-ctx-name" }, p.label),
+            h("span", { class: "rt-cert-ctx-val" }, `${p.percent}% · ${rtFmtTokensCn(p.tokens)}`)))) : null,
+        toolParts.length ? h("div", { class: "rt-cert-ctx-tools" },
+          h("div", { class: "rt-cert-ctx-tools-title" }, "工具输出构成（占上下文）"),
+          toolParts.map((p) => h("div", { class: "rt-cert-ctx-row" },
+            h("span", { class: "rt-cert-ctx-name" }, `${p.label} · ${p.calls} 次`),
+            h("span", { class: "rt-cert-ctx-val" }, `${p.percent > 0 ? `${p.percent}%` : "<1%"} · ${rtFmtTokensCn(p.tokens)}`)))) : null,
+        h("p", { class: "rt-cert-ctx-note" }, "总量来自 runtime 实测，各段占比按本会话事件字符权重估算")));
+    }
+    return h("div", { class: "rt-cert-panel" }, sections);
+  }, null, `${sid}:${e.key}:certification`);
+
+  fold.addEventListener("toggle", () => {
+    if (!fold.open || !pendingJump) return;
+    const sec = fold.querySelector(`[data-sec="${pendingJump}"]`);
+    pendingJump = null;
+    if (!sec) return;
+    sec.classList.remove("is-flash");
+    void sec.offsetWidth;
+    sec.classList.add("is-flash");
+    setTimeout(() => sec.classList.remove("is-flash"), 650);
+  });
+
+  const regionLabel = hasEnforce ? "本轮结束与强约束校验" : cs ? "本轮结束与缓存命中" : "本轮结束与上下文统计";
+  return h("section", { class: `rt-row rt-certified-end ${e.status || ""}`, "data-ev-key": e.key, "data-ev-seq": String(e.seq), "aria-label": regionLabel },
+    rtTurnEndMeta(e, time),
     fold, flags);
 }
 
@@ -341,8 +948,8 @@ function rtEventRow(e, sid = rtId()) {
   const attrs = { "data-ev-key": e.key, "data-ev-seq": String(e.seq) };
   const copy = (text) => rtCopyButton(text || "", "复制", { announce: "已复制消息" });
   const recovery = e.kind === "turn-status" ? rtRecoveryRow(e, sid, time, flags) : null;
-  if (recovery) return e.enforcementGroups?.length ? h("div", { ...attrs, class: "rt-recovery-group" }, recovery, rtEnforcementEnd({ ...e, text: "强约束校验" }, sid, null, null)) : recovery;
-  if (e.kind === "turn-status" && e.enforcementGroups?.length) return rtEnforcementEnd(e, sid, time, flags);
+  if (recovery) return (e.enforcementGroups?.length || e.cacheStats || e.contextStats) ? h("div", { ...attrs, class: "rt-recovery-group" }, recovery, rtEnforcementEnd({ ...e, text: e.enforcementGroups?.length ? "强约束校验" : "本轮完成" }, sid, null, null)) : recovery;
+  if (e.kind === "turn-status" && (e.enforcementGroups?.length || e.cacheStats || e.contextStats)) return rtEnforcementEnd(e, sid, time, flags);
   const deployment = rtDeploymentNotice(e);
   if (deployment) return rtSystemNotice(e, deployment, { sid, time, flags, deployment: true });
   const enforcement = deployment ? null : rtEnforcementNotice(e);
@@ -368,11 +975,15 @@ function rtEventRow(e, sid = rtId()) {
     h("div", { class: "rt-bubble user" }, rtText(e.text, sid), rtAttachmentHistory(e.attachments, sid)), flags,
     e.partial || typeof fileChip === "function" ? null : rtFileStrip(sid, rtFileRefs(e.text)),
     h("div", { class: "rt-row-meta" }, time, meta, rtRememberButton(sid, e), copy(e.text)));
-  if (e.kind === "message") return h("div", { ...attrs, class: `rt-row assistant${e.subagent ? " sub" : ""}` },
-    rtMarkdown(e.text, {sessionId:sid, streaming:!!e.partial}), flags,
-    // 回复里提到的图片 / HTML：预览卡片（流式生成中先不检查）
-    e.partial || typeof fileChip === "function" ? null : rtFileStrip(sid, rtFileRefs(e.text)),
-    h("div", { class: "rt-row-meta" }, copy(e.text), time, meta));
+  if (e.kind === "message") {
+    const card = rtTurnCardData(e, sid, ui.rt.events);
+    if (card) return rtTurnCardRow(e, sid, card, time, meta, flags, copy);
+    return h("div", { ...attrs, class: `rt-row assistant${e.subagent ? " sub" : ""}` },
+      rtMarkdown(e.text, {sessionId:sid, streaming:!!e.partial}), flags,
+      // 回复里提到的图片 / HTML：预览卡片（流式生成中先不检查）
+      e.partial || typeof fileChip === "function" ? null : rtFileStrip(sid, rtFileRefs(e.text)),
+      h("div", { class: "rt-row-meta" }, copy(e.text), time, meta));
+  }
   if (e.kind === "reasoning") return rtLazyFold({ ...attrs, class: "rt-row fold reasoning" },
     h("summary", {}, h("span", { class: "rt-fold-icon", "aria-hidden": "true" }, "✻"), h("span", { class: "rt-fold-title" }, "思考过程"), h("span", { class: "rt-fold-caret", "aria-hidden": "true" }, "›"), time),
     () => h("div", { class: "rt-fold-body rt-reasoning-text" }, e.text || ""), flags, `${sid}:${e.key}`);
@@ -403,7 +1014,7 @@ function rtEventRow(e, sid = rtId()) {
   // 运行时记录的「查看图片」：小号预览图，点击看大图
   if (e.kind === "notice" && e.image?.path) return h("div", { ...attrs, class: "rt-row note rt-image-ref-row" }, rtViewedImage(sid, e.image.path, e), time, meta);
   if (e.kind === "approval") return h("div", { ...attrs, class: "rt-row note" }, h("span", {}, `⚑ ${e.text || ""}`), time);
-  if (e.kind === "turn-status") return h("div", { ...attrs, class: `rt-row turn ${e.status || ""}` }, h("span", {}, e.text || RT_TURN[e.status] || "本轮结束"), time);
+  if (e.kind === "turn-status") return h("div", { ...attrs, class: `rt-row turn ${e.status || ""}` }, rtTurnEndMeta(e, time));
   if (e.kind === "error") return h("div", { ...attrs, class: "rt-row note bad" }, h("span", {}, e.text || "错误"), time);
   return h("div", { ...attrs, class: "rt-row note" }, h("span", {}, e.text || e.kind), time, meta, flags);
 }

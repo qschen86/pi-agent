@@ -261,7 +261,10 @@ export class ClaudeDriver implements RuntimeDriver {
         const reason=scanViolation(input.tool_name,input.tool_input,{cwd:args.workspace})??screenshotViolation(input.tool_name,input.tool_input,args.workspace);
         return reason?{hookSpecificOutput:{hookEventName:"PreToolUse" as const,permissionDecision:"deny" as const,permissionDecisionReason:reason}}:{};
       }]}]}}:{}),
-      ...(args.platformBrowser?{mcpServers:{platform_browser:{command:process.execPath,args:[args.platformBrowser.bridgePath,args.platformBrowser.socketPath]}}}:{}),
+      ...(!boundary && !args.readOnlyRoom && (args.platformBrowser||args.capabilityGateway)?{mcpServers:{
+        ...(args.platformBrowser?{platform_browser:{command:process.execPath,args:[args.platformBrowser.bridgePath,args.platformBrowser.socketPath]}}:{}),
+        ...(args.capabilityGateway&&args.permissionMode!=="plan"?{capability_gateway:{command:process.execPath,args:[args.capabilityGateway.bridgePath,args.capabilityGateway.socketPath]}}:{})
+      }}:{}),
       // V3.0 角色：保留 Claude Code 默认系统提示，只附加角色指令（替换基础提示需另做兼容验证）
       ...(args.roleInstructions ? { systemPrompt: { type: "preset", preset: "claude_code", append: args.roleInstructions } } : {}),
       ...(resume ? { resume } : { sessionId }),

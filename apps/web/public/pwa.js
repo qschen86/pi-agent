@@ -126,8 +126,59 @@
   // 静默升级默认开启（原生壳固定开启）。浏览器里可以用 localStorage['pi-pwa-silent-update']='off' 退回「点了才下载」的手动流程。
   const silent = native || (() => { try { return localStorage.getItem('pi-pwa-silent-update') !== 'off'; } catch { return true; } })();
   // latest: 最近一次从服务器查到的 release 及时间；inspecting: 打开面板时的实时查询；job: 点「更新页面」后的进度
-  let latest = null, inspecting = false, inspectFailed = false, upToDate = false, job = null, switched = false;
+  let latest = null, inspecting = false, inspectFailed = false, upToDate = false, job = null, switched = false, metadataSequence = 0;
   const valid = release => /^[a-f0-9]{64}$/.test(release || '');
+
+  // A connection change is a recovery boundary, rather than an ordinary background
+  // update: finish checking and applying in this page, without waiting for another tap.
+  const RECOVERY_DELAYS = [1500, 3000, 6000, 12000];
+  let recovering = false, recoveryBusy = false, recoveryStep = 0, recoveryTimer, recoveryNotice, recoveryPhase = '';
+  function recoveryStatus(phase, text) {
+    recoveryPhase = phase;
+    clearTimeout(recoveryNotice?._toastTimer);
+    recoveryNotice?.remove();
+    recoveryNotice = text ? window.piToast(text, { ms: phase === 'ready' ? 4000 : 2147483647, tone: phase === 'failed' || phase === 'blocked' ? 'warn' : '', attrs: { 'data-connection-recovery': phase } }) : null;
+    if (phase === 'failed' && recoveryNotice) {
+      const retry = document.createElement('button'); retry.type = 'button'; retry.className = 'btn small'; retry.textContent = '重试连接';
+      retry.addEventListener('click', () => void recoverConnection());
+      recoveryNotice.insertBefore(retry, recoveryNotice.lastElementChild);
+    }
+  }
+  function retryRecovery() {
+    if (recoveryTimer || !recovering) return;
+    if (recoveryStep >= RECOVERY_DELAYS.length) {
+      recovering = false;
+      recoveryStatus('failed', '连接恢复或页面更新暂未完成，联网后会自动再试');
+      return;
+    }
+    recoveryTimer = setTimeout(() => { recoveryTimer = null; void recoverConnection(false); }, RECOVERY_DELAYS[recoveryStep++]);
+  }
+  async function recoverConnection(reset = true) {
+    if (!silent || recoveryBusy || applying || document.visibilityState === 'hidden') return false;
+    if (reset) { clearTimeout(recoveryTimer); recoveryTimer = null; recoveryStep = 0; }
+    recovering = true; recoveryBusy = true;
+    recoveryStatus('checking', '正在恢复连接并核对页面版本…');
+    try {
+      const sequence = metadataSequence;
+      await check(true);
+      if (metadataSequence === sequence) { retryRecovery(); return false; }
+      if (!candidate) {
+        recovering = false;
+        recoveryStatus('ready', '连接已恢复，页面已是最新版本');
+        return true;
+      }
+      const blocked = protection();
+      if (blocked) { recoveryStatus('blocked', blocked + '；处理完成后会自动更新页面'); return false; }
+      recoveryStatus('updating', '连接已恢复，正在更新页面…');
+      const applied = await apply();
+      if (!applied) {
+        if (protection()) recoveryStatus('blocked', protection() + '；处理完成后会自动更新页面');
+        else retryRecovery();
+      }
+      return applied;
+    } catch { retryRecovery(); return false; }
+    finally { recoveryBusy = false; }
+  }
 
   /* ---------- What prevents a refresh, and where the user can resolve it ---------- */
   const title = id => { try { return typeof rtDirEntry === 'function' ? rtDirEntry(id)?.title || '' : ''; } catch { return ''; } };
@@ -404,6 +455,7 @@
     const m = await r.json();
     if (m.schema !== 1 || !valid(m.release) || (m.previousRelease !== null && !valid(m.previousRelease)) || !Array.isArray(m.assets) || !m.assets.length || m.assets.length > 96 || new Set(m.assets).size !== m.assets.length || m.assets.some(u => !/^\/assets\/[a-f0-9]{64}\/[a-z][a-z0-9-]*\.(js|css)$/.test(u))) throw new Error('invalid release');
     latest = { m, at: Date.now(), fresh: !!latest?.fresh && latest.m.release === m.release };
+    metadataSequence++;
     return m;
   }
   // 下载时边读边数字节，进度条和剩余时间都按真实字节走；同时记下实测速度。
@@ -527,7 +579,7 @@
       if (m.release === current) { candidate = null; upToDate = isOpen(); return false; }
       if (candidate?.release !== m.release) { candidate = m; note = ''; } else candidate = m;
       // 代码在后台自己下好，下次切换页面 / 回到前台时直接生效；用户只需要一条 Tip。
-      if (silent && !downloaded(m)) void prepareInBackground(m);
+      if (silent && !recovering && !downloaded(m)) void prepareInBackground(m);
       return true;
     }
     finally { checking = false; settleView(); }
@@ -560,14 +612,22 @@
   function stage(name) { applying = name; if (job) job.stageAt = performance.now(); render(); }
   function reload() {
     clearTimeout(stallTimer);
+    const url = new URL(location.href);
     if (!job) startJob('apply', target());
     stage('reloading');
     // If the page is still here after the refresh should have finished, offer a manual retry.
     stallTimer = setTimeout(() => { if (applying === 'reloading') { applying = 'stalled'; endJob(); render(); } }, STALL_MS);
-    location.reload();
+    if (recovering) {
+      // An older controlling worker may still return its old root shell. A unique
+      // query bypasses that shell (including workers from before this fix).
+      url.searchParams.set('__heji_connection', Date.now().toString());
+      url.searchParams.set('__heji_release', candidate.release);
+      location.replace(url.href);
+    } else location.reload();
+    return true;
   }
   async function apply() {
-    if (applying === 'stalled') { if (protection()) { applying = ''; render(); return false; } reload(); return true; }
+    if (applying === 'stalled') { if (protection()) { applying = ''; render(); return false; } return reload(); }
     if (!candidate || applying || protection()) { render(); return false; }
     note = ''; startJob('apply', candidate); stage('confirming');
     try {
@@ -584,11 +644,24 @@
       try { if (!await prepare(m)) return false; }
       catch (error) { failure(error, '新版本下载失败' + (error?.file ? `（${error.file}：${error.detail}）` : '') + '，可以再点一次「更新页面」'); return false; }
       if (protection()) return false;
+      if (recovering) {
+        // Metadata can be fresh while an older proxy still replays its cached HTML.
+        // Confirm the document itself before navigating, so recovery cannot loop
+        // through the same old homepage on every load.
+        const url = new URL(location.href); url.hash = '';
+        url.searchParams.set('__heji_connection', Date.now().toString());
+        try {
+          const response = await fetch(url.href, { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(8000) });
+          if (!response.ok || response.redirected || response.headers.get('x-pi-web-release') !== candidate.release ||
+              !(response.headers.get('content-type') || '').startsWith('text/html')) { note = '首页版本尚未就绪，稍后自动重试'; return false; }
+          await response.text();
+        } catch { note = '首页暂时无法更新，稍后自动重试'; return false; }
+      }
       stage('worker');
       await window.piPwaWorker.settle(WORKER_WAIT_MS);
       if (protection()) return false;
       try { sessionStorage.setItem(UPDATED_KEY, JSON.stringify({ from: current, to: candidate.release, at: Date.now() })); } catch {}
-      reload(); return true;
+      return reload();
     } finally { if (applying !== 'reloading') { applying = ''; endJob(); } settleView(); }
   }
 
@@ -619,18 +692,25 @@
     try { channel = new BroadcastChannel('pi-pwa-release-v1'); channel.onmessage = e => {
       if (e.data?.type === 'release-ready' && valid(e.data.release) && e.data.release !== current) void check();
     }; } catch {}
-    window.addEventListener('online', () => void check());
-    window.addEventListener('pi-native-resume', () => { void check(); applyOnNextModule(); });
+    window.addEventListener('online', () => { if (silent) void recoverConnection(); else void check(true); });
+    window.addEventListener('pi-native-resume', () => { if (native) void recoverConnection(); else { void check(true); applyOnNextModule(); } });
+    window.addEventListener('pi-network-change', () => { if (native) void recoverConnection(); });
     // 「下次刷新对应的前端模块」就是切路由：那一下直接用新版本重新载入，位置和草稿都还在。
     window.addEventListener('hashchange', () => { applyOnNextModule(); });
     window.addEventListener('focus', () => void check()); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { void check(); applyOnNextModule(); } });
     document.addEventListener('compositionstart', () => { composing = true; render(); }); document.addEventListener('compositionend', () => { composing = false; render(); });
-    document.addEventListener('input', render); document.addEventListener('change', render);
-    const poll = setInterval(() => { render(); void check(); }, 300000), guardTimer = setInterval(() => { if (candidate && document.visibilityState !== 'hidden') render(); }, 1000);
-    window.addEventListener('pagehide', e => { if (!e.persisted) { clearTimeout(deferredCheck); clearInterval(poll); clearInterval(guardTimer); channel?.close(); } });
-    setTimeout(() => void check(), 5000);
+    const edited = () => { render(); if (recovering && recoveryPhase === 'blocked' && !protection()) retryRecovery(); };
+    document.addEventListener('input', edited); document.addEventListener('change', edited);
+    document.addEventListener('compositionend', edited);
+    const poll = setInterval(() => { render(); void check(); }, 300000), guardTimer = setInterval(() => {
+      if (candidate && document.visibilityState !== 'hidden') render();
+      if (recovering && recoveryPhase === 'blocked' && !protection()) retryRecovery();
+    }, 1000);
+    window.addEventListener('pagehide', e => { if (!e.persisted) { clearTimeout(recoveryTimer); clearTimeout(deferredCheck); clearInterval(poll); clearInterval(guardTimer); channel?.close(); } });
+    if (new URL(location.href).searchParams.has('__heji_connection') || document.documentElement.dataset.piShell) void recoverConnection();
+    else setTimeout(() => void check(), 5000);
   }
-  window.piPwa = { current, check, apply, inspect, protection, blockers, state: () => ({ downloaded: downloaded(candidate), checking, applying, inspecting, upToDate, native, candidate: candidate?.release ?? null, latest: latest?.m.release ?? null, percent: job?.percent ?? null }) };
+  window.piPwa = { current, check, apply, inspect, recoverConnection, protection, blockers, state: () => ({ recovery: recoveryPhase, recoveryBusy, downloaded: downloaded(candidate), checking, applying, inspecting, upToDate, native, candidate: candidate?.release ?? null, latest: latest?.m.release ?? null, percent: job?.percent ?? null }) };
   if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', start, { once: true }); else start();
 })();
 

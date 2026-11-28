@@ -439,7 +439,10 @@ function sessionPersistCurrent(resource) {
 }
 function sessionDiskPanel(resource, display) {
   const state = resource.kind === 'rt' ? ui.rt : ui.room;
-  const box = h('div',{class:'rt-transcript'+(resource.kind === 'room'?' room-timeline':''),role:'log',tabindex:'0',onscroll:ev=>{state.atBottom=ev.target.scrollHeight-ev.target.scrollTop-ev.target.clientHeight<40;state.reading=sessionReadingCapture(ev.target,state.atBottom);sessionPersistenceReading(resource,state.reading,display.expanded);}},display.items.map(item=>resource.kind==='rt' ? rtEventRow(item,resource.id) : sessionDiskRoomRow(item,display)));
+  // 同一次部署结果可能同时有平台系统事件与唤醒模型的用户消息两条：和实时视图同一套去重
+  const hidden = resource.kind === 'rt' && typeof rtDeploymentNoticeDuplicates === 'function' ? rtDeploymentNoticeDuplicates(display.items) : null;
+  const items = hidden ? display.items.filter(item => !hidden.has(item.key)) : display.items;
+  const box = h('div',{class:'rt-transcript'+(resource.kind === 'room'?' room-timeline':''),role:'log',tabindex:'0',onscroll:ev=>{state.atBottom=ev.target.scrollHeight-ev.target.scrollTop-ev.target.clientHeight<40;state.reading=sessionReadingCapture(ev.target,state.atBottom);sessionPersistenceReading(resource,state.reading,display.expanded);}},items.map(item=>resource.kind==='rt' ? rtEventRow(item,resource.id) : sessionDiskRoomRow(item,display)));
   const missing = display.reading?.seq != null && !display.items.some(x=>x.seq === display.reading.seq);
   const summary = display.summary ? {title:display.summary.title,runtimeKind:display.summary.runtimeKind} : null;
   // The body is already on screen, so this is a real header with a real title and a「本机」chip —
@@ -462,7 +465,18 @@ function sessionDiskPanel(resource, display) {
     resource.kind === 'rt' && typeof rtComposerLoading === 'function' ? rtComposerLoading() : null);
 }
 function sessionPersistenceSettings() {
-  return h('section',{class:'nav-settings-cache'},h('label',{},h('input',{type:'checkbox',checked:sessionDisk.enabled,onchange:async ev=>{await sessionPersistenceEnable(ev.target.checked);ev.target.checked=sessionDisk.enabled;}}),' 保存本机会话正文'),h('p',{class:'muted small'},'会话列表和最近会话正文保存在本机，打开即显示，再在后台核对更新；正文最多保存 7 天，退出登录或登录失效会立即清除。本机匿名入口不保存。'),h('button',{type:'button',class:'btn small',onclick:async ev=>{await sessionPersistenceClear();ev.target.textContent='已清除正文缓存';}},'清除本机正文缓存'),h('p',{class:'muted small'},'只清除此站点保存的会话列表、正文和阅读快照，保留输入草稿及服务器历史。'),sessionOpenTimingLine());
+  // 设计稿 A：一行一条 ── 左边标题 + 一句话，开关在右；清除是本行的红色动作行。
+  return h('div',{class:'settings-cache-rows'},
+    h('div',{class:'settings-row','data-cache-toggle-row':''},
+      h('span',{class:'settings-row-text'},
+        h('b',{},'保存本机会话正文'),
+        h('p',{},'最多保存 7 天，退出登录或登录失效会立即清除；本机匿名入口不保存。')),
+      h('input',{type:'checkbox',role:'switch',class:'settings-switch','aria-label':'保存本机会话正文',checked:sessionDisk.enabled,onchange:async ev=>{await sessionPersistenceEnable(ev.target.checked);ev.target.checked=sessionDisk.enabled;}})),
+    h('button',{type:'button',class:'settings-row act',onclick:async ev=>{await sessionPersistenceClear();ev.currentTarget.querySelector('b').textContent='已清除正文缓存';}},
+      h('span',{class:'settings-row-text'},
+        h('b',{},'清除本机正文缓存'),
+        h('p',{},'只清除本站保存的会话列表、正文和阅读快照，保留草稿与服务器历史。'))),
+    sessionOpenTimingLine());
 }
 function sessionOpenTimingLine() {
   const s = window.piOpenTiming?.summary?.(), ms = v => v == null ? '–' : `${v} ms`;

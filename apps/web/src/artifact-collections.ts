@@ -245,6 +245,27 @@ export class ArtifactCollections {
     if (changed) { this.data.catalogRefsSeen = [...seen]; this.save(); }
   }
 
+  /**
+   * 目录里由系统产物同步出来的分类，引用的产物已经改归别处（或下线）时整枝移除。
+   * 例：股票持仓从独立分类「持仓」并进「应用」页签后，目录树里会留一个空壳「持仓」页签。
+   * 只动 syncCatalog 建的分组（带 catalogGroups），且整枝里不能有任何用户自己的产物。
+   */
+  pruneStaleCatalogGroups(liveRefs: Iterable<string>): void {
+    const live = new Set(liveRefs);
+    const used = new Set(this.data.items.flatMap((item) => item.categoryIds || []));
+    const stale = new Set<string>();
+    for (const primary of this.data.categories.filter((c) => !c.parentId && (c.catalogGroups?.length ?? 0) > 0)) {
+      const branch = this.data.categories.filter((c) => c.id === primary.id || c.parentId === primary.id);
+      if (!branch.some((c) => (c.catalogRefs || []).length)) continue;   // 用户已经清空的分组不在这里替人删
+      if (branch.some((c) => used.has(c.id))) continue;                  // 有用户产物挂在下面
+      if (branch.some((c) => (c.catalogRefs || []).some((ref) => live.has(ref)))) continue;
+      for (const category of branch) stale.add(category.id);
+    }
+    if (!stale.size) return;
+    this.data.categories = this.data.categories.filter((c) => !stale.has(c.id));
+    this.save();
+  }
+
   /** 收藏图片独立保存；原会话工作目录清理后仍可读取。只由已校验的来源读取器写入。 */
   saveImage(id: string, image: { bytes: Uint8Array; mimeType: string }): void {
     if (!this.data.items.some((item) => item.id === id && item.kind === "image")) fail("图片产物不存在", 404);

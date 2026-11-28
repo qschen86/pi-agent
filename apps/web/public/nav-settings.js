@@ -10,7 +10,7 @@ function initNavSettings() {
   const phone = window.matchMedia('(max-width: 760px)');
   const isPhone = () => phone.matches || document.body.classList.contains('rt-phone-list') || document.body.classList.contains('primary-phone');
   // 已下线（data-offline）的项不参与导航设置，始终隐藏
-  // 会话（会话区）、产物（产物区固定第一项）不参与置顶；其余带 data-app 的是「产物里的应用」，置顶 = position 'main'。
+  // 会话（会话区）、产物（产物区固定最后一项）不参与置顶；其余带 data-app 的是「产物里的应用」，置顶 = position 'main'。
   const topbar = nav.parentElement;
   const entries = [...topbar.querySelectorAll('.tab[data-view]:not([data-offline])')].map(el => ({ id: el.dataset.view, el, app: el.hasAttribute('data-app'), desc: el.title, name: el.querySelector('.tab-label').textContent, position: el.parentElement === more ? 'more' : 'main', available: !el.hidden }));
   // 最近激活的「未置顶应用」临时出现在产物区末尾，只记在本机；再打开另一个未置顶应用时被替换。
@@ -18,10 +18,11 @@ function initNavSettings() {
   const recentKey = 'pi-agent:nav:recent2';
   let recent = null;
   try { recent = JSON.parse(localStorage.getItem(recentKey)); } catch { /* 本机存储不可用就不记 */ }
+  if (recent?.kind === 'game' && recent.id === 'position-guard') recent = { kind: 'app', id: 'position-guard' };
   if (recent?.kind === 'app' ? !entries.some(e => e.app && e.id === recent.id) : recent?.kind !== 'game' || typeof recent.id !== 'string') recent = null;
   const saveRecent = () => { try { localStorage.setItem(recentKey, JSON.stringify(recent)); } catch { /* 同上 */ } };
   // 从产物里置顶的应用（小游戏等）：{ id, category, name, emoji }，跟内置应用的置顶一起存在服务端导航配置里。
-  const cleanPinned = list => (Array.isArray(list) ? list : []).filter((p, i, all) => p && typeof p.id === 'string' && /^[a-z][a-z0-9-]*$/.test(p.category || '') && typeof p.name === 'string' && p.name && all.findIndex(q => q?.id === p.id) === i).slice(0, 12).map(p => ({ id: p.id, category: p.category, name: p.name, emoji: typeof p.emoji === 'string' ? p.emoji : '' }));
+  const cleanPinned = list => (Array.isArray(list) ? list : []).filter((p, i, all) => p && p.id !== 'position-guard' && typeof p.id === 'string' && /^[a-z][a-z0-9-]*$/.test(p.category || '') && typeof p.name === 'string' && p.name && all.findIndex(q => q?.id === p.id) === i).slice(0, 12).map(p => ({ id: p.id, category: p.category, name: p.name, emoji: typeof p.emoji === 'string' ? p.emoji : '' }));
   let pinnedGames = [];
   const changeListeners = new Set();
   const notifyChange = () => changeListeners.forEach(fn => { try { fn(); } catch { /* 监听方出错不影响导航 */ } });
@@ -36,7 +37,13 @@ function initNavSettings() {
       const label = typeof value.label === 'string' ? value.label.trim() : '';
       items.push({ id:e.id, label: !/[\r\n]/.test(label) && [...label].length <= 12 ? label : '', position:['main','more','hidden'].includes(value.position) ? value.position : e.position });
     }
-    return [...items, ...defaults().filter(e => !seen.has(e.id))];
+    const result = [...items, ...defaults().filter(e => !seen.has(e.id))];
+    // 旧版产物置顶迁为应用置顶，避免升级后消失或出现两个相同图标。
+    if (!seen.has('position-guard') && Array.isArray(raw.pinned) && raw.pinned.some(p => p?.id === 'position-guard')) {
+      const holding = result.find(e => e.id === 'position-guard');
+      if (holding) holding.position = 'main';
+    }
+    return result;
   };
   // 手机一级页的导航固定在底部标签栏，最右「更多」收其余入口与设置（不再有顶栏导航模式）。
   let saved;
@@ -59,6 +66,10 @@ function initNavSettings() {
   const placeChrome = bottom => {
     if (bottom && nav.parentElement !== bottomBar) bottomBar.append(nav);
     if (!bottom && nav.parentElement !== topbar) topbar.querySelector('.zone-sessions')?.after(nav);
+    // Android 的 .tabs 有图标裁切；菜单必须与它同级，否则展开后仍被裁掉。
+    // 迁移同一个节点以保留按钮监听器、展开状态及连接信息。
+    if (bottom && more.parentElement !== bottomBar) bottomBar.append(more);
+    if (!bottom && more.parentElement !== nav) nav.append(more);
     // 切换布局时「更多」一律先收起。
     if (bottom === bottomBar.hidden) more.hidden = true;
     bottomBar.hidden = !bottom;
@@ -82,16 +93,75 @@ function initNavSettings() {
   window.addEventListener('resize', syncIndicator);
   // 左右滑切换应用（app-swipe.js）拖动中改写气泡位置，取消 / 结束后用它让气泡回到当前选中项。
   window.navSyncIndicator = syncIndicator;
+
+  /* 底栏随滚动收放：一级页开始向下滚（进入浏览）就收起，向上滚立刻回来。
+     会话列表（智力球那一层）不参与——底栏在那里是「来源 / 上推回产物区」的指示，收走会丢掉引导。
+     收起时 body 仍按 --bottomnav-h 预留，内容不跳；滚回顶部、换页、键盘弹起都会复位。 */
+  const SCROLL_HIDE_MIN = 10;   // 累积位移超过它才切换，手指抖动不算
+  const SCROLL_KEEP_TOP = 24;   // 页面顶部这一段始终显示
+  let navScrollHidden = false, navScrollLast = null, navScrollAccum = 0, navScrollFrame = 0, navScrollBox = null;
+  // 一级页有的靠文档滚（产物 / 待办 / 资源），有的靠 .main 自己滚：哪个容器在动就跟哪个
+  const navScrollDoc = () => document.scrollingElement || document.documentElement;
+  // 键盘弹起时页面会跟着滚，这时不该把底栏收走（输入区的操作还要能看见）
+  const navScrollTyping = () => { const el = document.activeElement; return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)); };
+  // 会话列表是「下一层」，浮层打开时页面滚的是浮层自己，两种都不收。
+  const navScrollBlocked = () => !isBottom() || bottomBar.hidden || navScrollTyping() ||
+    document.body.classList.contains('rt-phone-list') || document.body.classList.contains('settings-mode') ||
+    !!document.querySelector('dialog[open], #nav-more:not([hidden]), .rt-auth-overlay, .rt-lightbox, .image-zoom');
+  function navScrollReset() {
+    navScrollLast = null; navScrollAccum = 0;
+    if (!navScrollHidden) return;
+    navScrollHidden = false;
+    document.body.classList.remove('nav-scroll-hidden');
+    bottomBar.removeAttribute('inert');
+    syncIndicator();
+  }
+  function navScrollHide(next) {
+    if (next === navScrollHidden || (next && navScrollBlocked())) return;
+    navScrollHidden = next;
+    document.body.classList.toggle('nav-scroll-hidden', next);
+    // 收起后不再能被点到 / 聚焦；回来时恢复（旧内核不认 inert 时只是少一层限制，样式照样收起）。
+    if (next) bottomBar.setAttribute('inert', ''); else bottomBar.removeAttribute('inert');
+  }
+  function navScrollCheck(event) {
+    if (navScrollFrame) return;
+    const target = event?.target;
+    // 文档滚动时事件 target 是 document；元素自己滚时是那个元素。
+    const box = target && target.nodeType === 1 ? target : navScrollDoc();
+    navScrollFrame = requestAnimationFrame(() => {
+      navScrollFrame = 0;
+      const at = Math.max(0, Math.round(box.scrollTop || 0));
+      // 换了一个滚动容器（或刚复位）：从现在这个位置重新算方向
+      if (box !== navScrollBox || navScrollLast === null) { navScrollBox = box; navScrollLast = at; navScrollAccum = 0; return; }
+      const delta = at - navScrollLast;
+      navScrollLast = at;
+      if (!delta) return;
+      // 页面顶部这一段始终显示；一往上滑就回来（包括在列表底部往上滑）。
+      if (navScrollBlocked() || at <= SCROLL_KEEP_TOP) { navScrollReset(); return; }
+      navScrollAccum = Math.sign(delta) === Math.sign(navScrollAccum) ? navScrollAccum + delta : delta;
+      if (navScrollAccum >= SCROLL_HIDE_MIN) navScrollHide(true);
+      else if (navScrollAccum <= -SCROLL_HIDE_MIN) navScrollHide(false);
+    });
+  }
+  window.navScrollReset = navScrollReset;
+  // 捕获阶段监听：滚动事件不冒泡，但元素的 scroll 在 window 的捕获阶段能收到
+  window.addEventListener('scroll', navScrollCheck, { passive: true, capture: true });
+  window.addEventListener('hashchange', () => navScrollReset());
   const gameTabs = new Map();
   const gameTab = g => {
     let el = gameTabs.get(g.id);
     if (!el) {
       el = h('button', { type: 'button', class: 'tab', 'data-game': g.id, onclick: () => { location.hash = `#/artifacts/${el.dataset.category}/${g.id}`; } },
-        h('span', { class: 'tab-icon tab-emoji', 'aria-hidden': 'true' }), h('span', { class: 'tab-label' }));
+        h('span', { class: 'tab-icon tab-emoji', 'aria-hidden': 'true' }, h('span', { class: 'tab-emoji-char' })), h('span', { class: 'tab-label' }));
+      // 小游戏自己的图标直接上屏；没有或加载失败时退回 emoji
+      const box = el.querySelector('.tab-emoji'), art = h('img', { src: `/games/${encodeURIComponent(g.id)}/icon.svg`, alt: '', draggable: 'false' });
+      art.addEventListener('load', () => box.classList.add('has-art'));
+      art.addEventListener('error', () => art.remove());
+      box.append(art);
       gameTabs.set(g.id, el);
     }
     el.dataset.category = g.category;
-    el.querySelector('.tab-emoji').textContent = g.emoji || '▣';
+    el.querySelector('.tab-emoji-char').textContent = g.emoji || '▣';
     el.querySelector('.tab-label').textContent = g.name; el.title = g.name; el.setAttribute('aria-label', g.name);
     return el;
   };
@@ -107,6 +177,8 @@ function initNavSettings() {
   const apply = () => {
     const bottom = isBottom();
     placeChrome(bottom);
+    // 不是一级页（会话详情 / 二级页）时底栏本来就不在，收起状态一并清掉，回一级页时是展开的。
+    if (!bottom) navScrollReset();
     // 宽屏时菜单入口可能尚未挂入 DOM；重新展示时读取当前连接状态。
     connection.querySelector('.nav-connection-status').textContent = conn?.querySelector('.conn-text')?.textContent || '连接中…';
     const pinned = id => saved.find(x => x.id === id)?.position === 'main';
@@ -115,7 +187,7 @@ function initNavSettings() {
       const e = entries.find(e => e.id === item.id), name = item.label || e.name;
       e.el.querySelector('.tab-label').textContent = name; e.el.title = name; e.el.setAttribute('aria-label',name);
       e.el.toggleAttribute('data-recent', false);
-      // 会话在会话区，不进产物区；产物固定在产物区第一位；应用 = 置顶的 + 最近激活的 1 个未置顶的。
+      // 会话在会话区，不进产物区；产物固定在产物区最后一位；应用 = 置顶的 + 最近激活的 1 个未置顶的。
       // 手机上会话不占底栏：它是盖在所有应用上方的一层，下拉进入、在列表里上推退出（session-drawer.js）。
       if (item.id === 'rt') { e.el.hidden = false; e.el.toggleAttribute('data-drawer', bottom); continue; }
       const isRecent = e.app && !pinned(item.id) && item.position !== 'hidden' && recent?.kind === 'app' && item.id === recent.id;
@@ -124,8 +196,11 @@ function initNavSettings() {
       e.el.toggleAttribute('data-recent', isRecent);
       if (show) shown.push(e.el); else hiddenBox.append(e.el);
     }
-    // 产物区顺序：产物 → 置顶的内置应用 → 置顶的小游戏等 → 最近激活的 1 个（未置顶）。
-    const rank = el => el.dataset.view === 'artifacts' ? 0 : el.hasAttribute('data-recent') ? 3 : el.hasAttribute('data-game') ? 2 : 1;
+    // 产物区顺序：手机底栏是 置顶的内置应用 → 置顶的小游戏等 → 最近激活的 1 个（未置顶）→ 产物（固定最后一项）；
+    // 宽屏竖栏 / 顶栏仍按 产物 → 应用 → 小游戏 → 最近，只改手机底栏。
+    const rank = el => bottom
+      ? (el.dataset.view === 'artifacts' ? 3 : el.hasAttribute('data-recent') ? 2 : el.hasAttribute('data-game') ? 1 : 0)
+      : (el.dataset.view === 'artifacts' ? 0 : el.hasAttribute('data-recent') ? 3 : el.hasAttribute('data-game') ? 2 : 1);
     const wanted = new Set(pinnedGames.map(g => g.id));
     const recentGame = recent?.kind === 'game' && !wanted.has(recent.id) ? recent : null;
     for (const [id, el] of gameTabs) if (!wanted.has(id) && id !== recentGame?.id) { el.remove(); gameTabs.delete(id); }
@@ -137,7 +212,7 @@ function initNavSettings() {
     window.piSessionDrawer?.refresh();
     const theme = document.querySelector('.theme-toggle');
     if (bottom) {
-      // 底部：直接展示的入口排成标签栏，最右是「更多」；放不下的、配置在更多里的，以及夜间 / 设置 / 连接状态都收在「更多」菜单。
+      // 底部：直接展示的入口排成标签栏，最右是「全部产物」；放不下的从「全部产物」进，夜间 / 设置 / 连接状态收在会话页头部的菜单里。
       connection.hidden = false;
       more.append(...(theme ? [theme] : []), settings, connection);
       // 底栏没有「更多」：想看全部去「全部产物」；状态区（夜间 / 设置 / 连接）在会话页头部的按钮里，菜单还是同一份。
@@ -145,11 +220,16 @@ function initNavSettings() {
       const style = getComputedStyle(bottomBar);
       const budget = bottomBar.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
       const direct = [...nav.querySelectorAll(':scope > .tab:not([hidden]):not([data-offline])')];
-      // 底栏 = 产物区：全部产物固定在第一格，置顶应用按顺序，最近激活的最后；放不下的不显示（从「全部产物」进），
-      // 但当前所在的应用一定在底栏上：放不下时顶掉最后一个。
+      // 底栏 = 产物区：置顶应用按顺序在最左，最近激活的次之，全部产物固定在最后一格（最右）；放不下的不显示（从「全部产物」进）。
+      // 「全部产物」是所有产物的唯一出口，任何宽度都要在；当前所在的应用也一定在底栏上：放不下时顶掉别的项。
       const slots = Math.max(2, Math.floor(budget / BOTTOM_TAB_MIN));
       const kept = direct.slice(0, slots), current = direct.find(el => el.classList.contains('active'));
-      if (current && !kept.includes(current)) kept[kept.length - 1] = current;
+      for (const must of [direct.find(el => el.dataset.view === 'artifacts'), current]) {
+        if (!must || kept.includes(must)) continue;
+        const cut = [...kept].reverse().find(el => el !== must && el !== current);
+        if (cut) kept[kept.indexOf(cut)] = must;
+        else if (kept.length < slots) kept.push(must);
+      }
       overflowing = kept.length < direct.length;
       for (const el of direct) if (!kept.includes(el)) { el.hidden = true; hiddenBox.append(el); }
       if (typeof syncNavMore === 'function') syncNavMore();
@@ -293,7 +373,7 @@ function initNavSettings() {
         h('label',{class:'nav-settings-name'},
           h('span',{class:'sr-only'},`${e.name}名称`),
           h('input',{type:'text',value:item.label,placeholder:e.name,maxlength:'24','aria-label':`${e.name}名称`,disabled:gone,oninput:ev=>{item.label=ev.target.value;sync();}}),
-          off?h('span',{class:'muted small nav-settings-note'},gone?'暂无内容，不可调整':item.id==='rt'?'固定在会话区':'固定在产物区第一位'):null),
+          off?h('span',{class:'muted small nav-settings-note'},gone?'暂无内容，不可调整':item.id==='rt'?'固定在会话区':'固定在产物区最后一位'):null),
         h('div',{class:'nav-settings-seg inpage-tabs',role:'radiogroup','aria-label':`${e.name}展示位置`},
           GROUPS.map(([v])=>h('label',{class:`nav-settings-seg-opt${v===position?' on':''}`},
             h('input',{type:'radio',name:`nav-pos-${item.id}`,value:v,checked:v===position,disabled:off,'aria-label':`${e.name}：${SHORT[v]}`,onchange:()=>place(item.id,v,null)}),SHORT[v]))),
@@ -363,10 +443,18 @@ function initNavSettings() {
     const missing = (window.sessionNotifications?.supported?.() && !window.sessionNotifications.enabled())
       || (window.piClipboardImages?.supported?.() && !window.piClipboardImages.enabled())
       || (window.piRecentPhotos?.supported?.() && !window.piRecentPhotos.enabled());
-    settings.classList.toggle('has-capability-alert', !!missing || runtimeUpdateCount > 0);
-    // 桌面端设置入口在会话列表头部右侧（rt-settings-link），红点同步
-    document.querySelectorAll('.rt-settings-link').forEach(el => el.classList.toggle('has-capability-alert', !!missing || runtimeUpdateCount > 0));
-    settings.title = missing ? '全局设置：本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '全局设置：有 runtime 出了新的稳定版' : '全局设置：本设备能力、导航、版本与故障上报';
+    const hasAlert = !!missing || runtimeUpdateCount > 0;
+    const alertTitle = missing ? '全局设置：本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '全局设置：有 runtime 出了新的稳定版' : '全局设置：本设备能力、导航、版本与故障上报';
+    const alertDesc = missing ? '本设备有能力尚未开启' : runtimeUpdateCount > 0 ? '有运行时可更新' : '';
+    settings.classList.toggle('has-capability-alert', hasAlert);
+    settings.title = alertTitle;
+    // 桌面端设置入口在会话列表头部右侧（rt-settings-link），红点与原因提示同步（保持 aria-label="设置" 不变）
+    document.querySelectorAll('.rt-settings-link').forEach(el => {
+      el.classList.toggle('has-capability-alert', hasAlert);
+      el.title = alertTitle;
+      if (alertDesc) el.setAttribute('aria-description', alertDesc);
+      else el.removeAttribute('aria-description');
+    });
   };
   window.addEventListener('pi-capabilities-change', syncCapabilityAlert);
   window.addEventListener('load', syncCapabilityAlert);
@@ -455,7 +543,7 @@ function initNavSettings() {
       h('div',{class:'nav-settings-content'},
         pageMode ? h('p',{class:'muted nav-settings-intro'},'按你的习惯安排导航。导航调整保存在服务端，登录的其它设备会同步。') : null,
         editor.list,
-        pageMode ? h('p',{class:'muted small nav-settings-footnote'},'产物固定在产物区第一位；置顶的应用放不下时，手机上会收进「更多」。用 ↑↓ 调整同组顺序。') : null),
+        pageMode ? h('p',{class:'muted small nav-settings-footnote'},'产物固定在产物区最后一位；置顶的应用放不下时，手机上从「全部产物」进入。用 ↑↓ 调整同组顺序。') : null),
       h('footer',{class:'nav-settings-actions'},
         editor.resetBtn,
         editor.error,
@@ -562,7 +650,7 @@ function initNavSettings() {
   });
   phone.addEventListener('change', () => { closeMore(); apply(); });
   // 夜间模式按钮可能在 DOMContentLoaded 时才挂载。
-  window.syncNavLayout = apply;
+  window.syncNavLayout = () => { navScrollReset(); apply(); };
   let layoutFrame = 0;
   const scheduleLayout = () => {
     if (layoutFrame) return;

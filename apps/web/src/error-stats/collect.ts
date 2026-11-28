@@ -12,7 +12,7 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseLocalStamp } from "../diagnostics/triage.js";
-import { deployOccurrences, flakyOccurrences, isNoiseTool, memoryFingerprint, runtimeOfParser, sampleOfTool, toolFingerprint, type Occurrence, type StatsRuntime } from "./normalize.js";
+import { deployOccurrences, flakyOccurrences, type GateResult, isNoiseTool, memoryFingerprint, runtimeOfParser, sampleOfTool, toolFingerprint, type Occurrence, type StatsRuntime } from "./normalize.js";
 import type { ErrorStatsStore } from "./store.js";
 
 const CHUNK = 1 << 20;
@@ -77,6 +77,39 @@ export async function collectToolFailures(o: CollectOptions): Promise<number> {
   return added;
 }
 
+/**
+ * 按部署记录找到当时门禁落盘的失败结果。
+ * 门禁文件名里的 sha 是「叠加集成后」的提交（请求被合进暂存栈后会换一个新 sha），不一定等于请求的 sha；
+ * 所以：请求之后 15 分钟内起的、记录时间之前结束的失败门禁里，sha 相同的优先，否则取离请求最近的一份。
+ * 日志本身没有被清理（stage 日志保留至今），找不到只会是这段时间里没有失败的门禁。
+ */
+export function gateResultFinder(dir: string): (e: { sha: string; requestId?: string; atMs: number }) => GateResult | null {
+  let names: string[] | null = null;
+  const cache = new Map<string, GateResult>();
+  const stampMs = (ts: string) => Date.UTC(+ts.slice(0, 4), +ts.slice(4, 6) - 1, +ts.slice(6, 8), +ts.slice(8, 10), +ts.slice(10, 12), +ts.slice(12, 14));
+  return (e) => {
+    try {
+      names ??= readdirSync(dir).filter((n) => n.startsWith("stage-") && n.endsWith(".log.gate.json")).sort();
+      const reqTs = /^(\d{14})/.exec(e.requestId ?? "")?.[1];
+      if (!reqTs) return null;
+      let best: { g: GateResult; sameSha: boolean; dist: number } | null = null;
+      for (const n of names) {
+        const m = /^stage-(\d{14})-([0-9a-f]+)\.log\.gate\.json$/.exec(n);
+        if (!m || m[1]! < reqTs) continue;
+        const dist = stampMs(m[1]!) - stampMs(reqTs);
+        if (dist > 15 * 60_000) break; // names 已按时间排序
+        const g = cache.get(n) ?? (JSON.parse(readFileSync(join(dir, n), "utf8")) as GateResult);
+        cache.set(n, g);
+        const at = Date.parse(g.at ?? "");
+        if (!Number.isFinite(at) || at > e.atMs + 120_000 || g.status !== "failed") continue;
+        const sameSha = m[2] === e.sha;
+        if (!best || (sameSha && !best.sameSha) || (sameSha === best.sameSha && dist < best.dist)) best = { g, sameSha, dist };
+      }
+      return best?.g ?? null;
+    } catch { return null; }
+  };
+}
+
 export async function collectDeploys(o: CollectOptions): Promise<number> {
   const file = join(o.guiRoot, "when-idle", "history.log");
   if (!existsSync(file)) return 0;
@@ -85,8 +118,9 @@ export async function collectDeploys(o: CollectOptions): Promise<number> {
   const from = st.size >= cur.offset ? cur.offset : 0;
   if (from === st.size) return 0;
   let added = 0, index = 0;
+  const gateOf = gateResultFinder(join(o.guiRoot, "when-idle"));
   const next = await readLines(file, from, st.size, (line) => {
-    for (const occ of deployOccurrences(line, index++, o.runtimeOfSession, parseLocalStamp)) {
+    for (const occ of deployOccurrences(line, index++, o.runtimeOfSession, parseLocalStamp, gateOf)) {
       if (occ.at < o.sinceMs) continue;
       if (o.store.add(occ)) added++;
     }

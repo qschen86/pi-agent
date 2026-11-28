@@ -11,6 +11,7 @@
   "description": "联网检索 Broker（v1.8）：平台侧保管 Brave/Firecrawl 或 DeepSeek 密钥，校验参数、按来源范围判定、记录来源证据；Pi 只拿有界结果",
   "dependencies": {
     "@pi-agent/domain": "*",
-    "@pi-agent/runtime-contracts": "*"
+    "@pi-agent/runtime-contracts": "*",
+    "@pi-agent/broker-transport": "*"
   }
 }

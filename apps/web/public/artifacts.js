@@ -10,11 +10,100 @@
   const CACHE_PREFIX = "pi-artifact-seen:";
   const TAB_KEY = "pi-artifact-tab";
   const FILTER_KEY = "pi-artifact-mine-filter";
+  const RECENT_KEY = "pi-artifact-recent:v1";
+  const VIEW_KEY = "pi-artifact-view:v1";
   const MINE_ID = "mine";
   const POLL_MS = 300000;
   const CHECK_MIN_MS = 30000;
 
-  const STATE = { tab: "", mineFilter: null, panelOpen: false, catalog: null, collections: null, loading: false, error: "", applying: false, pending: null, dismissed: null, lastCheck: 0 };
+  const STATE = { tab: "", mineFilter: null, panelOpen: false, catalog: null, collections: null, loading: false, error: "", applying: false, pending: null, dismissed: null, lastCheck: 0, entered: false };
+  const LIBRARY = { query: "", sort: "updated", view: "cards", searchOpen: false };
+  try { if (localStorage.getItem(VIEW_KEY) === "list") LIBRARY.view = "list"; } catch { /* 隐私模式仍可切换 */ }
+
+  // 只保存引用和打开时间；名称、权限和可用性每次从当前目录重新解析。
+  function recentVisits() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(raw) ? raw.filter((r) => r && ["app", "game", "collection", "eval"].includes(r.kind) && typeof r.id === "string" && r.id && Number.isFinite(r.at) && r.at > 0 && r.at <= 8640000000000000).slice(0, 12) : [];
+    } catch { return []; }
+  }
+  function noteRecent(kind, id) {
+    const recent = recentVisits();
+    if (recent[0]?.kind === kind && recent[0]?.id === id && Date.now() - recent[0].at < 1000) return;
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify([{ kind, id, at: Date.now() }, ...recent.filter((r) => r.kind !== kind || r.id !== id)].slice(0, 12))); } catch { /* 存储不可用不阻挡打开 */ }
+    syncRecent();
+  }
+  function syncRecent() { const old = document.querySelector(".artifact-recent"); if (old) old.replaceWith(renderRecent()); }
+  const matchesSearch = (...parts) => !LIBRARY.query.trim() || parts.filter(Boolean).join(" ").toLocaleLowerCase().includes(LIBRARY.query.trim().toLocaleLowerCase());
+  function orderItems(list, kind, title = (item) => item.title || item.name || "") {
+    const recent = recentVisits();
+    const opened = (item) => recent.find((r) => r.kind === kind && r.id === item.id)?.at || 0;
+    return [...list].sort((a, b) => LIBRARY.sort === "name" ? title(a).localeCompare(title(b), "zh-CN")
+      : LIBRARY.sort === "opened" ? opened(b) - opened(a)
+        : (Date.parse(b.updatedAt || b.createdAt) || 0) - (Date.parse(a.updatedAt || a.createdAt) || 0));
+  }
+  function openApp(app) { noteRecent("app", app.id); location.hash = "#/" + app.id; }
+  function resolveRecent(visit) {
+    if (visit.kind === "app") {
+      const app = window.piNav?.apps().find((item) => item.id === visit.id);
+      return app && { title: app.name, label: "应用", icon: "↗", open: () => openApp(app) };
+    }
+    if (visit.kind === "game") {
+      const game = findItem(visit.id);
+      /* 标签用产物真实所属的分类（应用 / 小游戏 / …），不能一律写「小游戏」。
+       * 归在 "apps" 下的工具（股票持仓）跟内置应用同住「应用」页签，没有同名分类可查。 */
+      return game && { title: game.name, label: catalogCategoryName(game.category) || (game.category === "apps" ? "应用" : "产物"), icon: game.emoji, open: () => enterGame(game) };
+    }
+    if (visit.kind === "collection") {
+      const item = collectionItems().find((item) => item.id === visit.id);
+      return item && { title: item.title, label: window.piArtifactCollect?.kindLabel?.(item.kind) || "产物", icon: item.kind === "image" ? "▧" : item.kind === "video" ? "▷" : "≡", open: () => openCollectionItem(item, collectionItems()) };
+    }
+    const suites = window.piEvalArtifacts?.state().data?.suites || [];
+    for (const suite of suites) {
+      const testCase = suite.cases.find((item) => `${suite.id}/${item.id}` === visit.id);
+      if (testCase) return { title: testCase.title, label: "评测", icon: "▤", open: () => { location.hash = "#/artifacts/evals/" + suite.id + "/" + testCase.id; } };
+    }
+    return null;
+  }
+  function renderRecent() {
+    const entries = recentVisits().map((r) => ({ ...r, item: resolveRecent(r) })).filter((r) => r.item).slice(0, 3);
+    return h("section", { class: "artifact-recent", "aria-label": "最近打开", hidden: entries.length ? null : "" },
+      h("h2", { class: "artifact-recent-head" }, "最近打开"),
+      h("div", { class: "artifact-recent-grid" }, entries.map(({ item, at }) => h("button", { type: "button", class: "artifact-recent-item", onclick: item.open },
+        h("span", { class: "artifact-recent-icon", "aria-hidden": "true" }, item.icon || "▣"),
+        h("span", { class: "artifact-recent-copy" }, h("strong", {}, item.title), h("span", { class: "muted small" }, item.label + " · " + new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(at)))))));
+  }
+
+  function refreshLibrary() {
+    const body = document.querySelector(".artifact-swipe"), current = activeCategory(categories());
+    if (!body || !current) return;
+    body.replaceChildren(renderCategory(current));
+    syncLibraryCount();
+  }
+  function syncLibraryCount() {
+    const count = document.querySelector(".artifact-result-count");
+    if (count) count.textContent = document.querySelectorAll(".artifact-swipe .artifact-card, .artifact-swipe .artifact-collection-card").length + " 项";
+  }
+  const VIEW_ICONS = {
+    cards: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>',
+    list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  };
+  function iconSpan(svg) { const span = h("span", { "aria-hidden": "true", class: "artifact-view-icon" }); span.innerHTML = svg; return span; }
+  function renderLibraryTools(category) {
+    const sort = h("select", { "aria-label": "产物排序", onchange: (event) => { LIBRARY.sort = event.target.value; refreshLibrary(); } },
+      [{ id: "updated", name: "最近更新" }, { id: "opened", name: "最近打开" }, { id: "name", name: "名称排序" }].map((option) => h("option", { value: option.id }, option.name)));
+    sort.value = LIBRARY.sort;
+    return h("div", { class: "artifact-library-tools" }, h("h2", { class: "artifact-current-title" }, h("span", { class: "artifact-current-name" }, category?.name || "产物"), h("span", { class: "artifact-result-count", role: "status", "aria-live": "polite" })),
+      h("div", { class: "artifact-library-options" },
+        h("div", { class: "artifact-view-modes", role: "group", "aria-label": "显示方式" }, [{ id: "cards", name: "卡片视图", icon: VIEW_ICONS.cards }, { id: "list", name: "列表视图", icon: VIEW_ICONS.list }].map((mode) => h("button", {
+          type: "button", "aria-label": mode.name, "aria-pressed": String(LIBRARY.view === mode.id), onclick: () => {
+            LIBRARY.view = mode.id;
+            try { localStorage.setItem(VIEW_KEY, mode.id); } catch { /* 仍可使用 */ }
+            document.querySelector(".artifact-library")?.classList.toggle("is-list", mode.id === "list");
+            document.querySelectorAll(".artifact-view-modes button").forEach((btn) => btn.setAttribute("aria-pressed", String(btn.getAttribute("aria-label") === mode.name)));
+          },
+        }, iconSpan(mode.icon)))), sort));
+  }
 
   /* 正在播放的游戏播放层。iframe 一旦从文档里摘下再装回就会重新加载（游戏回到首页、对战画面丢失），
    * 所以同一次播放（同一个 src、播放层还在页面上）一律复用同一个节点，后台刷新也不重绘它。 */
@@ -32,11 +121,23 @@
   /* 产物页顶部的分类 tab：选中的分类记在本机，从游戏/评测详情返回时仍停在原来的分类 */
   function savedTab() { try { return localStorage.getItem(TAB_KEY) || ""; } catch { return ""; } }
   function rememberTab(id) { STATE.tab = id; try { localStorage.setItem(TAB_KEY, id); } catch { /* 隐私模式下忽略 */ } }
+  /* 进入产物区（从别的页面切回来）就按需刷一次目录：新上线的分类（比如当天新加的「阅读」）
+   * 不用等 5 分钟轮询、也不用退出重进。同一视图内的重绘不重复拉（force 还受 CHECK_MIN_MS 去重）。 */
+  const libraryRoute = () => /^#\/artifacts(?:$|[/?])/.test(location.hash);
+  function noteRoute() { if (!libraryRoute()) STATE.entered = false; }
+  function syncEnterRefresh() {
+    if (STATE.entered) return;
+    STATE.entered = true;
+    if (STATE.catalog) void loadArtifacts({ force: true });
+  }
+
   /* 当前分类：记住的那个还在目录里就用它，否则落到第一个分类（分类被下线 / 重命名时不会空白） */
   function activeCategory(list) {
     return list.find((category) => category.id === (STATE.tab || savedTab())) || list[0] || null;
   }
 
+  const catalogCategories = () => (STATE.catalog && STATE.catalog.categories) || [];
+  const catalogCategoryName = (id) => catalogCategories().find((category) => category.id === id)?.name || "";
   const items = () => (STATE.catalog && STATE.catalog.items) || [];
   const findItem = (id) => items().find((item) => item.id === id) || null;
   const collections = () => STATE.collections || window.piArtifactCollect?.state?.() || { schema: 1, categories: [], items: [] };
@@ -45,7 +146,8 @@
   const collectionCategories = () => (collections().categories || []).filter((c) => !c.parentId).map((c) => ({ ...c, kind: "collection", primaryId: c.id }));
   /* 没有「全部」页签：一级分类各自一页；还没打分类的产物放在最后的「未分类」页签（有才出现），不会丢。 */
   const uncategorizedItems = () => collectionItems().filter((item) => !(item.categoryIds || []).length);
-  /* 「应用」放在最前：待办 / 通讯录 / 股票 / AI浏览器等内置应用也是产物；在这里（和小游戏卡片上）置顶，置顶的常驻导航的产物区。 */
+  /* 「应用」放在最前：待办 / 通讯录 / 股票 / AI浏览器等内置应用也是产物；在这里（和小游戏卡片上）置顶，置顶的常驻导航的产物区。
+   * category 为 "apps" 的工具型产物（股票持仓）也住在这一页，跟内置应用同一张网格，不再单独成组。 */
   const APPS_CATEGORY = { id: "apps", name: "应用", kind: "apps" };
   const categories = () => [APPS_CATEGORY, ...(collections().catalogRefsSeen ? [] : ((STATE.catalog && STATE.catalog.categories) || [])), ...collectionCategories(), ...(uncategorizedItems().length ? [{ id: "uncategorized", name: "未分类", kind: "uncategorized" }] : [])];
   function catalogRefs(category, secondary = "") {
@@ -203,13 +305,19 @@
   /* ------------------------------ 页面 ------------------------------ */
   function artifactEntry(item) { return item.entry || "/games/" + item.id + "/"; }
 
-  /* 点开就是全屏：先在这次点击里请求浏览器全屏（iPhone 不支持也没关系，下面的沉浸层照样铺满屏幕），
-   * 再切路由渲染沉浸式播放层。退出按钮在游戏自己的顶栏里（postMessage 通知这里）。 */
-  const IMMERSIVE_RE = /^#\/artifacts\/(?!evals\/)[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
+  /* 点开小游戏就是全屏：先在这次点击里请求浏览器全屏（iPhone 不支持也没关系，下面的沉浸层照样铺满屏幕），
+   * 再切路由渲染沉浸式播放层。退出按钮在游戏自己的顶栏里（postMessage 通知这里）。
+   * 「应用」里的产物（股票持仓等，category = "apps"）不是小游戏：它像待办那样是一级页里的普通应用，
+   * 不请求全屏、不盖住控制台，页面跟着整体滚动，底栏随滚动收放。 */
+  const IMMERSIVE_RE = /^#\/artifacts\/(?!evals\/|apps\/)[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
+  /** 工具型产物（category "apps"）：住在「应用」里，按普通页面打开 */
+  const isInlineArtifact = (item) => item?.category === "apps";
   let wentFullscreen = false;
 
   function enterGame(item) {
+    if (item.id === "position-guard") { noteRecent("app", item.id); location.hash = "#/position-guard"; return; }
     const root = document.documentElement;
+    if (isInlineArtifact(item)) { location.hash = "#/artifacts/" + item.category + "/" + item.id; return; }
     if (document.fullscreenEnabled && !document.fullscreenElement && root.requestFullscreen) {
       root.requestFullscreen({ navigationUI: "hide" }).then(() => { wentFullscreen = true; }).catch(() => { /* 用户拒绝或不支持：沉浸层照样铺满 */ });
     }
@@ -220,7 +328,8 @@
     window.piOrientation?.restorePortrait();
     if (wentFullscreen && document.fullscreenElement) void document.exitFullscreen().catch(() => {});
     wentFullscreen = false;
-    if (IMMERSIVE_RE.test(location.hash)) location.hash = "#/artifacts";
+    // 任何一个产物页（小游戏或「应用」里的产物）都退回产物列表
+    if (/^#\/artifacts\/(?!evals\/)/.test(location.hash)) location.hash = "#/artifacts";
   }
 
   /* 离开播放页（返回键、点别的导航）时收起沉浸层与全屏 */
@@ -236,48 +345,78 @@
   }
   function renderApps() {
     const nav = window.piNav;
-    const apps = nav ? nav.apps() : [];
+    const apps = orderItems((nav ? nav.apps() : []).filter((app) => matchesSearch(app.name, app.title)), "app");
+    /* 工具型产物：产物库里 category 为 "apps" 的条目（股票持仓）。它就是「应用」里的一个应用，
+     * 不单开页签、也不单开「工具」分组，直接跟待办 / 通讯录 / 股票排在同一张网格里。 */
+    const tools = orderItems(items().filter((item) => item.category === "apps" && !apps.some((app) => app.id === item.id) && matchesSearch(item.name, item.summary, ...(item.tags || []))), "game");
+    const empty = LIBRARY.query ? "没有找到匹配的应用，试试其他关键词。" : "暂时没有可用的应用。";
+    const appCards = apps.map((app) => h("div", { class: "card artifact-card artifact-app-card", "data-app-id": app.id },
+      h("button", { class: "artifact-card__open", type: "button", "aria-label": "打开 " + app.name, onclick: () => openApp(app) },
+        h("span", { class: "artifact-card__emoji artifact-app-icon", "aria-hidden": "true" }, app.icon || ""),
+        h("span", { class: "artifact-card__name" }, app.name),
+        h("span", { class: "artifact-card__summary muted small" }, app.title)),
+      h("span", { class: "artifact-card__foot" },
+        h("span", { class: "artifact-card__actions" },
+          h("button", { class: "btn small primary", type: "button", onclick: () => openApp(app) }, "打开"),
+          pinButton(app.pinned, app.name, () => nav.setAppPinned(app.id, !app.pinned))))));
     return h("section", { class: "artifact-section", "aria-label": "应用", role: "tabpanel", id: "artifact-panel" },
       h("div", { class: "artifact-section__head" },
-        h("span", { class: "muted small" }, "待办、通讯录、股票等内置应用都是产物。置顶的常驻在导航的产物区，最近打开的 1 个会临时出现在末尾；小游戏在「小游戏」分类里同样可以置顶。")),
-      apps.length
-        ? h("div", { class: "artifact-grid artifact-app-grid" }, apps.map((app) => h("div", { class: "card artifact-card artifact-app-card", "data-app-id": app.id },
-          h("button", { class: "artifact-card__open", type: "button", "aria-label": "打开 " + app.name, onclick: () => { location.hash = "#/" + app.id; } },
-            h("span", { class: "artifact-card__emoji artifact-app-icon", "aria-hidden": "true" }, app.icon || ""),
-            h("span", { class: "artifact-card__name" }, app.name),
-            h("span", { class: "artifact-card__summary muted small" }, app.title)),
-          h("span", { class: "artifact-card__foot" },
-            h("span", { class: "artifact-card__actions" },
-              h("button", { class: "btn small primary", type: "button", onclick: () => { location.hash = "#/" + app.id; } }, "打开"),
-              pinButton(app.pinned, app.name, () => nav.setAppPinned(app.id, !app.pinned)))))))
-        : h("p", { class: "card muted small", role: "status" }, "暂时没有可用的应用。"));
+        h("span", { class: "muted small" }, "常用应用可以置顶到导航，随时打开。")),
+      appCards.length || tools.length
+        ? h("div", { class: "artifact-grid artifact-app-grid" }, [...appCards, ...tools.map(renderCard)])
+        : h("p", { class: "card muted small", role: "status" }, empty));
   }
   if (window.piNav) window.piNav.onChange(() => repaint());
 
   function renderCard(item) {
     const local = seenVersion(item.id);
     const stale = !!local && local !== item.version;
+    // 工具型产物（category "apps"）住在「应用」页：按钮说「打开」，不说「全屏玩」
+    const tool = item.category === "apps";
+    const action = tool ? "打开" : "▶ 全屏玩";
     return h("div", { class: "card artifact-card" },
-      h("button", { class: "artifact-card__open", type: "button", "aria-label": "全屏打开 " + item.name, onclick: () => enterGame(item) },
+      h("button", { class: "artifact-card__open", type: "button", "aria-label": (tool ? "打开 " : "全屏打开 ") + item.name, onclick: () => enterGame(item) },
         h("span", { class: "artifact-card__emoji", "aria-hidden": "true" }, item.emoji),
         h("span", { class: "artifact-card__name" }, item.name),
         h("span", { class: "artifact-card__summary muted small" }, item.summary),
         h("span", { class: "artifact-card__tags" }, item.tags.map((tag) => h("span", { class: "artifact-tag" }, tag)))),
       h("span", { class: "artifact-card__foot" },
-        h("span", { class: "muted small" }, local ? (stale ? "有新版本 " + item.version : "已缓存 " + item.version) : "还没玩过"),
+        h("span", { class: "muted small" }, tool ? (local ? (stale ? "有新版本 " + item.version : "已缓存 " + item.version) : "") : local ? (stale ? "有新版本 " + item.version : "已缓存 " + item.version) : "还没玩过"),
         stale ? h("span", { class: "artifact-badge" }, "可更新") : null,
         h("span", { class: "artifact-card__actions" },
-          h("button", { class: "btn small primary", type: "button", onclick: () => enterGame(item) }, "▶ 全屏玩"),
+          h("button", { class: "btn small primary", type: "button", onclick: () => enterGame(item) }, action),
           window.piNav ? pinButton(window.piNav.gamePinned(item.id), item.name, () => window.piNav.setGamePinned(item, !window.piNav.gamePinned(item.id))) : null,
           // 带孩子隐私数据的产物（错题本）不提供分享
           item.private ? null : h("button", { class: "btn small", type: "button", onclick: () => openShareDialog(item) }, "分享"),
           h("a", { class: "btn small", href: artifactEntry(item), target: "_blank", rel: "noopener" }, "新窗口"))));
   }
 
+  /* 应用型产物的 iframe 跟着内容长高：外层页面就是它自己的滚动条（和待办一样），
+   * 所以底栏的滚动收放、返回手势、下拉刷新都跟一级页一致，而不是被关在 iframe 里。 */
+  function fitInlineFrame(frame) {
+    const fit = () => {
+      try {
+        const doc = frame.contentDocument;
+        const root = doc?.documentElement;
+        if (!root) return;
+        const height = Math.max(root.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
+        if (height > 0) frame.style.height = Math.max(320, Math.ceil(height)) + "px";
+      } catch { /* 还没加载完或跨源：保持默认高度 */ }
+    };
+    frame.addEventListener("load", () => {
+      fit();
+      try {
+        const body = frame.contentDocument?.body;
+        if (body && typeof ResizeObserver === "function") new ResizeObserver(fit).observe(body);
+      } catch { /* 同上 */ }
+    });
+  }
+
   function renderPlayer(item) {
     const src = artifactEntry(item);
     window.navNoteGame?.(item);   // 没置顶的小游戏：作为「最近打开」临时出现在导航产物区
     if (livePlayer && livePlayer.src === src && livePlayer.section.isConnected) return livePlayer.section;
+    noteRecent("game", item.id);
     // Only an actually opened artifact is a visit. Older APKs reject this optional narrow capability harmlessly.
     if (window.piAndroidShell?.available) void window.piAndroidShell.call("widget.visit", {
       id: item.id, category: item.category, name: item.name, emoji: item.emoji || "▣"
@@ -285,9 +424,24 @@
     // 打开的是旧缓存版本：顺手让小游戏自己的 SW 把缓存换成新版，下次进来就是新页面（不打断这一局）。
     const cached = seenVersion(item.id);
     if (cached && cached !== item.version) void syncArtifactCache(item);
-    // 沉浸式播放层：铺满整个视口，盖住控制台顶栏和底部导航
     // 错题本的「拍照」要在页面里直接出取景画面（getUserMedia），同源 iframe 要显式放行 camera
     const allow = item.id === "wrong-book" ? "fullscreen; autoplay; camera" : "fullscreen; autoplay";
+
+    if (isInlineArtifact(item)) {
+      // 「应用」里的产物：不铺满屏幕、不盖住底栏。页面高度跟着 iframe 内容走，
+      // 外层就是滚动容器；底栏跟待办一样：往下滑收起、往上滑回来。
+      const frame = h("iframe", { class: "artifact-frame", src, title: item.name, allow, loading: "eager" });
+      const section = h("section", { class: "artifact-player artifact-player--inline", "aria-label": item.name },
+        h("div", { class: "artifact-inline-bar" },
+          h("button", { class: "btn small", type: "button", onclick: exitGame }, "← 返回应用"),
+          h("span", { class: "artifact-inline-title" }, item.name)),
+        frame);
+      fitInlineFrame(frame);
+      livePlayer = { src, section };
+      return section;
+    }
+
+    // 沉浸式播放层：铺满整个视口，盖住控制台顶栏和底部导航
     const player = h("section", { class: "artifact-player artifact-player--immersive", "aria-label": item.name },
       h("iframe", { class: "artifact-frame", src, title: item.name, allow, loading: "eager" }),
       // 兜底退出：旧版本游戏（缓存里还没有"退出"按钮）时才显示；新版游戏加载后会通知这里收起
@@ -432,8 +586,50 @@
     void refresh();
   }
 
-  const artifactPageHead = () => h("div", { class: "artifact-section__head artifact-page-head" }, h("h1", {}, "全部产物"),
-    h("button", { type: "button", class: "btn small ghost artifact-cat-manage", onclick: () => window.piArtifactCategoryBrowser?.openManager?.() }, "管理分类"));
+  /* 搜索默认收成页头右上角的放大镜（和会话列表同款）；点开才出现输入框，有搜索词时保持展开。关闭时清空搜索词，恢复完整列表。 */
+  const searchOpen = () => LIBRARY.searchOpen || !!LIBRARY.query;
+  function searchIcon() {
+    if (typeof rtSearchIcon === "function") return rtSearchIcon();
+    const span = h("span", { "aria-hidden": "true" });
+    span.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/><path d="m21 21-4.35-4.35"/></svg>';
+    return span;
+  }
+  function renderSearchRow() {
+    const input = h("input", { type: "search", value: LIBRARY.query, placeholder: "搜索当前分类中的产物", "aria-label": "搜索当前分类中的产物",
+      oninput: (event) => { LIBRARY.query = event.target.value; refreshLibrary(); },
+      onkeydown: (event) => { if (event.key === "Escape") { event.preventDefault(); toggleSearch(false); } } });
+    return h("label", { class: "artifact-library-search", id: "artifact-search-box" }, h("span", { "aria-hidden": "true" }, "⌕"), input);
+  }
+  function toggleSearch(open) {
+    LIBRARY.searchOpen = open;
+    const row = document.querySelector(".artifact-library-search"), button = document.querySelector(".artifact-search-toggle");
+    if (button) {
+      button.classList.toggle("active", open);
+      button.setAttribute("aria-expanded", String(open));
+      button.title = button.ariaLabel = open ? "关闭搜索" : "搜索产物";
+    }
+    if (open) {
+      if (row) return;
+      const next = renderSearchRow();
+      /* 手机上页头会被搬进共享顶栏，不再是产物库的子节点：这时搜索框放在产物库最上面 */
+      const library = document.querySelector(".artifact-library"), head = library?.querySelector(":scope > .artifact-page-head");
+      if (!library) return;
+      if (head) head.after(next); else library.prepend(next);
+      next.querySelector("input")?.focus();
+    } else {
+      row?.remove();
+      if (LIBRARY.query) { LIBRARY.query = ""; refreshLibrary(); }
+    }
+  }
+  function artifactPageHead(withSearch = false) {
+    const icon = h("span", { "aria-hidden": "true" });
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5" fill="var(--surface)"/><circle cx="15" cy="17" r="2.5" fill="var(--surface)"/></svg>';
+    const manage = h("button", { type: "button", class: "btn small ghost artifact-cat-manage", "aria-label": "管理分类", title: "管理分类", onclick: () => window.piArtifactCategoryBrowser?.openManager?.() }, icon);
+    if (!withSearch) return h("div", { class: "artifact-section__head artifact-page-head" }, h("div", {}, h("h1", {}, "产物库")), manage);
+    const open = searchOpen();
+    const toggle = h("button", { type: "button", class: "btn small ghost artifact-search-toggle" + (open ? " active" : ""), title: open ? "关闭搜索" : "搜索产物", "aria-label": open ? "关闭搜索" : "搜索产物", "aria-expanded": String(open), "aria-controls": "artifact-search-box", onclick: () => toggleSearch(!searchOpen()) }, searchIcon());
+    return h("div", { class: "artifact-section__head artifact-page-head" }, h("div", {}, h("h1", {}, "产物库")), h("div", { class: "page-navigation-actions" }, toggle, manage));
+  }
 
   function syncCollections() {
     STATE.collections = window.piArtifactCollect?.state?.() || STATE.collections;
@@ -473,6 +669,7 @@
       const ref = { ...window.piArtifactCollect.sourceRef(item.source), label: item.title };
       const card = docThumbChip(ref, { sessionId: item.source.sessionId, artifactSource: item.source }, /\.html?$/i.test(ref.path) ? "html" : "md", "document");
       card.classList.add("artifact-document-preview");
+      card.addEventListener("click", () => noteRecent("collection", item.id), { capture: true });
       return card;
     }
     if (item.kind === "video") return h("span", { class: "artifact-collection-thumb", "aria-hidden": "true" }, "▶");
@@ -519,6 +716,7 @@
         artifactItem: entry,
       }));
       if (entries.length && typeof openImageZoom === "function") {
+        noteRecent("collection", item.id);
         openImageZoom(entries, index, {
           closeOnNavigate: true,
           artifactMode: true,
@@ -541,6 +739,7 @@
     }
     const ref = window.piArtifactCollect.sourceRef?.(item.source);
     if (!ref || typeof openFilePreview !== "function") { toast("这个产物暂时打不开（原会话文件可能已删除）"); return; }
+    noteRecent("collection", item.id);
     openFilePreview(ref, { sessionId: item.source.sessionId, artifactSource: item.source }, null);
   }
 
@@ -567,20 +766,20 @@
     if (SECONDARIES.get(category.id) && !children.some((c) => c.id === SECONDARIES.get(category.id))) SECONDARIES.delete(category.id);
     const secondary = SECONDARIES.get(category.id) || "";
     const scoped = category.kind === "uncategorized" ? uncategorizedItems() : collectionItems().filter((item) => api?.matchesCategory(item, category.primaryId));
-    const owned = secondary ? scoped.filter((item) => api?.matchesCategory(item, secondary)) : scoped;
+    const owned = orderItems((secondary ? scoped.filter((item) => api?.matchesCategory(item, secondary)) : scoped).filter((item) => matchesSearch(item.title, item.source?.sessionTitle)), "collection");
     const refs = catalogRefs(category, secondary);
-    const games = items().filter((item) => refs.includes("game:" + item.id));
+    const games = orderItems(items().filter((item) => refs.includes("game:" + item.id) && matchesSearch(item.name, item.summary, ...(item.tags || []))), "game");
     const evalIds = refs.filter((ref) => ref.startsWith("eval:")).map((ref) => ref.slice(5));
     const count = owned.length + games.length + evalIds.length;
     return h("section", { class: "artifact-section", "aria-label": category.name, role: "tabpanel", id: "artifact-panel" },
-      h("div", { class: "artifact-section__head" }, h("span", { class: "muted small" }, `${count} 项`)),
       owned.length ? h("div", { class: "artifact-collection-grid" }, owned.map((item) => renderCollectionCard(item, owned))) : null,
       games.length ? h("div", { class: "artifact-grid" }, games.map(renderCard)) : null,
-      evalIds.length ? window.piEvalArtifacts?.renderSection({ name: "评测产物", description: "" }, { suiteIds: evalIds, hideFilter: true }) : null,
-      !count ? h("p", { class: "card muted small", role: "status" }, "这个分类下还没有产物。") : null);
+      evalIds.length ? window.piEvalArtifacts?.renderSection({ name: "评测产物", description: "" }, { suiteIds: evalIds, hideFilter: true, query: LIBRARY.query, sort: LIBRARY.sort }) : null,
+      !count ? h("p", { class: "card muted small", role: "status" }, LIBRARY.query ? "没有找到匹配的产物，试试其他关键词或分类。" : "这个分类下还没有产物。") : null);
   }
 
   function renderArtifacts() {
+    syncEnterRefresh();
     if (!STATE.collections && window.piArtifactCollect && !STATE.loading) {
       void window.piArtifactCollect.load().then((data) => { STATE.collections = data; repaint(); }).catch(() => {});
     }
@@ -614,22 +813,28 @@
     const body = h("div", { class: "artifact-swipe" }, current ? renderCategory(current) : null);
     // 左右滑切换分类（跟手 + 滑入动画）；滑到两端再往外滑，才交给一级应用的左右切换（seg-indicator.js 的仲裁）
     if (cats.length > 1) installSwipe(body, cats);
-    return h("section", { class: "artifacts-page" }, artifactPageHead(), tabs, body);
+    if (recentVisits().some((r) => r.kind === "eval") && !window.piEvalArtifacts?.state().data) void window.piEvalArtifacts?.load();
+    requestAnimationFrame(syncLibraryCount);
+    return h("section", { class: "artifacts-page artifact-library" + (LIBRARY.view === "list" ? " is-list" : "") }, artifactPageHead(true),
+      searchOpen() ? renderSearchRow() : null, renderRecent(), tabs,
+      h("div", { class: "artifact-library-workspace" },
+        h("aside", { class: "artifact-sub-slot", "aria-label": "二级分类" }, subRail(current)),
+        h("div", { class: "artifact-library-results" }, renderLibraryTools(current), body)));
   }
 
   function renderCategory(category) {
-    if (category.kind === "eval") return window.piEvalArtifacts ? window.piEvalArtifacts.renderSection(category) : null;
+    if (category.kind === "eval") return window.piEvalArtifacts ? window.piEvalArtifacts.renderSection(category, { query: LIBRARY.query, sort: LIBRARY.sort }) : null;
     if (category.kind === "apps") return renderApps();
     if (category.kind === "collection" || category.kind === "uncategorized") return renderCollectionCategory(category);
     const scoped = items().filter((item) => item.category === category.id);
     const secondary = SECONDARIES.get(category.id) || "";
-    const owned = secondary ? scoped.filter((item) => item.id === secondary) : scoped;
+    const owned = orderItems((secondary ? scoped.filter((item) => item.id === secondary) : scoped).filter((item) => matchesSearch(item.name, item.summary, ...(item.tags || []))), "game");
     return h("section", { class: "artifact-section", "aria-label": category.name, role: "tabpanel", id: "artifact-panel" },
       h("div", { class: "artifact-section__head" },
         h("span", { class: "muted small" }, category.description)),
       owned.length
         ? h("div", { class: "artifact-grid" }, owned.map(renderCard))
-        : h("p", { class: "card muted small", role: "status" }, "这个分类下还没有产物。"));
+        : h("p", { class: "card muted small", role: "status" }, LIBRARY.query ? "没有找到匹配的产物，试试其他关键词或分类。" : "这个分类下还没有产物。"));
   }
 
   const reducedMotion = () => { try { return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches; } catch { return false; } };
@@ -665,7 +870,10 @@
       btn.tabIndex = on ? 0 : -1;
     });
     document.querySelector(".artifact-sub-slot")?.replaceChildren(...[subRail(cats[to])].filter(Boolean));
+    const title = document.querySelector(".artifact-current-name");
+    if (title) title.textContent = cats[to].name;
     slideInto(body, cats[to], Math.sign(to - from));
+    syncLibraryCount();
   }
 
   function renderTabs(cats) {
@@ -690,7 +898,7 @@
           onclick: () => switchTab(cats, category.id),
         }, category.name, category.kind === "collection" ? h("span", { class: "pm-chip-count" }, String(collectionItems().filter((item) => window.piArtifactCollect?.matchesCategory(item, category.id)).length + catalogRefs(category).length))
           : category.kind === "uncategorized" ? h("span", { class: "pm-chip-count" }, String(uncategorizedItems().length)) : null))),
-      h("div", { class: "artifact-sub-slot" }, subRail(current)));
+    );
   }
 
   /* ------------------------------ 左右滑动切换分类 ------------------------------
@@ -788,7 +996,8 @@
 
   function start() {
     window.addEventListener("message", onFrameMessage);
-    window.addEventListener("hashchange", syncImmersive);
+    window.addEventListener("hashchange", () => { syncImmersive(); noteRoute(); });
+    noteRoute();
     // 面板展开时：点面板和入口按钮之外的地方、按 Esc 收起（手机上点遮罩同样收起）
     document.addEventListener("click", (ev) => {
       if (!STATE.panelOpen || !(ev.target instanceof Element)) return;
@@ -829,7 +1038,8 @@
   Object.assign(window, {
     renderArtifacts,
     loadArtifacts,
-    piArtifacts: { swipeTarget, state: () => ({ ...STATE }), outdated: () => outdated().map((item) => item.id), syncNow: syncTrigger },
+    piArtifacts: { swipeTarget, state: () => ({ ...STATE }), outdated: () => outdated().map((item) => item.id), syncNow: syncTrigger, noteRecent, syncLibraryCount, syncRecent,
+      recentAt: (kind, id) => recentVisits().find((r) => r.kind === kind && r.id === id)?.at || 0 },
   });
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", start, { once: true });
   else start();

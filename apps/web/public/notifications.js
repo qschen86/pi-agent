@@ -272,8 +272,12 @@ window.sessionNotifications = (() => {
   }
   function notificationHeading(container, closable) {
     if (closable) return h("div", { class: "notification-heading" }, h("strong", {}, "本设备会话通知"), h("button", { type: "button", class: "btn small", onclick: () => dialog.close(), "aria-label": "关闭通知设置" }, "关闭"));
-    const heading = container.querySelector('.settings-switch-row') || h('div', { class: 'notification-heading settings-switch-row' },
-      h('strong', {}, '本设备会话通知'), h('input', { type: 'checkbox', role: 'switch', class: 'settings-switch', 'aria-label': '本设备会话通知', onchange: () => enabled() ? void disable() : void enable() }));
+    const embedded = !closable;
+    const heading = container.querySelector('.settings-switch-row') || h('div', { class: `notification-heading settings-switch-row${embedded ? ' settings-row' : ''}` },
+      h(embedded ? 'span' : 'strong', { class: embedded ? 'settings-row-text' : '' },
+        h('strong', {}, '本设备会话通知'),
+        embedded ? h('p', {}, '会话完成、失败或需要你确认时提醒，不发送聊天正文。') : null),
+      h('input', { type: 'checkbox', role: 'switch', class: 'settings-switch', 'aria-label': '本设备会话通知', onchange: () => enabled() ? void disable() : void enable() }));
     const control = heading.querySelector('input'); control.checked = !!enabled(); control.disabled = busy || !supported();
     return heading;
   }
@@ -302,7 +306,7 @@ window.sessionNotifications = (() => {
       notificationStatus(closable),
       closable ? h("button", { type: "button", class: "btn primary", disabled: busy, onclick: () => enabled() ? disable() : enable() }, enabled() ? "关闭本设备通知" : "开启本设备通知") : null,
       ...Object.entries({ reply: "助手消息生成完成", completed: "本轮完成", failed: "本轮失败", approval: "需要审批或人工处理", reminder: "日程提醒（提前多久见日程）", currentSession: "正在阅读的会话也提醒", preview: "在系统通知中显示消息摘要" }).map(([key, label]) =>
-        h("label", { class: "notification-setting" }, h("span", {}, label), h("input", { type: "checkbox", checked: settings.preferences[key], disabled: busy, "data-notification-setting": key, onchange: e => void change(key, e.target.checked) }))),
+        h("label", { class: "notification-setting" }, h("span", {}, label), h("input", { type: "checkbox", class: "settings-switch sm", checked: settings.preferences[key], disabled: busy, "data-notification-setting": key, onchange: e => void change(key, e.target.checked) }))),
       h("p", { class: "muted" }, "助手消息生成完成指一条面向你的消息生成结束；本轮完成或失败指一次执行结束。默认只显示会话标题，最后一条消息与紧接着的本轮完成会合并提醒。退出登录后停止推送。"),
       recoveryNeeded ? h("button", { type: "button", class: "btn", disabled: busy, onclick: () => void restore() }, "重试恢复通知") : null,
       h("button", { type: "button", class: "btn", disabled: busy || !enabled() || recoveryNeeded, onclick: () => void test() }, "发送测试通知"),

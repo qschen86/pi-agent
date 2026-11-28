@@ -55,7 +55,7 @@ export function mountDiagnosticsRoutes(app: Hono, diagnostics: ServerDiagnostics
     if (body === BAD_JSON) return c.json({ error: "格式不对", code: "BUNDLE_INPUT" }, 400);
     const result = await diagnostics.ingestBundle(body, ingressEntry(c.req.header('host') ?? new URL(c.req.url).host));
     if (result.status === 400) return c.json({ error: "格式不对", code: "BUNDLE_INPUT" }, 400);
-    // 用户上报：服务端随后在后台分诊并建待办（onBundle），这里不等
+    // 旧页面的手动包仍接收，和自动包一起留到自愈夜检分析
     const manual = typeof result.id === "string" && result.id.startsWith("m");
     return c.json(result.ok ? { ok: true, id: result.id, ...(result.duplicate ? { duplicate: true } : {}), ...(manual ? { note: "queued" } : {}) } : { ok: false, reason: result.reason });
   });

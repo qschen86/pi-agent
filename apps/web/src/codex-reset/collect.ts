@@ -121,7 +121,9 @@ export function parseAvailable(body: unknown): { availableCount: number; totalEa
     });
   }
   return {
-    availableCount: int(pick(root, "available_count", "availableCount")) || credits.length,
+    availableCount: typeof pick(root, "available_count", "availableCount") === "number"
+      ? int(pick(root, "available_count", "availableCount"))
+      : credits.filter((c) => c.status === "available").length,
     totalEarnedCount: int(pick(root, "total_earned_count", "totalEarnedCount")),
     credits
   };
@@ -242,6 +244,21 @@ async function getJson(fetchImpl: FetchJson, auth: CodexAuth, path: string, time
 }
 
 const defaultFetch: FetchJson = (url, init) => fetch(url, init as RequestInit) as unknown as ReturnType<FetchJson>;
+
+/** 额度刷新只读当前可用卡，不重复拉取历史流水。 */
+export async function collectAvailableCredits(options: CollectOptions = {}): Promise<ReturnType<typeof parseAvailable>> {
+  const auth = readCodexAuth(options.authPath ?? codexAuthPath());
+  if (!auth) throw new CodexResetFetchError("没有找到 Codex 登录态", "no-auth");
+  const now = options.now ?? (() => new Date());
+  if (auth.expiresAtMs && auth.expiresAtMs < now().getTime()) throw new CodexResetFetchError("Codex 登录态已过期", "expired");
+  const body = await getJson(options.fetchImpl ?? defaultFetch, auth, AVAILABLE_PATH, options.timeoutMs ?? 5_000);
+  const root = body as Record<string, unknown> | null;
+  const count = root && pick(root, "available_count", "availableCount");
+  if (!root || (typeof count !== "number" && !Array.isArray(root["credits"]))) {
+    throw new CodexResetFetchError("Codex 重置卡接口缺少可用卡数据", "http");
+  }
+  return parseAvailable(body);
+}
 
 /** 拉一次当前可用卡 + 最近 30 天流水。读不到登录态时抛 no-auth（页面据此提示怎么处理）。 */
 export async function collectResetSnapshot(options: CollectOptions = {}): Promise<ResetSnapshot> {

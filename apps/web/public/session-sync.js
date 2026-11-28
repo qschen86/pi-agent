@@ -365,7 +365,7 @@ function sessionLiveCurrent(resource) {
 function sessionLiveResources() {
   const resources=new Map();
   if(ui.view==='rt'&&!rtId())return resources;
-  const add=r=>{const key=sessionLiveKey(r);if(r.id&&!sessionLive.blocked.has(key)&&resources.size<12)resources.set(key,r);};
+  const add=r=>{if(r.kind==='rt'&&r.id==='service-notifications')return;const key=sessionLiveKey(r);if(r.id&&!sessionLive.blocked.has(key)&&resources.size<12)resources.set(key,r);};
   if(ui.view==='rt'&&rtId())add({kind:'rt',id:rtId()});
   if(ui.view==='rt-room'&&ui.room?.id)add({kind:'room',id:ui.room.id});
   for(const e of [...(ui.rt?.notifications || []), ...(ui.rt?.dir?.entries || [])]) if(['creating','running','waiting-input','stopping'].includes(e.status)&&!e.archived) {
@@ -453,6 +453,7 @@ function sessionLiveAttach(es,isCurrent) {
   });
   const directory=()=>{
     if(!currentStream()||typeof rtLoadDir!=='function')return;
+    if(typeof rtServiceOpen==='function'&&rtServiceOpen())void rtLoadServiceNotices();
     if(ui.rt){ui.rt.dirDirty=true;ui.rt.dirNotice=(ui.rt.dirNotice||0)+1;}
     if(typeof rtDirectoryVisible==='function'&&!rtDirectoryVisible())return;
     clearTimeout(sessionLive.dirTimer);sessionLive.dirTimer=setTimeout(()=>void rtLoadDir().then(()=>{if(typeof rtRenderListOnly==='function')rtRenderListOnly();}),400);

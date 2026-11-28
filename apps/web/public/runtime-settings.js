@@ -508,32 +508,43 @@ function rtProfileCard(kind, p, a) {
     ui.rt.busy = ""; renderMain();
   };
   const perm = p ? rtProfileDefaultPermission(kind, p) : null;
-  const savePerm = async (nextMode) => {
-    if (!p || !perm) return;
+  // 服务端「新建会话默认配置」当前值：模型 / 强度必须仍在可选范围内，否则按运行时默认处理
+  const defs = (() => {
+    if (!p) return null;
     const cur = ui.rt.settings?.defaultSessionByRuntime?.[kind];
-    const sel = typeof rtSelectableModels === "function" ? rtSelectableModels(kind, p) : { models: p.models || [] };
+    const sel = typeof rtSelectableModels === "function" ? rtSelectableModels(kind, p) : { models: p.models || [], defaultAllowed: true };
     let model = cur?.model ?? "";
+    if (model && !sel.models.some((m) => m.id === model)) model = "";
+    if (!model && !sel.defaultAllowed && sel.models.length) model = sel.models[0].id;
+    const mo = typeof rtModelOption === "function" ? rtModelOption(p, model) : p.models?.find((m) => m.id === model);
     let effort = cur?.effort ?? "";
-    if (model && !sel.models.some((m) => m.id === model)) { model = ""; effort = ""; }
-    if (effort) {
-      const mo = typeof rtModelOption === "function" ? rtModelOption(p, model) : p.models?.find((m) => m.id === model);
-      if (!(mo?.efforts || []).includes(effort)) effort = "";
+    if (effort && !(mo?.efforts || []).includes(effort)) effort = "";
+    return { sel, model, mo, effort };
+  })();
+  const saveDefaults = async (patch, label) => {
+    if (!p || !perm || !defs) return;
+    const next = { model: defs.model, effort: defs.effort, permissionMode: perm.activeId, ...patch };
+    if (patch.model !== undefined && patch.effort === undefined) {
+      const mo = typeof rtModelOption === "function" ? rtModelOption(p, next.model) : p.models?.find((m) => m.id === next.model);
+      if (!(mo?.efforts || []).includes(next.effort)) next.effort = "";
     }
     ui.rt.busy = `perm-${kind}`; ui.rt.error = ""; renderMain();
     try {
       ui.rt.settings = await api(`/api/runtime-profiles/${kind}/session-defaults`, {
         method: "PUT",
-        body: JSON.stringify({ defaults: { model, effort, permissionMode: nextMode } }),
+        body: JSON.stringify({ defaults: next }),
       });
       if (ui.rt.settingsDraft) ui.rt.settingsDraft.defaultSessionByRuntime = ui.rt.settings.defaultSessionByRuntime;
       if (typeof rtWriteCache === "function") rtWriteCache();
-      const label = perm.options.find((x) => x.id === nextMode)?.label || nextMode;
-      announce(`${RT_KIND[kind]} 默认权限已改为 ${label}`);
+      announce(`${RT_KIND[kind]} ${label}`);
     } catch (e) {
-      ui.rt.error = `${RT_KIND[kind]} 默认权限：${e.message}`;
+      ui.rt.error = `${RT_KIND[kind]} 默认配置：${e.message}`;
     }
     ui.rt.busy = ""; renderMain();
   };
+  const savePerm = (nextMode) => saveDefaults({ permissionMode: nextMode }, `默认权限已改为 ${perm.options.find((x) => x.id === nextMode)?.label || nextMode}`);
+  const canEditDefaults = !!(a && a.control && defs);
+  const effortLabel = (e) => `${(typeof RT_EFFORT !== "undefined" && RT_EFFORT[e]) || e}（${e}）`;
   const [st, sk] = p ? RT_PROFILE_STATE[p.state] || [p.state, ""] : ["未检查", "warn"];
   const channel = p ? (p.transport === "app-server-stdio" ? "Codex app-server（stdio，平台自管进程）" : p.transport === "pi-rpc" ? "Pi RPC（本地进程）" : p.transport === "acp-stdio" ? "Antigravity ACP（stdio，本地进程）" : "Claude Agent SDK（本地进程）") : "";
   const authCaps = ui.rt.authCaps;
@@ -588,12 +599,41 @@ function rtProfileCard(kind, p, a) {
                 permBusy ? h("span", { class: "muted small" }, "保存中…") : null)
             : h("span", { title: perm.active.detail }, perm.active.label),
           perm.active.detail ? h("span", { class: `rt-default-perm-note small${perm.activeId === "full-access" || perm.activeId === "bypassPermissions" ? " warn-text" : " muted"}` }, perm.active.detail) : null),
+        p.models.length ? h("dt", {}, "默认模型") : null,
+        p.models.length ? h("dd", { class: "rt-default-perm" },
+          canEditDefaults
+            ? h("div", { class: "rt-default-perm-row" },
+                h("select", {
+                  class: "rt-default-perm-select",
+                  "aria-label": `${RT_KIND[kind]} 默认模型`,
+                  "data-key": `rt-default-model-${kind}`,
+                  disabled: permBusy || !!ui.rt.busy,
+                  onchange: (ev) => saveDefaults({ model: ev.target.value }, "默认模型已保存"),
+                }, defs.sel.defaultAllowed ? h("option", { value: "", selected: !defs.model }, "运行时默认模型") : null,
+                  defs.sel.models.map((m) => h("option", { value: m.id, selected: m.id === defs.model }, m.label))))
+            : h("span", {}, defs?.model ? (defs.mo?.label || defs.model) : "运行时默认模型")) : null,
+        p.models.length ? h("dt", {}, "默认强度") : null,
+        p.models.length ? h("dd", { class: "rt-default-perm" },
+          canEditDefaults && (defs.mo?.efforts || []).length
+            ? h("div", { class: "rt-default-perm-row" },
+                h("select", {
+                  class: "rt-default-perm-select",
+                  "aria-label": `${RT_KIND[kind]} 默认推理强度`,
+                  "data-key": `rt-default-effort-${kind}`,
+                  disabled: permBusy || !!ui.rt.busy,
+                  onchange: (ev) => saveDefaults({ effort: ev.target.value }, "默认推理强度已保存"),
+                }, h("option", { value: "", selected: !defs.effort }, typeof rtDefaultEffortLabel === "function" ? rtDefaultEffortLabel(defs.mo) : "runtime 默认"),
+                  defs.mo.efforts.map((e) => h("option", { value: e, selected: e === defs.effort }, effortLabel(e)))),
+                permBusy ? h("span", { class: "muted small" }, "保存中…") : null)
+            : h("span", { class: "muted" }, defs?.effort ? effortLabel(defs.effort) : (defs?.mo?.efforts || []).length ? rtDefaultEffortLabel(defs.mo) : "该模型未报告可选强度"),
+          h("span", { class: "rt-default-perm-note small muted" }, "新建会话仍优先沿用你上次的选择；没有记录时才用这里的默认。")) : null,
         h("dt", {}, "检查"), h("dd", { title: rtTime(p.checkedAt) }, rtAgo(p.checkedAt))),
       h("div", { class: "rt-profile-sec" }, p.models.length ? rtModelAllowlist(kind, p, a) : [h("h3", {}, "模型"), h("p", { class: "muted small" }, "未读取到")]),
       h("div", { class: "rt-profile-sec rt-rl" },
         h("div", { class: "rt-sec-head" }, h("h3", {}, "账户额度"),
           a && a.control && p.identity ? h("button", { type: "button", class: "btn-link small", disabled: ui.rt.busy === `rl-${kind}`, onclick: refreshRl }, ui.rt.busy === `rl-${kind}` ? "读取中…" : "刷新") : null),
-        rtQuotaContent(kind, p.rateLimit)),
+        rtQuotaContent(kind, p.rateLimit),
+        kind !== "pi" ? rtQuotaLowSetting(kind, a) : null),
       h("details", { class: "rt-profile-more" }, h("summary", { class: "small" }, "详情：位置、通道、能力与生效配置"),
         h("dl", { class: "kv rt-facts" },
           h("dt", {}, "位置"), h("dd", { class: "mono small" }, p.binaryPath || "—"),
@@ -606,6 +646,29 @@ function rtProfileCard(kind, p, a) {
           h("td", { class: "rt-cap-reason small muted" }, c2.reason))))),
         p.configSummary?.length ? h("ul", { class: "small" }, p.configSummary.map((l) => h("li", {}, l))) : null)
     ]);
+}
+
+/** 额度余量 <3% 时发送前的提醒开关：关了就不再弹；「本周期内不再提醒」生效中时给出恢复入口。 */
+function rtQuotaLowSetting(kind, a) {
+  const pref = ui.rt.settings?.quotaLowPromptByRuntime?.[kind];
+  const snoozed = Date.parse(pref?.snoozeUntil || "") > Date.now() && !pref?.off;
+  const busy = ui.rt.busy === `quota-low-${kind}`;
+  const save = async (body, done) => {
+    ui.rt.busy = `quota-low-${kind}`; ui.rt.error = ""; renderMain();
+    try {
+      ui.rt.settings = await api(`/api/runtime-profiles/${kind}/quota-low-prompt`, { method: "PUT", body: JSON.stringify(body) });
+      if (ui.rt.settingsDraft) ui.rt.settingsDraft.quotaLowPromptByRuntime = ui.rt.settings.quotaLowPromptByRuntime;
+      if (typeof rtWriteCache === "function") rtWriteCache();
+      announce(`${RT_KIND[kind]} ${done}`);
+    } catch (e) { ui.rt.error = `${RT_KIND[kind]} 额度提醒：${e.message}`; }
+    ui.rt.busy = ""; renderMain();
+  };
+  return h("div", { class: "rt-quota-low-setting small", "data-key": `rt-quota-low-${kind}` },
+    h("label", { class: "rt-check" },
+      h("input", { type: "checkbox", "data-key": `rt-quota-low-on-${kind}`, checked: !pref?.off, disabled: busy || !(a && a.control), onchange: (ev) => save(ev.target.checked ? { off: false } : { off: true }, ev.target.checked ? "额度不足提醒已开启" : "额度不足提醒已关闭") }),
+      " 余量低于 3% 时，发送前提醒并可预约到下个周期"),
+    snoozed ? h("p", { class: "muted small" }, `本周期内已暂不提醒，${rtScheduleLabel(pref.snoozeUntil)} 额度重置后恢复。`,
+      a && a.control ? h("button", { type: "button", class: "btn-link small", disabled: busy, onclick: () => save({ snoozeUntil: null }, "已恢复额度不足提醒") }, " 立即恢复") : null) : null);
 }
 
 /**

@@ -14,6 +14,11 @@ export interface WhenIdleRequest {
 }
 export interface WhenIdleDirs { root: string; home: string; requests: string; pidFile: string; log: string }
 export function whenIdleDirs(root?: string): WhenIdleDirs;
+export const LOG_KEEP_DAYS: number;
+/** 清掉被打断的守候进程留下的集成工作区和 pi-deploy/integration-* 分支；repo 推断不出来时返回里没有 repo */
+export function sweepIntegration(root?: string, opts?: { repo?: string; branch?: string }): { dirs: number; branches: number; repo?: string };
+/** 清掉超过保留期的部署 / 预发 / 回滚日志（含 .gate.json）；返回清掉的个数 */
+export function pruneOldLogs(root?: string, now?: number, keepDays?: number): number;
 export function readRequests(root?: string): WhenIdleRequest[];
 /** 标记请求已开始部署（startedAt）或退回等待（undefined）：列表页相应显示「部署中」/「待部署」 */
 export function markRequests<T extends { file: string; sha: string }>(qs: T[], startedAt: string | undefined, update?: Pick<Partial<WhenIdleRequest>, "baselineRed" | "deadline">): T[];
@@ -28,8 +33,16 @@ export function enqueue(input: { repo: string; sha: string; ref?: string; notify
 export function resolveRequester(input: { explicit?: string; envId?: string; cwd: string; active: Array<{ platformSessionId: string; workspace?: string }> }): { id?: string; how?: string; why?: string };
 export function busyReasons(input: { activity: unknown; piTasks: number; locked: boolean; vitest: number; preparing?: boolean }): string[];
 export function planDeploy<T extends { sha: string }>(requests: T[], live: string | undefined, isAncestor: (a: string, b: string) => boolean): { done: T[]; rejected: T[]; target: string | undefined; covered: T[] };
-export function notifyPrompt(input: { outcome: "ok" | "already-live" | "rejected" | "failed" | "expired"; sha: string; subject: string; live?: string; logFile: string; detail?: string; requestSha?: string; requestId?: string }): string;
+export function notifyPrompt(input: { outcome: "ok" | "already-live" | "rejected" | "failed" | "expired" | "gate-retry"; sha: string; subject: string; live?: string; logFile: string; detail?: string; requestSha?: string; requestId?: string; attempt?: number; max?: number }): string;
 export function notifyKey(requestId: string): string;
+/** 先记录平台结果，再按需唤醒模型；delivery 用于隔离实际通知传输。 */
+export function notify(q: Pick<WhenIdleRequest, "id" | "sha" | "notifySession" | "subject"> & { requestSha?: string }, outcome: Parameters<typeof notifyPrompt>[0]["outcome"], extra: { logFile?: string; live?: string; detail?: string; attempt?: number; max?: number }, delivery?: {
+  record: (session: string, key: string, text: string, outcome: string) => Promise<boolean>;
+  send: (session: string, key: string, text: string, outcome: string) => Promise<unknown>;
+  retry: (q: unknown, text: string, extra: unknown) => Promise<unknown>;
+}): Promise<unknown>;
+
+export function shouldWakeSessionForDeploy(outcome: "ok" | "already-live" | "rejected" | "failed" | "expired" | "gate-retry", detail?: string): boolean;
 export function failureHints(logText: string): string[];
 export function waivedNote(logText: string): string;
 export interface FastForwardResult { result: "moved" | "contained" | "checked-out" | "diverged" | "failed" | "unchanged"; tip?: string; where?: string[]; detail?: string }
@@ -37,7 +50,7 @@ export function fastForwardAfterDeploy(repo: string, branch: string, target: str
 export function branchSyncBlocker(repo: string, branch: string, target?: string): { where?: string[]; detail: string } | undefined;
 export function ffNote(input: { branch: string; sha: string; outcome: "ok" | "failed"; ff?: FastForwardResult }): string;
 export function shouldYieldCutover(repo: string, sha: string, root?: string): boolean;
-export function runDeploy(repo: string, sha: string, logFile: string, root?: string, syncBranches?: string[], options?: { coveredIds?: string[]; action?: "rollback"; expectedLive?: string; stageOnly?: boolean; args?: string[]; env?: Record<string, string>; timeline?: { queuedAt?: string; startedAt: string; stagedAt: string } }): Promise<number>;
+export function runDeploy(repo: string, sha: string, logFile: string, root?: string, syncBranches?: string[], options?: { coveredIds?: string[]; action?: "rollback"; expectedLive?: string; stageOnly?: boolean; failureBase?: string; args?: string[]; env?: Record<string, string>; timeline?: { queuedAt?: string; startedAt: string; stagedAt: string } }): Promise<number>;
 /** 一批请求切换前的节点时间（登记 → 预发检查开始 → 预发完成） */
 export function stagingTimeline(requests: Array<{ id: string; requestedAt?: string }>, staged: StagedState | undefined): { queuedAt?: string; startedAt: string; stagedAt: string } | undefined;
 /** 叠加预发（when-idle/staged.json）：逐个叠加请求，最后一次切换 */
@@ -85,8 +98,8 @@ export interface AutoResolveState {
   attempts: number;
   max?: number;
   conflicts: string[];
-  /** request：登记时变基冲突；integration：部署前集成冲突 */
-  stage: "request" | "integration";
+  /** request：登记时变基冲突；integration：部署前集成冲突；gate：门禁失败后让会话修复（conflicts 里放失败文件） */
+  stage: "request" | "integration" | "gate";
   /** 冲突时会话分支的提交：那一轮结束后没有新提交、也没合进 main，说明会话没完成合并 */
   head?: string;
   branch?: string;
@@ -104,6 +117,18 @@ export function writeAutoResolve(state: Omit<AutoResolveState, "at">, root?: str
 export function clearAutoResolve(session: string, root?: string): void;
 export function autoResolveKey(session: string, attempt: number): string;
 export function autoResolvePrompt(input: { branch?: string; conflicts: string[]; attempt: number; max?: number; stage: "request" | "integration"; live?: string }): string;
+
+/** 门禁失败后自动修复重试：重试链按会话记录（部署耗时、修复耗时、失败文件） */
+export interface GateRetryAttempt { sha: string; failedAt: string; /** 这次部署（准备 + 门禁）用了多久 */ deployMs?: number; phase?: string; files: string[]; fixStartedAt?: string; /** 会话修复用了多久（发出修复任务 → 自动重新登记部署） */ fixMs?: number }
+export interface GateRetryChain { session: string; startedAt: string; attempts: GateRetryAttempt[]; updatedAt: string }
+export const GATE_RETRY_MAX: number;
+export function readGateRetry(session: string, root?: string): GateRetryChain | undefined;
+export function writeGateRetry(state: Omit<GateRetryChain, "updatedAt">, root?: string): GateRetryChain;
+export function clearGateRetry(session: string, root?: string): void;
+export function gateRetryable(gate: unknown): boolean;
+export function runDurationMs(root: string, sha: string): number | undefined;
+export function formatDuration(ms: number | undefined): string;
+export function gateRetrySummary(chain: GateRetryChain | undefined, finalMs?: number): string;
 
 export function rollbackTarget(root?: string): { sha: string; live: string; subject: string } | undefined;
 export function enqueueRollback(input: { repo: string; expectedLive: string; expectedSha: string; notifySession: string; runtimeKind?: string; root?: string; startWatcher?: boolean }): { request: WhenIdleRequest };

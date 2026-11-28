@@ -136,6 +136,18 @@ describe("额度用尽后自动续聊", () => {
     expect(driver.turns).toHaveLength(1);
   });
 
+  it("tells the directory when an interrupted session will auto-resume so the list can count down", async () => {
+    const id = await startSession();
+    limit(1);
+    await until(() => !!binding(id).quotaResume);
+    const q = binding(id).quotaResume!;
+    const entry = (await mgr.directory()).entries.find(e => e.id === id)!;
+    expect(entry.quotaResumeNext).toEqual({ scheduledFor: q.scheduledFor, window: q.window, known: q.known });
+    // 人取消后标签随之消失，列表回到普通的「被中断」
+    mgr.cancelQuotaResume(id, "local");
+    expect((await mgr.directory()).entries.find(e => e.id === id)?.quotaResumeNext).toBeUndefined();
+  });
+
   it("re-arms after being limited again and stops after the streak cap", async () => {
     const id = await startSession();
     limit(1);

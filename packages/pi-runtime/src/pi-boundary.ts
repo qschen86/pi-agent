@@ -46,6 +46,7 @@ export interface PiBoundaryOptions {
   guard?: RuntimeGuardProvider;
   roleInstructions?: string;
   recordReadRoots?: string[];
+  capabilityGateway?: {socketPath:string};
   platformBrowser?: {socketPath:string};
   evaluation?: EvaluationBoundary;
   communityProfilePath?: string;
@@ -130,6 +131,12 @@ export async function preparePiChatBoundary(options: PiBoundaryOptions): Promise
       browserEntry=join(guardDir,"platform-browser.ts");
       writeFileSync(browserEntry,readFileSync(fileURLToPath(new URL("./platform-browser-extension.ts",import.meta.url))),{mode:0o400});
     }
+    let capabilityEntry:string|undefined;
+    if(options.capabilityGateway&&!evaluation&&options.mode!=='pi-read-only'){
+      env['PI_CAPABILITY_SOCKET']=options.capabilityGateway.socketPath;
+      capabilityEntry=join(guardDir,'capability.ts');
+      writeFileSync(capabilityEntry,readFileSync(fileURLToPath(new URL('./capability-extension.ts',import.meta.url))),{mode:0o400});
+    }
     let entry = extension;
     // 联网检索：Broker 跑在宿主（本进程）里，pi 只拿 socket 路径；密钥与来源台账都不进 pi。
     let webEntry: string | undefined;
@@ -146,7 +153,7 @@ export async function preparePiChatBoundary(options: PiBoundaryOptions): Promise
       webEntry = join(guardDir, "web-research.ts");
       writeFileSync(webEntry, readFileSync(fileURLToPath(new URL("./web-research-extension.ts", import.meta.url))), { mode: 0o400 });
     }
-    const extensionTools = [...(web ? WEB_TOOL_NAMES : []),...(browserEntry?["platform_browser"]:[]),...(backgroundEntry?PI_BACKGROUND_TOOL_NAMES:[])];
+    const extensionTools = [...(capabilityEntry?["capability_search","capability_describe","capability_invoke"]:[]),...(web ? WEB_TOOL_NAMES : []),...(browserEntry?["platform_browser"]:[]),...(backgroundEntry?PI_BACKGROUND_TOOL_NAMES:[])];
     const writable = community ? [runtime.homeDir, runtime.tmpDir, join(runtime.agentDir, "sessions"), join(runtime.agentDir, "extensions", "pi-permission-system", "logs"), join(runtime.agentDir, "auth.json.lock")] : [root];
     for (const dir of writable.filter(p => !p.endsWith("auth.json.lock"))) mkdirSync(dir, { recursive: true, mode: 0o700 });
     if (memory) {
@@ -192,6 +199,7 @@ export default async function(pi) {
         writeRoots: [...writable, ...(browserData ? [browserData] : []), ...(memory ? [join(memory.storeRoot, "data")] : []), ...(worktreeAccess?.writeRoots ?? [])].map(p => canonicalPath(p)),
         persistentBrowser: !!community.profile.browser?.profileRoot,
         platformBrowser: !!browserEntry,
+        ...(capabilityEntry?{capabilityGateway:true}:{}),
         backgroundBash: !!backgroundEntry,
         webResearch: !!web
       })), { mode: 0o400 });
@@ -274,7 +282,7 @@ export default async function(pi) {
           socket.once('end',()=>{clearTimeout(timer);socket.destroy();if(reply==='closed\n')resolve();else reject(new Error('Browser state flush failed'));});
         });
       },
-      argsPrefix: [...roleArgs, ...PI_ISOLATION_ARGS, "--no-approve", ...(community?.profile.browser||community?.profile.testing ? ["--extension", "builtin:mcp"] : ["--no-mcp"]), "--extension", entry, ...(webEntry ? ["--extension", webEntry] : []), ...(browserEntry ? ["--extension", browserEntry] : []), ...(backgroundEntry ? ["--extension", backgroundEntry] : []), ...(evaluation ? [] : ["--extension", PI_CODEMODE_EXTENSION]), "--tools", [...(options.mode === "pi-read-only" ? [...PI_TOOL_NAMES.slice(0, 4), ...extensionTools] : !evaluation && options.mode === "pi-ask" ? [...PI_TOOL_NAMES, "bash_escalated", ...(community?.tools ?? []), ...extensionTools] : [...PI_TOOL_NAMES, ...(nativeMemory ? [...HERMES_TOOLS,...(factsEnabled?FACT_TOOLS:[])] : []), ...extensionTools]), ...(evaluation ? [] : [PI_CODEMODE_TOOL])].join(",")],
+      argsPrefix: [...roleArgs, ...PI_ISOLATION_ARGS, "--no-approve", ...(community?.profile.browser||community?.profile.testing ? ["--extension", "builtin:mcp"] : ["--no-mcp"]), "--extension", entry, ...(webEntry ? ["--extension", webEntry] : []), ...(browserEntry ? ["--extension", browserEntry] : []), ...(capabilityEntry ? ["--extension", capabilityEntry] : []), ...(backgroundEntry ? ["--extension", backgroundEntry] : []), ...(evaluation ? [] : ["--extension", PI_CODEMODE_EXTENSION]), "--tools", [...(options.mode === "pi-read-only" ? [...PI_TOOL_NAMES.slice(0, 4), ...extensionTools] : !evaluation && options.mode === "pi-ask" ? [...PI_TOOL_NAMES, "bash_escalated", ...(community?.tools ?? []), ...extensionTools] : [...PI_TOOL_NAMES, ...(nativeMemory ? [...HERMES_TOOLS,...(factsEnabled?FACT_TOOLS:[])] : []), ...extensionTools]), ...(evaluation ? [] : [PI_CODEMODE_TOOL])].join(",")],
       wrap: prepared ? prepared.wrap.bind(prepared) : async (command, args) => ({ command, args }),
       dispose: async () => { try{await prepared?.dispose();}finally{try{await web?.close();}finally{releaseBrowserProfile?.();rmSync(root, { recursive: true, force: true }); rmSync(guardDir, { recursive: true, force: true });}} }
     };
